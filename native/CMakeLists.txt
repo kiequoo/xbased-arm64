@@ -163,7 +163,13 @@ target_include_directories(hakux_native PUBLIC "${NC_REPO}")
 target_include_directories(hakux_native PRIVATE "${NC_XXHASH_DIR}")
 # The HLE layer's pure modules build without QEMU in this mode.
 target_compile_definitions(hakux_native PRIVATE HLE_HOST_TEST)
-target_link_libraries(hakux_native PUBLIC ${NC_CPU_LIB} hakux_hle hakux_apu nc_slirp ${NC_SYS_LIBS} z)
+# Cross-compiling: no system libz in sysroot; zlibstatic is wired up below (after
+# libchdr's add_subdirectory builds it).  Native and CI builds use the system -lz.
+if(NOT CMAKE_CROSSCOMPILING)
+  target_link_libraries(hakux_native PUBLIC ${NC_CPU_LIB} hakux_hle hakux_apu nc_slirp ${NC_SYS_LIBS} z)
+else()
+  target_link_libraries(hakux_native PUBLIC ${NC_CPU_LIB} hakux_hle hakux_apu nc_slirp ${NC_SYS_LIBS})
+endif()
 target_compile_options(hakux_native PRIVATE -Wall -Wno-unused-parameter)
 target_sources(hakux_native PRIVATE core/chd_image.c)
 
@@ -172,13 +178,47 @@ target_sources(hakux_native PRIVATE core/chd_image.c)
 # system's zlib. Without it, CHD files aren't read.
 if(EXISTS "${NC_DEPS}/libchdr/CMakeLists.txt")
   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-  set(WITH_SYSTEM_ZLIB ON CACHE BOOL "" FORCE)
+  # Cross-compiling (arm64): the sysroot has no zlib; compile it from source
+  # (NC_DEPS/zlib, fetched by fetch_deps.sh) so both libchdr and state/cache.c
+  # get a full static zlib for the target.  At runtime the binary links against
+  # the device's system libz; this static copy is compile+link scaffolding only.
+  # Native x86_64 builds use the system zlib as before.
+  if(CMAKE_CROSSCOMPILING AND EXISTS "${NC_DEPS}/zlib/CMakeLists.txt")
+    # Compile zlib from source; zconf.h is generated into the build dir.
+    add_subdirectory("${NC_DEPS}/zlib" "${CMAKE_BINARY_DIR}/zlib" EXCLUDE_FROM_ALL)
+    # Create a ZLIB::ZLIB imported target that libchdr's find_package(ZLIB) will
+    # pick up — both the source dir (zlib.h) and the build dir (zconf.h) must be
+    # on the include path.
+    if(NOT TARGET ZLIB::ZLIB)
+      add_library(ZLIB::ZLIB ALIAS zlibstatic)
+    endif()
+    set_target_properties(zlibstatic PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES
+        "${NC_DEPS}/zlib;${CMAKE_BINARY_DIR}/zlib"
+    )
+    set(ZLIB_FOUND TRUE CACHE BOOL "" FORCE)
+    set(ZLIB_INCLUDE_DIR "${NC_DEPS}/zlib;${CMAKE_BINARY_DIR}/zlib" CACHE PATH "" FORCE)
+    set(ZLIB_LIBRARIES zlibstatic CACHE STRING "" FORCE)
+    set(ZLIB_LIBRARY zlibstatic CACHE STRING "" FORCE)
+    set(WITH_SYSTEM_ZLIB ON CACHE BOOL "" FORCE)
+  else()
+    set(WITH_SYSTEM_ZLIB ON CACHE BOOL "" FORCE)
+  endif()
   set(CHDR_WANT_TESTS OFF CACHE BOOL "" FORCE)
   set(INSTALL_STATIC_LIBS OFF CACHE BOOL "" FORCE)
   add_subdirectory("${NC_DEPS}/libchdr" "${CMAKE_BINARY_DIR}/libchdr" EXCLUDE_FROM_ALL)
   target_compile_options(chdr-static PRIVATE -w)
   target_link_libraries(hakux_native PRIVATE chdr-static)
   target_compile_definitions(hakux_native PRIVATE NC_HAVE_CHD)
+  # Cross-compiling: also link static zlib and expose its headers to hakux_native
+  # so that state/cache.c (which includes <zlib.h> directly) finds them.
+  if(CMAKE_CROSSCOMPILING AND TARGET zlibstatic)
+    target_link_libraries(hakux_native PRIVATE zlibstatic)
+    target_include_directories(hakux_native PRIVATE
+      "${NC_DEPS}/zlib"
+      "${CMAKE_BINARY_DIR}/zlib"  # zconf.h lives here after configure
+    )
+  endif()
 endif()
 
 # xboxrun's custom Vulkan driver ("vkdriver="): the app's code for it
