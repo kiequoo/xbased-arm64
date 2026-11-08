@@ -163,6 +163,13 @@ static int add_poll(int fd, int events, void *opaque)
     }
     struct pollfd *p = &g_nat.fds[g_nat.nfds];
     p->fd = fd;
+#ifdef _WIN32
+    /* WSAPoll takes no POLLPRI (Winsock has no urgent data in poll): asked
+     * for a TCP connection's, the whole poll failed with WSAEINVAL, and the
+     * network stood still from the guest's first TCP connection on (Insignia's
+     * Setup Assistant's registration). QEMU leaves it out on Windows too. */
+    events &= ~SLIRP_POLL_PRI;
+#endif
     p->events = (short)((events & SLIRP_POLL_IN ? POLLIN : 0) | (events & SLIRP_POLL_OUT ? POLLOUT : 0) |
                         (events & SLIRP_POLL_PRI ? POLLPRI : 0));
     p->revents = 0;

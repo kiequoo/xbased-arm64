@@ -28,6 +28,9 @@ void *hle_ring_reserve(HleRing *r, uint16_t op, uint32_t len);
 void hle_ring_publish(HleRing *r);
 const HleCmdHdr *hle_ring_peek(HleRing *r);
 void hle_ring_consume(HleRing *r);
+/* Consumer side: a record of op among the next max ones after the one at the
+ * tail (published, not consumed). */
+bool hle_ring_ahead(HleRing *r, uint16_t op, unsigned max);
 uint32_t hle_ring_used(HleRing *r);
 
 #endif

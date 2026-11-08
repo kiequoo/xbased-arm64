@@ -49,6 +49,9 @@ typedef struct NcVm {
 
 bool nc_vm_init(NcVm *vm, uint32_t ram_size);
 
+/* Why nc_vm_init failed, in words for the player (NULL: nothing to tell). */
+extern const char *nc_vm_why;
+
 /* Map guest VA [va, va+len) onto physical [pa, pa+len). Page-aligned. */
 bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len);
 

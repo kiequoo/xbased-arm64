@@ -848,14 +848,18 @@ static void complete(NcKernel *k, const uint32_t *a)
  * time. NC_DEVTIME="disc_us,disc_kBps,hdd_us,hdd_kBps" (or the property
  * debug.hakux.devtime, read at boot) tunes the drives. */
 static bool g_devtime;
+static bool g_devtime_set;      /* the run's options chose (devtime=), a title's default doesn't apply */
 static struct DevRate {
     uint32_t req_us, kbps;
 } g_dev_disc = {125, 27600},    /* the DVD drive at 5x: 500 us, 6900 kB/s */
   g_dev_hdd = {50, 80000};      /* the hard disk: 200 us, 20000 kB/s */
 
-void nc_io_set_device_time(bool on)
+/* mode 0 off, 1 a quarter of the drives' time, 2 the drives' own (devtime=) */
+static void device_time(int mode)
 {
-    g_devtime = on;
+    g_devtime = mode != 0;
+    g_dev_disc = mode >= 2 ? (struct DevRate){500, 6900} : (struct DevRate){125, 27600};
+    g_dev_hdd = mode >= 2 ? (struct DevRate){200, 20000} : (struct DevRate){50, 80000};
     const char *e = getenv("NC_DEVTIME");
 #if defined(__ANDROID__) || defined(_WIN32) || defined(NC_DESKTOP)
     char v[PROP_VALUE_MAX];
@@ -866,8 +870,49 @@ void nc_io_set_device_time(bool on)
     if (e) {
         sscanf(e, "%u,%u,%u,%u", &g_dev_disc.req_us, &g_dev_disc.kbps, &g_dev_hdd.req_us, &g_dev_hdd.kbps);
     }
-    nc_log("hakuX-native-io", "console timing %s: disc %u us + %u kB/s, hard disk %u us + %u kB/s", on ? "on" : "off",
-           g_dev_disc.req_us, g_dev_disc.kbps, g_dev_hdd.req_us, g_dev_hdd.kbps);
+    nc_log("hakuX-native-io", "console timing %s: disc %u us + %u kB/s, hard disk %u us + %u kB/s",
+           g_devtime ? "on" : "off", g_dev_disc.req_us, g_dev_disc.kbps, g_dev_hdd.req_us, g_dev_hdd.kbps);
+}
+
+void nc_io_set_device_time(int mode)
+{
+    g_devtime_set = true;
+    device_time(mode);
+}
+
+/* The titles that need the drives' own time, the run's options not saying:
+ * KotOR II's T3-M4 scene on Peragus (the fuel line blown) stays black at any
+ * faster disc, as on an Xbox playing it from its hard disk (the players'
+ * fix then: that part from the DVD). A quarter of the time wasn't enough. */
+int nc_io_title_device_mode(uint32_t title_id, const char *name)
+{
+    /* every edition: the id the US and PAL discs share, and the name */
+    static const struct {
+        uint32_t id;
+        const char *name;   /* in the certificate's title, any case */
+    } k_titles[] = {
+        {0x4C410014, "kotor ii"},       /* Star Wars: KotOR II - The Sith Lords */
+        {0, "sith lords"},
+    };
+    char low[64] = "";
+    for (unsigned i = 0; name && name[i] && i < sizeof(low) - 1; i++) {
+        low[i] = (char)tolower((unsigned char)name[i]);
+    }
+    for (unsigned i = 0; i < sizeof(k_titles) / sizeof(k_titles[0]); i++) {
+        if ((k_titles[i].id && k_titles[i].id == title_id) || strstr(low, k_titles[i].name)) {
+            return 2;
+        }
+    }
+    return 0;
+}
+
+void nc_io_title_device_time(uint32_t title_id, const char *name)
+{
+    const int mode = nc_io_title_device_mode(title_id, name);
+    if (!g_devtime_set && mode) {
+        nc_log("hakuX-native-io", "console timing: the drives' own for %08x (%s)", title_id, name ? name : "");
+        device_time(mode);
+    }
 }
 
 /* The drive's time for n bytes of nf, in microseconds. An overlapped read

@@ -36,6 +36,7 @@
 #include "hw/xbox/hle/vk/swapchain.h"
 #include "native/app/ui/xbox_data.h"
 #include "native/app/ui/xemu_import.h"
+#include "native/app/win_aslr.h"
 #include "native/app/win_auto.h"
 #include "native/app/win_mods.h"
 #include "native/core/cheats.h"
@@ -51,6 +52,7 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -128,6 +130,13 @@ static void read_ini(void)
     if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
         MoveFileA(old, path);
     }
+    {   /* the old shader settings gone first (cfg_shaders_migrate) */
+        Config c;
+        cfg_load(&c, path);
+        if (cfg_shaders_migrate(&c)) {
+            cfg_save(&c);
+        }
+    }
     FILE *f = fopen(path, "r");
     if (!f) {
         return;
@@ -192,6 +201,9 @@ static void game_options(const char *disc)
     snprintf(path, sizeof(path), "%sgames/%s.ini", g_data_dir, g.key);
     Config c;
     cfg_load(&c, path);
+    if (cfg_shaders_migrate(&c)) {
+        cfg_save(&c);
+    }
     /* the command line's options after the game's: move them to the end */
     char *cmdline[MAX_ARGS];
     int ncmd = 0;
@@ -384,9 +396,8 @@ static void run_again(const char *extra, bool hold)
     if (g_nw.hwnd) {
         SetWindowPos((HWND)g_nw.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
-    STARTUPINFOA si = {.cb = sizeof(si)};
     PROCESS_INFORMATION pi;
-    if (CreateProcessA(exe, cmd, NULL, NULL, FALSE, 0, NULL, g_exe_dir, &si, &pi)) {
+    if (xb_spawn(exe, cmd, g_exe_dir, &pi)) {
         CloseHandle(pi.hThread);
         wait_next_run(ev, pi.hProcess);
         CloseHandle(pi.hProcess);
@@ -1103,8 +1114,76 @@ static const char *pick_disc(void)
 }
 
 #ifndef XBASED_VERSION
-#define XBASED_VERSION "1.0.55"
+#define XBASED_VERSION "1.0.75"
 #endif
+
+static void rm_tree(const char *path)
+{
+    DIR *d = opendir(path);
+    if (!d) {
+        remove(path);
+        return;
+    }
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) {
+            continue;
+        }
+        char p[1400];
+        snprintf(p, sizeof(p), "%s/%s", path, e->d_name);
+        struct stat st;
+        if (!stat(p, &st) && S_ISDIR(st.st_mode)) {
+            rm_tree(p);
+        } else {
+            remove(p);
+        }
+    }
+    closedir(d);
+    rmdir(path);
+}
+
+/* The shader caches (hle_spirv*, hle_pipeline_cache, hle_pipelines) from
+ * another version go: each update starts them again, so nothing a build
+ * before kept is used (they are keyed by their content, and old entries
+ * only took space). The version they were made with: hle/version.txt. */
+static void shader_cache_by_version(const char *base)
+{
+    if (!base) {
+        return;
+    }
+    char vf[1200], seen[64] = "";
+    snprintf(vf, sizeof(vf), "%s/version.txt", base);
+    FILE *f = fopen(vf, "r");
+    if (f) {
+        if (fgets(seen, sizeof(seen), f)) {
+            seen[strcspn(seen, "\r\n")] = 0;
+        }
+        fclose(f);
+    }
+    if (!strcmp(seen, XBASED_VERSION)) {
+        return;
+    }
+    DIR *d = opendir(base);
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (!strncmp(e->d_name, "hle_spirv", 9) || !strcmp(e->d_name, "hle_pipeline_cache") ||
+                !strcmp(e->d_name, "hle_pipelines")) {
+                char p[1300];
+                snprintf(p, sizeof(p), "%s/%s", base, e->d_name);
+                rm_tree(p);
+            }
+        }
+        closedir(d);
+    }
+    f = fopen(vf, "w");
+    if (f) {
+        fprintf(f, "%s\n", XBASED_VERSION);
+        fclose(f);
+    }
+    nc_log("hakuX-app", "shader caches of %s cleared (%s)", seen[0] ? seen : "an earlier version",
+           XBASED_VERSION);
+}
 #ifdef _WIN32
 #define NC_PLATFORM_NAME "Windows"
 #else
@@ -1113,13 +1192,29 @@ static const char *pick_disc(void)
 
 int main(int argc, char *argv[])
 {
+#ifdef _WIN32
+    xb_aslr_check();    /* Windows' first memory where the guest's goes: run again without (win_aslr.h) */
+#endif
+    /* The gamepads with the window in the background (the dashboard behind a
+     * launcher, a game after a click elsewhere): as the environment's, which
+     * SDL takes where the hint set at run time didn't (a virtual gamepad's
+     * moves behind another window were dropped with it), inherited by the
+     * game's process. */
+    if (!getenv("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS")) {
+#ifdef _WIN32
+        _putenv("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1");
+#else
+        setenv("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1", 0);
+#endif
+        SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1", false);
+    }
     exe_dir();
     read_ini();
     g_ncfg_args = g_nargs;
     const char *disc = NULL;
     for (int i = 1; i < argc; i++) {
         if (!disc && !strchr(argv[i], '=') && strcmp(argv[i], "uncap") && strcmp(argv[i], "relaunch") &&
-            strcmp(argv[i], "fullscreen") && strcmp(argv[i], "console")) {
+            strcmp(argv[i], "fullscreen") && strcmp(argv[i], "console") && strcmp(argv[i], "dash")) {
             disc = argv[i];
         } else {
             add_arg(argv[i]);
@@ -1157,7 +1252,10 @@ int main(int argc, char *argv[])
             nc_log("hakuX-app", "%d gamepad mappings from %s", n, db);
         }
     }
-    if (!disc || !strcmp(disc, "none")) {
+    /* "dash" with no disc: the Xbox dashboard from the hard disk's C: drive,
+     * the tray empty (its Xbox Live account pages, its settings) */
+    const bool xbox_dash = opt_flag("dash") && (!disc || !strcmp(disc, "none"));
+    if (!xbox_dash && (!disc || !strcmp(disc, "none"))) {
         if (opt_flag("pick")) {
             disc = pick_disc();
             if (!disc) {
@@ -1180,12 +1278,13 @@ int main(int argc, char *argv[])
             return r;
         }
     }
-    snprintf(g_disc, sizeof(g_disc), "%s", disc);
-    game_options(g_disc);
-
-    g_disc_fd = open(g_disc, O_RDONLY | O_BINARY);
-    if (g_disc_fd < 0) {
-        nc_log("hakuX-app", "can't open the disc %s", g_disc);
+    if (!xbox_dash) {
+        snprintf(g_disc, sizeof(g_disc), "%s", disc);
+        game_options(g_disc);
+        g_disc_fd = open(g_disc, O_RDONLY | O_BINARY);
+        if (g_disc_fd < 0) {
+            nc_log("hakuX-app", "can't open the disc %s", g_disc);
+        }
     }
     char hdd[1024];
     const char *hv = opt_value("hdd");
@@ -1209,6 +1308,7 @@ int main(int argc, char *argv[])
         snprintf(base, sizeof(base), "%s/../hle", hdd);
         mkdir(base, 0775);
         setenv("HAKUX_NATIVE_BASE", base, 0);
+        shader_cache_by_version(getenv("HAKUX_NATIVE_BASE"));
     }
 
     NcOptions opt;
@@ -1271,7 +1371,7 @@ int main(int argc, char *argv[])
     const char *title2 = strrchr(g_disc, '/');
     title = title2 > title ? title2 : title;
     char wtitle[512];
-    snprintf(wtitle, sizeof(wtitle), "xbased - %s", title ? title + 1 : g_disc);
+    snprintf(wtitle, sizeof(wtitle), "xbased - %s", xbox_dash ? "Xbox Dashboard" : title ? title + 1 : g_disc);
 #ifdef _WIN32
     const SDL_WindowFlags vk_flag = 0;            /* the presenter makes its own Win32 surface */
 #else
@@ -1486,6 +1586,14 @@ int main(int argc, char *argv[])
         update_pads(focused);
         state_request_poll();
 
+        /* the GPU can't draw the game (no Vulkan device, a driver lacking
+         * what it needs): the game ran on with its sound over a black
+         * window, the reason only in the log */
+        if (!told && nc_hle_fatal_kind() == NC_FATAL_DRIVER) {
+            told = true;
+            fatal_box("xbased", nc_hle_fatal());
+            break;
+        }
         const int state = SDL_GetAtomicInt(&g_core_state);
         if (state < 0) {
             if (g_core.kernel.relaunch) {

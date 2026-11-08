@@ -1,7 +1,7 @@
 /*
  * hakuX native core — CHD disc images (chd_image.c): MAME's compressed hunks
- * (chdman createdvd from an XISO or a full dump) read as the plain image
- * they hold, through libchdr.
+ * (chdman createdvd, or createcd: its first track, from an XISO or a full
+ * dump) read as the plain image they hold, through libchdr.
  */
 #ifndef NATIVE_CORE_CHD_IMAGE_H
 #define NATIVE_CORE_CHD_IMAGE_H

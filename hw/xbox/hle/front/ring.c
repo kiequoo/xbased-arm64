@@ -76,6 +76,24 @@ const HleCmdHdr *hle_ring_peek(HleRing *r)
     return NULL;
 }
 
+bool hle_ring_ahead(HleRing *r, uint16_t op, unsigned max)
+{
+    const uint32_t head = __atomic_load_n(&r->head, __ATOMIC_ACQUIRE);
+    uint32_t at = __atomic_load_n(&r->tail, __ATOMIC_RELAXED);
+    if (at == head) {
+        return false;
+    }
+    at += rec_bytes(((const HleCmdHdr *)(r->buf + (at & r->mask)))->len);   /* past the current one */
+    for (unsigned n = 0; n < max && at != head; n++) {
+        const HleCmdHdr *h = (const HleCmdHdr *)(r->buf + (at & r->mask));
+        if (h->op == op) {
+            return true;
+        }
+        at += rec_bytes(h->len);
+    }
+    return false;
+}
+
 void hle_ring_consume(HleRing *r)
 {
     uint32_t tail = __atomic_load_n(&r->tail, __ATOMIC_RELAXED);

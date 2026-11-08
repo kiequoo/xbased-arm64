@@ -1100,14 +1100,17 @@ static uint64_t MmSetAddressProtect(NcKernel *k, NcFrame *f, const uint32_t *a)
  * the end of that block. */
 static uint64_t MmClaimGpuInstanceMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    const uint32_t pad = 0x10000;
+    const uint32_t pad = NC_GPU_PAD;
     if (a[1]) {
         nc_vm_wr32(k->vm, a[1], pad);
     }
     if (!g_gpu_instance_end) {
         g_gpu_instance_end = k->vm->ram_size - pad;
-        uint32_t size = nc_align_up(a[0], NC_PAGE);
-        nc_vm_claim_phys(k->vm, g_gpu_instance_end - size, size + pad);
+        /* kept from boot (NC_GPU_TOP, kernel.c): only a larger block's rest */
+        const uint32_t size = nc_align_up(a[0], NC_PAGE), kept = NC_GPU_TOP - pad;
+        if (size > kept) {
+            nc_vm_claim_phys(k->vm, g_gpu_instance_end - size, size - kept);
+        }
     }
     return NC_CONTIG_WINDOW | g_gpu_instance_end;
 }

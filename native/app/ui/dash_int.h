@@ -161,5 +161,9 @@ void dash_take_folder(void);
 void game_cfg_path(const LibGame *g, char *out, size_t n);
 void states_dir(const LibGame *g, char *out, size_t n);
 void launch_game(LibGame *g, const char *extra);
+/* The Xbox dashboard on the hard disk's C: drive (xboxdash.xbe), run with
+ * the tray empty; a notice when it isn't there */
+bool dash_xbox_dashboard_installed(void);
+void dash_open_xbox_dashboard(void);
 
 #endif

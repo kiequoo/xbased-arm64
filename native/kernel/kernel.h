@@ -26,6 +26,10 @@ extern "C" {
 #define NC_KERNEL_VA     0x80010000u
 #define NC_KERNEL_PA     0x00010000u
 #define NC_KERNEL_SIZE   0x00040000u
+/* The top of RAM kept from boot: the GPU's instance memory (D3D's 20 KiB)
+ * and the 64 KiB pad above it (kernel.c, MmClaimGpuInstanceMemory) */
+#define NC_GPU_PAD       0x00010000u
+#define NC_GPU_TOP       (0x00005000u + NC_GPU_PAD)
 #define NC_KCALL_VECTOR  0x3Fu
 /* In the KPCR's page, past its fields (guest code reads it at fs:): 1 while
  * DPCs are queued (timer.c), for the guest-code KfLowerIrql (kernel.c). */
@@ -203,6 +207,7 @@ struct NcKernel {
     uint32_t xbe_base;
     uint32_t xbe_size;                    /* SizeOfImage */
     uint32_t game_region;                 /* from the XBE certificate: 1 NA, 2 JP, 4 elsewhere */
+    uint32_t game_regions;                /* the certificate's: every region the disc plays in */
     uint32_t kprocess;                    /* the one KPROCESS, every thread's ApcState.Process */
     uint32_t tramp_va[NC_KORDINAL_MAX];
     uint32_t data_va[NC_KORDINAL_MAX];
@@ -634,8 +639,14 @@ void nc_io_set_launch_dir(const char *dir);
 /* Whether the disc has language folders, English's among them, and none for
  * XC_LANGUAGE lang next to it (Fable's Data\lang\English without Spanish). */
 bool nc_io_disc_lacks_language(const struct NcDisc *disc, int lang);
-/* Console timing: reads take the console's drives' time, their thread waiting (io.c). */
-void nc_io_set_device_time(bool on);
+/* Console timing: reads take the console's drives' time, their thread waiting
+ * (io.c): mode 0 off, 1 a quarter of it, 2 all of it (devtime=). */
+void nc_io_set_device_time(int mode);
+/* ... the drives' own time for the titles that need it, the options not
+ * having chosen (at boot, the XBE's title id and its certificate's name) */
+void nc_io_title_device_time(uint32_t title_id, const char *name);
+/* ... the mode a title gets by default (0: none of its own); name may be NULL */
+int nc_io_title_device_mode(uint32_t title_id, const char *name);
 /* A file object's handle closed (ob.c). */
 void nc_io_close(NcKernel *k, uint32_t object);
 /* Completes the overlapped disc reads the reader thread finished (cheap when

@@ -45,6 +45,7 @@
 
 #define T (g_ps.t)
 #define PS_FRAMES 3             /* the presenter's submits in flight */
+enum { SET_WINDOW, SET_FXAA, SET_EASU, SET_OSD, PS_SETS };  /* a frame's descriptor sets */
 #define PS_RAMP 1024            /* a frame's share of the ramp buffer (768 used) */
 
 /* the window's pipelines, then those into images of ours (R8G8B8A8) */
@@ -65,7 +66,12 @@ typedef struct PsFrame {
     VkCommandPool pool;
     VkCommandBuffer cb;
     VkSemaphore acquired;       /* its swapchain image is ready */
-    VkDescriptorSet set[2];     /* the window pass's, FXAA's */
+    /* the window pass's, FXAA's, EASU's, the frame counter's: one a pass of a
+     * frame, as a set written again after a draw used it changes that draw
+     * too where the driver reads sets as the GPU runs (AMD's: FXAA's pass,
+     * sharing EASU's, sampled the image it drew into, noise and a seam
+     * across the picture with FSR at 1x and 2x) */
+    VkDescriptorSet set[PS_SETS];
     uint64_t value;             /* its last submit's on the timeline */
     bool ramp_stale;            /* its share of the ramp buffer is behind */
     /* the overlay's: the scene's and its blur's sets, the blur passes',
@@ -568,10 +574,10 @@ static bool init(void)
     VkPipelineLayoutCreateInfo lci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
         .pSetLayouts = &g_ps.dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pcr };
-    VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, PS_FRAMES * 2 },
-                                   { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, PS_FRAMES * 2 } };
+    VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, PS_FRAMES * PS_SETS },
+                                   { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, PS_FRAMES * PS_SETS } };
     VkDescriptorPoolCreateInfo pci = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = PS_FRAMES * 2,
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = PS_FRAMES * PS_SETS,
         .poolSizeCount = 2, .pPoolSizes = ps };
     VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = PS_FRAMES * PS_RAMP,
                                .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT };
@@ -600,9 +606,9 @@ static bool init(void)
                                         .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
                                         .queueFamilyIndex = g_hvk.qfam };
         VkSemaphoreCreateInfo si = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-        VkDescriptorSetLayout l[2] = { g_ps.dsl, g_ps.dsl };
+        VkDescriptorSetLayout l[PS_SETS] = { g_ps.dsl, g_ps.dsl, g_ps.dsl, g_ps.dsl };
         VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                            .descriptorPool = g_ps.dp, .descriptorSetCount = 2,
+                                            .descriptorPool = g_ps.dp, .descriptorSetCount = PS_SETS,
                                             .pSetLayouts = l };
         if (T.vkCreateCommandPool(g_hvk.dev, &cpi, NULL, &f->pool) != VK_SUCCESS ||
             T.vkCreateSemaphore(g_hvk.dev, &si, NULL, &f->acquired) != VK_SUCCESS ||
@@ -1711,7 +1717,7 @@ static void ov_scene(VkCommandBuffer cb, PsFrame *f, unsigned p, const float pc_
             pc[8] = 1.0f;               /* the window's orientation: the overlay turns it */
             pc[9] = pc[10] = 0.0f;
             pc[11] = 1.0f;
-            quad(cb, f, 0, g_ps.pipe[p], from, pc, ww, wh);
+            quad(cb, f, SET_WINDOW, g_ps.pipe[p], from, pc, ww, wh);   /* the window pass isn't drawn under a cover */
         }
         T.vkCmdEndRendering(cb);
         barrier(cb, g_ov.comp.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1856,7 +1862,7 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
         if (img_target(&g_ps.fx, g_ps.f.w, g_ps.f.h, VK_FORMAT_R8G8B8A8_UNORM, "FXAA")) {
             if (g_ps.fx.serial != g_ps.serial) {
                 static const float none[4];
-                img_pass(cb, f, 1, &g_ps.fx, g_ps.pipe[P_FXAA], g_ps.f.view, none);
+                img_pass(cb, f, SET_FXAA, &g_ps.fx, g_ps.pipe[P_FXAA], g_ps.f.view, none);
                 g_ps.fx.serial = g_ps.serial;
             }
             src = g_ps.fx.view;
@@ -1879,7 +1885,7 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
     }
     if (fsr && (g_ps.up.serial != g_ps.serial || g_ps.up.fxaa != fxaa_done)) {
         const float extra[4] = { (float)g_ps.f.w, (float)g_ps.f.h, (float)g_ps.up.w, (float)g_ps.up.h };
-        img_pass(cb, f, 1, &g_ps.up, g_ps.pipe[P_EASU], src, extra);
+        img_pass(cb, f, SET_EASU, &g_ps.up, g_ps.pipe[P_EASU], src, extra);
         g_ps.up.serial = g_ps.serial;
         g_ps.up.fxaa = fxaa_done;
     }
@@ -1921,13 +1927,13 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     rendering(cb, g_ps.view[g_ps.idx], iw, ih, true);
     if (g_ps.have && !cover) {
-        quad(cb, f, 0, g_ps.pipe[p], from, pc, iw, ih);
+        quad(cb, f, SET_WINDOW, g_ps.pipe[p], from, pc, iw, ih);
         if (g_osd > 0 && g_ps.pipe[P_OSD]) {
             /* top left, 4 digits each 0.022 of the window's height wide */
             const float dh = 0.045f, dw = dh * 0.62f * (float)wh / (float)ww;
             float oc[12] = { -0.98f, -0.97f, -0.98f + 4 * dw * 2, -0.97f + dh * 2, g_osd, 0, 0, 0,
                              g_ps.rot[0], g_ps.rot[1], g_ps.rot[2], g_ps.rot[3] };
-            quad(cb, f, 0, g_ps.pipe[P_OSD], src, oc, iw, ih);
+            quad(cb, f, SET_OSD, g_ps.pipe[P_OSD], src, oc, iw, ih);
         }
         log_path(p, fxaa_done, (uint32_t)(vw + 0.5f), (uint32_t)(vh + 0.5f));
     }

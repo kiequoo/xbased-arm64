@@ -131,6 +131,40 @@ bool split(uint32_t page)
     return true;
 }
 
+/* The player's words when Windows' memory holds the guest's addresses: the
+ * process runs with bottom-up ASLR on (app/win_aslr.c) unless something
+ * keeps it off. */
+const char k_low_taken[] =
+    "Windows put other memory where the Xbox's memory has to go. Usually that's \"Randomize memory allocations "
+    "(Bottom-up ASLR)\" turned off in Windows Security > App & browser control > Exploit protection. Turning it "
+    "back on (or on for xbased.exe in Program settings) fixes it.";
+
+/* What holds host memory in the low 4 GiB, for the log: a DLL by its file,
+ * a mapped file by its name, private memory by its size. */
+void log_taken(const MEMORY_BASIC_INFORMATION &mbi, uint64_t lo, uint64_t hi)
+{
+    char what[MAX_PATH * 3] = "";
+    if (mbi.Type == MEM_IMAGE || mbi.Type == MEM_MAPPED) {
+        wchar_t w[MAX_PATH] = L"";
+        DWORD n = 0;
+        if (mbi.Type == MEM_IMAGE) {
+            n = GetModuleFileNameW((HMODULE)mbi.AllocationBase, w, MAX_PATH);
+        }
+        if (!n) {
+            typedef DWORD(WINAPI * MappedFn)(HANDLE, LPVOID, LPWSTR, DWORD);
+            static MappedFn mapped = (MappedFn)(void *)GetProcAddress(GetModuleHandleW(L"kernel32.dll"),
+                                                                      "K32GetMappedFileNameW");
+            n = mapped ? mapped(GetCurrentProcess(), (void *)(uintptr_t)lo, w, MAX_PATH) : 0;
+        }
+        if (n) {
+            WideCharToMultiByte(CP_UTF8, 0, w, -1, what, sizeof(what), nullptr, nullptr);
+        }
+    }
+    nc_log("hakuX-native", "vm: host memory at %08llx-%08llx (%s %s) %s", (unsigned long long)lo,
+           (unsigned long long)hi, mbi.State == MEM_RESERVE ? "reserved" : "committed",
+           mbi.Type == MEM_IMAGE ? "image" : mbi.Type == MEM_MAPPED ? "mapped" : "private", what);
+}
+
 } // namespace
 
 extern "C" bool nc_vmos_init(NcVm *vm, uint32_t ram_size)
@@ -147,7 +181,7 @@ extern "C" bool nc_vmos_init(NcVm *vm, uint32_t ram_size)
 
     /* Every free range of the low 4 GiB becomes a placeholder. */
     uint64_t at = 0x10000;
-    unsigned ranges = 0;
+    unsigned ranges = 0, taken = 0;
     uint64_t reserved = 0;
     while (at < (1ull << 32)) {
         MEMORY_BASIC_INFORMATION mbi;
@@ -172,12 +206,19 @@ extern "C" bool nc_vmos_init(NcVm *vm, uint32_t ram_size)
                 ranges++;
                 reserved += b - a;
             }
-        } else if (lo < 0x80000000ull + 0x08000000ull && hi > 0x80000000ull) {
+        } else if (!(lo >= 0x7FFE0000ull && hi <= 0x7FFF0000ull) && taken++ < 16) {
+            log_taken(mbi, lo, hi);     /* Windows' shared pages aside, in every process */
+        }
+        if (mbi.State != MEM_FREE && lo < 0x80000000ull + 0x08000000ull && hi > 0x80000000ull) {
             nc_log("hakuX-native", "vm: host memory at %08llx-%08llx, inside the guest's RAM window",
                    (unsigned long long)lo, (unsigned long long)hi);
+            nc_vm_why = k_low_taken;
             return false;
         }
         at = hi;
+    }
+    if (taken > 16) {
+        nc_log("hakuX-native", "vm: and %u more", taken - 16);
     }
     nc_log("hakuX-native", "vm: %llu MiB of the low 4 GiB reserved for the guest (%u ranges)",
            (unsigned long long)(reserved >> 20), ranges);
@@ -213,6 +254,7 @@ extern "C" bool nc_vmos_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
     }
     if (ok && region_of(s) == g_regions.end()) {
         nc_log("hakuX-native", "vm: %08x is outside the guest's reservation", va);
+        nc_vm_why = k_low_taken;
         ok = false;
     }
     if (ok && n > 1) {

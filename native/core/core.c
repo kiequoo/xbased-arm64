@@ -133,7 +133,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
      * moved the pool's first range) */
     nc_kernel_pool_for(g_loadstate[0] ? nc_kern_state_kprocess(g_loadstate) : 0);
     if (!nc_vm_init(&c->vm, ram) || !nc_kernel_init(&c->kernel, &c->vm)) {
-        return boot_failed("The emulated console couldn't be set up.");
+        return boot_failed(nc_vm_why ? nc_vm_why : "The emulated console couldn't be set up.");
     }
     if (g_relaunch) {
         /* the last title's kept memory (D3D's saved display), where it was */
@@ -212,6 +212,9 @@ bool nc_core_boot(NcCore *c, int disc_fd)
     }
     if (!nc_xbe_load(&c->vm, &c->disc, xbe_path, &c->kernel, &c->xbe)) {
         char why[256], host[512];
+        if (nc_vm_why) {
+            return boot_failed(nc_vm_why);  /* the host's memory where the XBE goes */
+        }
         if (!strcasecmp(xbe_path, NC_DASHBOARD_PATH) && !nc_io_host_file(xbe_path, host, sizeof(host))) {
             return boot_failed("The dashboard isn't installed: its files (xboxdash.xbe and its folders) go on "
                                "the hard disk's C: drive.");
@@ -227,6 +230,22 @@ bool nc_core_boot(NcCore *c, int disc_fd)
         nc_kernel_launch_page_restore(&c->kernel, page);
     }
     nc_kernel_title_fixups(&c->kernel, &c->xbe.info);
+    {
+        /* the titles that need the drives' own speed, by id or by the
+         * certificate's title name (another edition, another id) */
+        char name[41] = "";
+        const uint32_t cert = nc_vm_rd32(&c->vm, c->xbe.info.base + 0x118);
+        if (cert >= c->xbe.info.base && cert - c->xbe.info.base < c->xbe.info.sizeof_headers) {
+            for (unsigned i = 0; i < 40; i++) {
+                const uint16_t ch = (uint16_t)(nc_vm_rd32(&c->vm, cert + 0xC + 2 * i) & 0xFFFF);
+                if (!ch) {
+                    break;
+                }
+                name[i] = ch < 0x80 ? (char)ch : '?';
+            }
+        }
+        nc_io_title_device_time(c->xbe.info.title_id, name);
+    }
 
     NcCpuConfig cfg = {
         .membase = c->vm.base,

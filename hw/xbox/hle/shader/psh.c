@@ -273,6 +273,44 @@ static void alpha_kill(Buf *b, const HlePshKey *k, unsigned s, unsigned m)
     }
 }
 
+/* Stage s's texture has channels the texture unit gives as signed bytes
+ * (SET_TEXTURE_FILTER 31:28) and its mode samples one: the combiners take
+ * them signed, -1..1. A bump-env, dot-product or dependent stage that reads
+ * it addresses by the texel's bytes as they are (sgn8, dmap): tr<s>, the
+ * texel as sampled; a bump stage whose input's b and g are signed takes
+ * those (bump_in). Fable's pond and Burnout 3's lake read their ripple maps
+ * this way, the pond's in the combiners too. */
+static bool signed_stage(const HlePshKey *k, unsigned s)
+{
+    const unsigned m = (k->tex_modes >> (5 * s)) & 0x1F;
+    if (!((HLE_PSH_TSIGN(k) >> (4 * s)) & 15) || ((k->fbfetch >> s) & 1) ||
+        (((k->shadow >> s) & 1) && (m == HLE_PST_PROJECT2D || m == HLE_PST_PROJECT3D))) {
+        return false;
+    }
+    return m != HLE_PST_NONE && m != HLE_PST_PASSTHRU && m != HLE_PST_CLIPPLANE &&
+           m != HLE_PST_DOTPRODUCT;
+}
+
+/* The name of stage in's texel for a stage that addresses by it */
+static const char *tex_in(const HlePshKey *k, unsigned in, char out[24])
+{
+    snprintf(out, 24, "%s%u", signed_stage(k, in) ? "tr" : "t", in);
+    return out;
+}
+
+/* A bump stage's (du, dv): its input stage's (b, g) as signed bytes. One
+ * whose b and g the texture unit gives signed: those, filtered as signed
+ * (samps), as the NV2A's stage result is. */
+static const char *bump_in(const HlePshKey *k, unsigned in, char out[24])
+{
+    if (signed_stage(k, in) && ((HLE_PSH_TSIGN(k) >> (4 * in)) & 12) == 12) {
+        snprintf(out, 24, "t%u.bg", in);
+    } else {
+        snprintf(out, 24, "sgn8(%s%u.bg)", signed_stage(k, in) ? "tr" : "t", in);
+    }
+    return out;
+}
+
 size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsupported)
 {
     Buf b = { buf, cap, 0, false, "0.5" };
@@ -307,6 +345,52 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
     bool hilo1 = false;
     for (unsigned s = 0; s < 3; s++) {
         hilo1 |= ((k->dot_map >> (4 * s)) & 7) == 4;
+    }
+    const char *rect_code = k->vol & HLE_PSH_RECT4 ?
+            /* vertex programs: each stage's own (pc.scr, its word; 0 none) */
+            "  { uint r = floatBitsToUint(pc.scr[s]);\n"
+            "    if (r != 0u)\n"
+            "      uv = nvrectr(uv, r, (pc.flags & (256u << s)) != 0u ? 0.5 / float(pc.flags >> 24) : 0.5); }\n"
+            : k->vol & HLE_PSH_RECT ?
+            "  { uint r = floatBitsToUint(pc.fog.w);\n"
+            "    if (r != 0u && s == ((r >> 28 & 1u) | (r >> 30 & 2u)))\n"
+            "      uv = nvrect(uv, (pc.flags & (256u << s)) != 0u ? 0.5 / float(pc.flags >> 24) : 0.5); }\n"
+            : "";
+    /* Signed channels (signed_stage): converted, then filtered, as the
+     * texture unit does. Blended as bytes and converted after, two texels
+     * either side of 0 (0x01, 0xFF) gave 0x80, -1: Fable's pond, whose
+     * ripple map a pass renders each frame around 0, came out streaked
+     * with its pattern. A one-level image (a render target's) is gathered
+     * and blended here; a mipmapped or point-sampled one converted as
+     * sampled. Only in the shaders that have such a stage: the others'
+     * text, and their cached SPIR-V, stay. */
+    static char sfun[2600];
+    sfun[0] = 0;
+    for (unsigned s = 0; s < 4; s++) {
+        if (signed_stage(k, s)) {
+            snprintf(sfun, sizeof(sfun),
+                "vec4 sgn4(vec4 c) {\n"
+                "  vec4 v = floor(c * 255.0 + 0.5);\n"
+                "  return max(mix(v, v - 256.0, greaterThanEqual(v, vec4(128.0))) / 127.0, -1.0);\n"
+                "}\n"
+                "float bil(vec4 c, vec2 w) { return mix(mix(c.w, c.z, w.x), mix(c.x, c.y, w.x), w.y); }\n"
+                "vec4 samps(uint s, vec2 uv, vec4 f, bvec4 m, bool pt) {\n"
+                "  uint ti = pc.tex[s] & 0xFFFFu, si = pc.tex[s] >> 16;\n"
+                "%s"
+                "  if ((pc.flags & (1u << s)) != 0u)\n"
+                "    uv /= vec2(textureSize(sampler2D(uTex2D[nonuniformEXT(ti)], uSmp[0]), 0)) /\n"
+                "          ((pc.flags & (256u << s)) != 0u ? float(pc.flags >> 24) : 1.0);\n"
+                "  if (pt || textureQueryLevels(sampler2D(uTex2D[nonuniformEXT(ti)], uSmp[nonuniformEXT(si)])) > 1)\n"
+                "    return mix(f, sgn4(f), m);\n"
+                "  vec2 w = fract(uv * vec2(textureSize(sampler2D(uTex2D[nonuniformEXT(ti)], uSmp[0]), 0)) - 0.5);\n"
+                "  vec4 r = sgn4(textureGather(sampler2D(uTex2D[nonuniformEXT(ti)], uSmp[nonuniformEXT(si)]), uv, 0));\n"
+                "  vec4 g = sgn4(textureGather(sampler2D(uTex2D[nonuniformEXT(ti)], uSmp[nonuniformEXT(si)]), uv, 1));\n"
+                "  vec4 b = sgn4(textureGather(sampler2D(uTex2D[nonuniformEXT(ti)], uSmp[nonuniformEXT(si)]), uv, 2));\n"
+                "  vec4 a = sgn4(textureGather(sampler2D(uTex2D[nonuniformEXT(ti)], uSmp[nonuniformEXT(si)]), uv, 3));\n"
+                "  return mix(f, vec4(bil(r, w), bil(g, w), bil(b, w), bil(a, w)), m);\n"
+                "}\n", rect_code);
+            break;
+        }
     }
     put(&b, "#version 450\n#extension GL_EXT_nonuniform_qualifier : require\n%s",
         hle_push_glsl());
@@ -367,6 +451,7 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
             "  vec2 v = floor(c * 255.0 + 0.5);\n"
             "  return mix(v, v - 256.0, greaterThanEqual(v, vec2(128.0))) / 127.0;\n"
             "}\n"
+            "%s"
             "void main() {\n"
             "  vec4 v0 = vDiffuse, v1 = vSpecular;\n"
             "  vec4 vTex3 = %s;\n", interp, interp, k->wbuf ? HLE_WBUF_IN_GLSL : "",
@@ -376,21 +461,12 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
         k->fbfetch & HLE_FB_ZEQ ? HLE_ZEQ_DECL_GLSL : "",
         /* a linear texture kept to its own size (ff.h HLE_NVRECT_GLSL): the stage fog.w names */
         k->vol & (HLE_PSH_RECT | HLE_PSH_RECT4) ? HLE_NVRECT_GLSL : "",
-        k->vol & HLE_PSH_RECT4 ?
-            /* vertex programs: each stage's own (pc.scr, its word; 0 none) */
-            "  { uint r = floatBitsToUint(pc.scr[s]);\n"
-            "    if (r != 0u)\n"
-            "      uv = nvrectr(uv, r, (pc.flags & (256u << s)) != 0u ? 0.5 / float(pc.flags >> 24) : 0.5); }\n"
-            : k->vol & HLE_PSH_RECT ?
-            "  { uint r = floatBitsToUint(pc.fog.w);\n"
-            "    if (r != 0u && s == ((r >> 28 & 1u) | (r >> 30 & 2u)))\n"
-            "      uv = nvrect(uv, (pc.flags & (256u << s)) != 0u ? 0.5 / float(pc.flags >> 24) : 0.5); }\n"
-            : "",
+        rect_code,
         /* HILO_1: the texel's two 16-bit halves, unsigned, and 1 (only where a
          * stage maps so: other shaders' text, and their cached SPIR-V, stay) */
         hilo1 ? "  if (m == 4u) { uvec4 i = uvec4(c * 255.0 + 0.5);\n"
                 "    return vec3(float(i.a << 8 | i.r), float(i.g << 8 | i.b), 65535.0) / 65535.0; }\n" : "",
-        k->point_sprite ? "vec4(gl_PointCoord, 1.0, 1.0)" : "vTex3i");
+        sfun, k->point_sprite ? "vec4(gl_PointCoord, 1.0, 1.0)" : "vTex3i");
     if (k->wbuf) {
         put(&b, HLE_WBUF_CALC_GLSL);
     }
@@ -427,13 +503,14 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
         bool dotmode = s && (m == HLE_PST_DOTPRODUCT || (m >= HLE_PST_DOT_ST &&
                                                          m <= HLE_PST_DOT_STR_CUBE) ||
                              m == HLE_PST_DOT_RFLCT_SPEC_CONST);
+        char tn[24];
         if (dotmode) {
-            put(&b, "  dot%u = dot(vTex%u.xyz, dmap(%uu, t%u));\n", s, s, dm, in);
+            put(&b, "  dot%u = dot(vTex%u.xyz, dmap(%uu, %s));\n", s, s, dm, tex_in(k, in, tn));
         }
         if (s == 2 && m == HLE_PST_DOT_RFLCT_DIFF) {
             /* the diffuse lookup needs stage 3's dot, computed here first */
             unsigned in3 = (k->input_tex >> 20) & 3, dm3 = (k->dot_map >> 8) & 7;
-            put(&b, "  dot3 = dot(vTex3.xyz, dmap(%uu, t%u));\n", dm3, in3);
+            put(&b, "  dot3 = dot(vTex3.xyz, dmap(%uu, %s));\n", dm3, tex_in(k, in3, tn));
         }
         if ((k->fbfetch >> s) & 1) {
             /* the target drawn into: this pixel as the earlier draws left it
@@ -492,7 +569,7 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
                 { "pc.bump3.x", "pc.bump3.y" } };
             put(&b, "  vec4 t%u;\n"
                     "  { vec2 d = mat2(unpackHalf2x16(%s), unpackHalf2x16(%s)) * "
-                    "sgn8(t%u.bg);\n", s, mat[s][0], mat[s][1], in);
+                    "%s;\n", s, mat[s][0], mat[s][1], bump_in(k, in, tn));
             if ((k->vol >> s) & 1) {            /* a volume: r passes through (Conker's
                                                  * electricity, animated along r) */
                 put(&b, "    t%u = samp3(%uu, vec3(nvproj(vTex%u).xy + d, vTex%u.z));\n",
@@ -502,7 +579,8 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
             }
             if (m == HLE_PST_BUMPENVMAP_LUM) {
                 put(&b, "    vec2 l = unpackHalf2x16(pc.bumpl[%u]);\n"
-                        "    t%u.rgb *= clamp(l.x * t%u.r + l.y, 0.0, 1.0);\n", s - 1, s, in);
+                        "    t%u.rgb *= clamp(l.x * %s.r + l.y, 0.0, 1.0);\n", s - 1, s,
+                    tex_in(k, in, tn));
             }
             put(&b, "  }\n");
             break;
@@ -524,8 +602,8 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
             put(&b, "  vec4 t%u;\n"
                     "  { uint ti = pc.tex[%u] & 0xFFFFu, si = pc.tex[%u] >> 16;\n"
                     "    t%u = texture(sampler2D(uTex2D[nonuniformEXT(ti)], "
-                    "uSmp[nonuniformEXT(si)]), t%u.%s); }\n",
-                s, s, s, s, in, m == HLE_PST_DPNDNT_AR ? "ar" : "gb");
+                    "uSmp[nonuniformEXT(si)]), %s.%s); }\n",
+                s, s, s, s, tex_in(k, in, tn), m == HLE_PST_DPNDNT_AR ? "ar" : "gb");
             break;
         }
         case HLE_PST_DOT_STR_3D:                    /* stage 3: (dot1, dot2, dot3) */
@@ -564,6 +642,30 @@ size_t hle_psh_glsl(const HlePshKey *k, char *buf, size_t cap, unsigned *unsuppo
             put(&b, "  vec4 t%u = samp(%uu, nvproj(vTex%u).xy); /* mode %u */\n",
                 s, s, s, m);
             break;
+        }
+        if (signed_stage(k, s)) {
+            /* the signed channels (samps, sgn4), the texel as sampled kept
+             * for the stages that address by it (tr) */
+            const unsigned g = (HLE_PSH_TSIGN(k) >> (4 * s)) & 15;
+            char mask[64];
+            snprintf(mask, sizeof(mask), "bvec4(%s, %s, %s, %s)", g & 2 ? "true" : "false",
+                     g & 4 ? "true" : "false", g & 8 ? "true" : "false", g & 1 ? "true" : "false");
+            if ((k->input_tex >> s) & 1) {
+                /* its bytes flipped at definition (hle_tex_sign_xor), filtered
+                 * as signed by the sampler: centred on 0x80 */
+                put(&b, "  vec4 tr%u = mix(t%u, mod(floor(t%u * 255.0 + 0.5) + 128.0, 256.0) / 255.0, %s);\n"
+                        "  t%u = mix(t%u, clamp((t%u * 255.0 - 128.0) / 127.0, -1.0, 1.0), %s);\n",
+                    s, s, s, mask, s, s, s, mask);
+            } else {
+                put(&b, "  vec4 tr%u = t%u;\n", s, s);
+                if (m == HLE_PST_PROJECT2D && !((k->vol >> s) & 1)) {
+                    /* a target's one-level image: gathered and filtered as signed */
+                    put(&b, "  t%u = samps(%uu, nvproj(vTex%u).xy, t%u, %s, %s);\n", s, s, s, s,
+                        mask, (HLE_PSH_TPOINT(k) >> s) & 1 ? "true" : "false");
+                } else {
+                    put(&b, "  t%u = mix(t%u, sgn4(t%u), %s);\n", s, s, s, mask);
+                }
+            }
         }
         alpha_kill(&b, k, s, m);
     }

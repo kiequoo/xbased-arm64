@@ -175,6 +175,18 @@ void cfg_set_bool(Config *c, const char *key, bool v)
     cfg_set(c, key, v ? "1" : "0");
 }
 
+bool cfg_shaders_migrate(Config *c)
+{
+    if (cfg_get(c, "shaders.reset")) {
+        return false;
+    }
+    const bool had = cfg_get(c, "asyncpipe") || cfg_get(c, "prebuild");
+    cfg_unset(c, "asyncpipe");
+    cfg_unset(c, "prebuild");
+    cfg_set(c, "shaders.reset", "1");
+    return had;
+}
+
 void cfg_unset(Config *c, const char *key)
 {
     for (int i = c->n - 1; i >= 0; i--) {

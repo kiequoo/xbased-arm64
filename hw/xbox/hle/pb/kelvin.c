@@ -168,10 +168,15 @@ static void tss(uint32_t *t, unsigned s)
     t[TSS_ALPHAKILL] = (ctl0 >> 2) & 1;
     t[TSS_COLORSIGN] = filt & 0xF0000000u;
     t[TSS_BORDERCOLOR] = R(b + 0x24);
-    /* SET_TEXTURE_SET_BUMP_ENV_MAT 00 01 10 11, SCALE, OFFSET, where written */
+    /* SET_TEXTURE_SET_BUMP_ENV_MAT 00 01 11 10 (the NV2A's order, as LLE
+     * takes it), SCALE, OFFSET, where written; the stage keeps 00 01 10 11.
+     * Read as 00 01 10 11, D3D's 0.5 x identity was (0.5, 0, 0.5, 0): every
+     * offset along u, by du + dv, and Burnout 3's lake and Fable's water
+     * sampled their reflections far off, a grain over the water. */
+    static const uint8_t k_slot[6] = { 0, 1, 3, 2, 4, 5 };
     for (unsigned i = 0; i < 6; i++) {
         if (W(b + 0x28 + 4 * i)) {
-            t[TSS_BUMPENVMAT00 + i] = R(b + 0x28 + 4 * i);
+            t[TSS_BUMPENVMAT00 + k_slot[i]] = R(b + 0x28 + 4 * i);
         }
     }
 }

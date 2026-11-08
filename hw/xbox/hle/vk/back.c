@@ -1972,6 +1972,8 @@ static void back_props_poll(uint64_t swap)
 #endif
 }
 
+#define SWAP_MIN_NS 2000000
+
 static void cmd_swap_present(const HleCmdSwap *c)
 {
     close_pass_why(PE_SWAP);
@@ -1980,6 +1982,30 @@ static void cmd_swap_present(const HleCmdSwap *c)
     back_props_poll(g_back.st.swaps);
     hle_pcache_save(false);
     hle_pipe_flush(false);              /* the pipelines made, recorded (at most once a second) */
+    /* Another swap already waits in the ring and the last frame went to the
+     * display under SWAP_MIN_NS ago (over 500 a second, more than any
+     * monitor shows): this one is covered at once, never on screen. Its
+     * display write is skipped and its submit shares the next one's (a
+     * boundary, as fences are: the later value completes it). The guest sees
+     * nothing of it, and a game at a monitor's pace, the back end a frame
+     * behind, keeps every frame. Republic Commando swaps cleared frames 3000
+     * to 7000 times a second while it loads, IMMEDIATE ones: a write and a
+     * submit each held the back end to ~850 a second, tens of seconds
+     * behind, and its movies played at 5 fps meanwhile. */
+    static int64_t s_written_ns;
+    const int64_t now = hle_now_ns();
+    if (now - s_written_ns < SWAP_MIN_NS && hle_ring_ahead(hle_fe_ring(), HLE_OP_SWAP, 256)) {
+        static uint64_t s_superseded;
+        const uint64_t n = ++s_superseded;
+        if (!(n & (n - 1))) {           /* the first ones, then powers of two */
+            hle_log("hakuX-hle-back", "swap %u: another swap queued behind it, not written to the display "
+                    "(%llu so far)", c->swap_id, (unsigned long long)n);
+        }
+        pend_boundary(c->value);
+        g_back.st.swaps++;
+        return;
+    }
+    s_written_ns = now;
     HleVkSurf *src = hle_surf_get(c->surf);
     int slot = hle_disp_begin_write(c->swap_id, c->value);
     if (src && slot >= 0 && hle_surf_ensure(src) &&

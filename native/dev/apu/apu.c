@@ -547,7 +547,19 @@ static void monitor_fit(MCPXAPUState *d, int drain_bytes)
  * it to four callbacks and paces itself in real time above two: 21 to 43 ms
  * queued (monitor_fit). Callbacks of 2048 queued ~128 ms (~130 ms from the
  * guest to the speaker); with the callback non-blocking (fill), 512 and 256
- * ran a minute of Halo 2 on the Odin 3 without a short callback. */
+ * ran a minute of Halo 2 on the Odin 3 without a short callback.
+ *
+ * Linux: 2048. Asked for 512, PulseAudio (PipeWire's) set its buffer as
+ * small and ran the stream every 128 frames (2.7 ms): an audio thread a
+ * little late and the server ran dry, crackles with the ring never empty
+ * (Forza Motorsport on a Linux user's machine, #82/#122). 2048 was almost
+ * clean there, 4096 clean (a 3008-frame period, ~200 ms of delay in all). */
+#if defined(__linux__) && !defined(__ANDROID__)
+#define APU_SAMPLES_DEFAULT 2048
+#else
+#define APU_SAMPLES_DEFAULT 512
+#endif
+
 static void monitor_init(MCPXAPUState *d)
 {
     const char *st = getenv("HAKUX_APU_STATS");
@@ -556,7 +568,7 @@ static void monitor_init(MCPXAPUState *d)
     d->monitor.queued_bytes_high = 0;
 
     int fifo_frames = getenv_int_clamped("NC_APU_FIFO_FRAMES", 3, 128, 48);
-    int audio_samples = getenv_int_clamped("NC_APU_SAMPLES", 256, 4096, 512);
+    int audio_samples = getenv_int_clamped("NC_APU_SAMPLES", 256, 4096, APU_SAMPLES_DEFAULT);
     int fifo_frame_bytes = g_apu_out_channels == 6 ? (int)sizeof(g_apu_frame6) : (int)sizeof(d->monitor.frame_buf);
     int fifo_capacity_bytes = fifo_frames * fifo_frame_bytes;
 

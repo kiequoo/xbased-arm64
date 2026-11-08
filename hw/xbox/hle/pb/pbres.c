@@ -368,6 +368,21 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
                     memcpy(out + y * orow, s + y * sp, orow);
                 }
             }
+            if (h5[2] && !p8 && !dxtd && !x4444 && !(fi->flags & HLE_FI_DXT)) {
+                /* signed channels (hle_tex_sign_xor): their bytes flipped */
+                const size_t nt = (size_t)w * h * dd;
+                if (fi->bpp == 32) {
+                    uint32_t *p = (uint32_t *)out;
+                    for (size_t i = 0; i < nt; i++) {
+                        p[i] ^= h5[2];
+                    }
+                } else if (fi->bpp == 16) {
+                    uint16_t *p = (uint16_t *)out;
+                    for (size_t i = 0; i < nt; i++) {
+                        p[i] ^= (uint16_t)h5[2];
+                    }
+                }
+            }
             if (x4444) {
                 expand_4444((const uint16_t *)t16, (size_t)w * h * dd, (uint32_t *)(dst + pos));
             }

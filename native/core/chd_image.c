@@ -8,6 +8,7 @@
  */
 #include "native/core/chd_image.h"
 #include "native/core/nc.h"
+#include "native/core/xdvdfs.h"
 
 #ifndef NC_HAVE_CHD
 /* built without libchdr: no CHD image is one */
@@ -27,7 +28,9 @@ bool nc_chd_read(int fd, void *buf, size_t len, uint64_t off)
     return false;
 }
 #else
+#include <libchdr/cdrom.h>
 #include <libchdr/chd.h>
+#include <stdio.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +45,8 @@ typedef struct Chd {
     chd_file *chd;
     uint32_t hunk_bytes;
     uint64_t size;          /* the image's bytes */
+    uint32_t unit_bytes;    /* a CD's frames (createcd): 2448, each sector's 2048 */
+    uint32_t data_off;      /* bytes at data_off in it; 0: a DVD's (createdvd) */
     pthread_mutex_t mu;
     uint8_t *cache[2];
     int64_t cached[2];      /* the hunks there (-1: none) */
@@ -103,6 +108,51 @@ static Chd *find(int fd)
     return NULL;
 }
 
+/* A CD's CHD (chdman createcd, what most guides give: an ISO taken as one
+ * mode 1 track): each 2048-byte sector in a 2448-byte frame (2352 and the
+ * subcode's 96), at its start for a cooked track, after the sync and header
+ * for a raw one. The image is the first track's sectors. False: a DVD's or a
+ * hard disk's, the bytes as they are. */
+static bool cd_track(Chd *c, const chd_header *h)
+{
+    static const uint32_t tags[] = {CDROM_TRACK_METADATA2_TAG, CDROM_TRACK_METADATA_TAG, GDROM_TRACK_METADATA_TAG};
+    char meta[256];
+    uint32_t len = 0;
+    bool found = false;
+    for (unsigned i = 0; i < sizeof(tags) / sizeof(tags[0]) && !found; i++) {
+        found = chd_get_metadata(c->chd, tags[i], 0, meta, sizeof(meta) - 1, &len, NULL, NULL) == CHDERR_NONE;
+    }
+    if (!found || h->unitbytes != CD_FRAME_SIZE || h->hunkbytes % CD_FRAME_SIZE) {
+        return false;
+    }
+    meta[len < sizeof(meta) ? len : sizeof(meta) - 1] = 0;
+    char type[32] = "";
+    int frames = 0;
+    const char *t = strstr(meta, "TYPE:"), *f = strstr(meta, "FRAMES:");
+    if (t) {
+        sscanf(t + 5, "%31s", type);
+    }
+    if (f) {
+        frames = atoi(f + 7);
+    }
+    uint32_t off;
+    if (!strcmp(type, "MODE1") || !strcmp(type, "MODE2_FORM1")) {
+        off = 0;                         /* cooked: the 2048 bytes alone */
+    } else if (!strcmp(type, "MODE1_RAW")) {
+        off = 16;                        /* sync 12, header 4 */
+    } else if (!strcmp(type, "MODE2_RAW")) {
+        off = 24;                        /* and form 1's subheader 8 */
+    } else {
+        nc_log("hakuX-native", "disc: CHD image of a CD whose first track is %s, not data", type[0] ? type : "unknown");
+        return false;
+    }
+    const uint64_t units = h->logicalbytes / CD_FRAME_SIZE;
+    c->unit_bytes = CD_FRAME_SIZE;
+    c->data_off = off;
+    c->size = (uint64_t)(frames > 0 && (uint64_t)frames < units ? (uint64_t)frames : units) * NC_XDVDFS_SECTOR;
+    return true;
+}
+
 bool nc_chd_attach(int fd)
 {
     char magic[8];
@@ -138,14 +188,15 @@ bool nc_chd_attach(int fd)
     }
     c->hunk_bytes = h->hunkbytes;
     c->size = h->logicalbytes;
+    const bool cd = cd_track(c, h);
     pthread_mutex_init(&c->mu, NULL);
     for (int i = 0; i < 2; i++) {
         c->cache[i] = malloc(c->hunk_bytes);
         c->cached[i] = -1;
     }
     pthread_mutex_unlock(&g_mu);
-    nc_log("hakuX-native", "disc: CHD image, %llu MiB in %u-byte hunks", (unsigned long long)(c->size >> 20),
-           c->hunk_bytes);
+    nc_log("hakuX-native", "disc: CHD image%s, %llu MiB in %u-byte hunks", cd ? " (a CD's, chdman createcd)" : "",
+           (unsigned long long)(c->size >> 20), c->hunk_bytes);
     return true;
 }
 
@@ -204,9 +255,18 @@ bool nc_chd_read(int fd, void *buf, size_t len, uint64_t off)
             memset(p, 0, len);              /* past the image: zeros, as for a trimmed one */
             break;
         }
-        const uint64_t n = off / c->hunk_bytes;
-        const uint32_t in = (uint32_t)(off % c->hunk_bytes);
-        uint64_t take = c->hunk_bytes - in;
+        /* where off is in the CHD's bytes, and how much from there in a row:
+         * a DVD's to the hunk's end, a CD's to its sector's (its frame
+         * never straddles two hunks) */
+        uint64_t at = off, run = c->hunk_bytes - off % c->hunk_bytes;
+        if (c->unit_bytes) {
+            const uint64_t sector = off / NC_XDVDFS_SECTOR, in_sector = off % NC_XDVDFS_SECTOR;
+            at = sector * c->unit_bytes + c->data_off + in_sector;
+            run = NC_XDVDFS_SECTOR - in_sector;
+        }
+        const uint64_t n = at / c->hunk_bytes;
+        const uint32_t in = (uint32_t)(at % c->hunk_bytes);
+        uint64_t take = run;
         take = take > len ? len : take;
         take = off + take > c->size ? c->size - off : take;
         const uint8_t *h = hunk(c, n);

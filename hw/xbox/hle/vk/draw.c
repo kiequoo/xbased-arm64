@@ -3096,6 +3096,13 @@ static void psframe_log(const HleCmdDraw *c, const HleCmdState *s, const HlePshK
             s->rs[RS_DESTBLEND], s->rs[RS_BLENDCOLOR], s->rs[RS_BLENDOP], s->rs[RS_ALPHATESTENABLE],
             s->rs[RS_ALPHAFUNC], s->rs[RS_ALPHAREF], s->rs[RS_ZENABLE], s->rs[RS_ZWRITEENABLE], s->rs[RS_ZFUNC],
             s->rs[RS_COLORWRITEENABLE], (unsigned long long)c->vsh);
+    for (unsigned z = 0; z < 4; z++) {          /* each texture: format, size, signed channels */
+        HleVkTex *tx = c->tex[z] ? tex_find(c->tex[z]) : NULL;
+        if (tx) {
+            hle_log("hakuX-hle-pipe", "  tex%u %u: fmt %x %ux%u levels %u signed %x", z, c->tex[z], tx->xfmt,
+                    tx->w, tx->h, tx->levels, s->tss[z][TSS_COLORSIGN] >> 28);
+        }
+    }
     for (unsigned st = 1; st < 4; st++) {       /* each bump stage's matrix */
         unsigned m = (pk->tex_modes >> (5 * st)) & 0x1F;
         if (m == HLE_PST_BUMPENVMAP || m == HLE_PST_BUMPENVMAP_LUM) {
@@ -3552,6 +3559,36 @@ void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id, 
         k.pk.out_bgra = rt && hle_surf_out_bgra(rt->fmt);
         for (unsigned st = 0; st < 4; st++) {
             k.pk.alpha_kill |= (c->tex[st] && s->tss[st][TSS_ALPHAKILL] != 0) << st;
+        }
+        static int nosign = -1;             /* debug: HAKUX_HLE_TEXSIGN=0, textures unsigned (A/B) */
+        if (nosign < 0) {
+            const char *e = getenv("HAKUX_HLE_TEXSIGN");
+            nosign = e && !strcmp(e, "0");
+        }
+        for (unsigned st = 0; st < 4 && !nosign; st++) {
+            const unsigned sg = (s->tss[st][TSS_COLORSIGN] >> 28) & 15u;
+            HleVkTex *tx = c->tex[st] && sg ? tex_find(c->tex[st]) : NULL;
+            unsigned eff = 0;
+            if (tx && hle_tex_sign_xor(tx->xfmt, sg, &eff)) {
+                /* defined with its signed bytes flipped (pbdraw.c texture) */
+                k.pk.dot_map |= eff << (16 + 4 * st);
+                k.pk.input_tex |= 1u << st;
+            } else if (c->tex[st]) {
+                k.pk.dot_map |= sg << (16 + 4 * st);
+            }
+        }
+        for (unsigned st = 0; st < 4; st++) {   /* signed stages read point-sampled (HLE_PSH_TPOINT) */
+            if (((HLE_PSH_TSIGN(&k.pk) >> (4 * st)) & 15) && s->tss[st][TSS_MAGFILTER] == 1) {
+                k.pk.dot_map |= 1u << (12 + st);
+            }
+        }
+        if (HLE_PSH_TSIGN(&k.pk)) {
+            static unsigned s_logged;
+            if (s_logged < 8) {
+                s_logged++;
+                hle_log("hakuX-hle-pipe", "signed texture draw: channels %04x modes %05x "
+                        "(first 8 logged)", HLE_PSH_TSIGN(&k.pk), k.pk.tex_modes);
+            }
         }
         for (unsigned st = 0; st < 4; st++) {
             unsigned sf = shadow_fmt(c->tex[st]);

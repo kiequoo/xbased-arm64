@@ -19,7 +19,12 @@ void nc_audio_set_channels(int n);  /* dev/apu/out.c */
 
 void nc_options_init(NcOptions *o)
 {
-    *o = (NcOptions){ .async_pipe = true, .prebuild = true, .video = -1, .av_pack = NC_AV_PACK_HDTV };
+    /* shaders built when first drawn, no prebuild: timed in-game from savestates
+     * with the caches cleared (Fable, Burnout 3, Vice City, The Two Thrones),
+     * built in place stuttered no more than asynchronously, and asynchronous
+     * building skipped the draws waiting for theirs (5 to 88 in a minute:
+     * objects missing or flickering for a frame) */
+    *o = (NcOptions){ .prebuild = false, .video = -1, .av_pack = NC_AV_PACK_HDTV };
 }
 
 static const char *value(const char *arg, const char *name)
@@ -71,11 +76,11 @@ bool nc_option(NcOptions *o, const char *arg)
         nc_hle_set_render_scale(atoi(v));
         nc_log("hakuX-app", "render scale %sx", v);
     } else if ((v = value(arg, "asyncpipe="))) {
-        o->async_pipe = atoi(v) != 0;
+        (void)v;                                /* asynchronous shaders: none (1.0.74), an old line ignored */
     } else if ((v = value(arg, "prebuild="))) {
         o->prebuild = atoi(v) != 0;
     } else if ((v = value(arg, "devtime="))) {
-        nc_io_set_device_time(atoi(v) != 0);    /* console timing (native/kernel/io.c) */
+        nc_io_set_device_time(atoi(v));         /* console timing (native/kernel/io.c): 0, 1, 2 */
     } else if ((v = value(arg, "pads="))) {
         setenv("NC_PAD_MASK", v, 1);            /* read by the USB at boot (ohci.c) */
     } else if ((v = value(arg, "video="))) {
@@ -131,7 +136,9 @@ void nc_options_apply(const NcOptions *o)
     } else {
         unsetenv("HAKUX_HLE_FPSCAP");
     }
-    nc_hle_set_pipeline_options(o->async_pipe, o->prebuild);
-    nc_log("hakuX-app", "shaders: asynchronous compilation %s, cached ones built before the game %s",
-           o->async_pipe ? "on" : "off", o->prebuild ? "on" : "off");
+    /* shaders are built when first drawn, never in the background: a draw
+     * whose shader was being built was skipped (flickering, missing
+     * graphics), and timed in-game it stuttered no less (1.0.73) */
+    nc_hle_set_pipeline_options(false, o->prebuild);
+    nc_log("hakuX-app", "shaders: cached ones built before the game %s", o->prebuild ? "on" : "off");
 }

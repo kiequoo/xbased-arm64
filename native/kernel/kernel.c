@@ -441,6 +441,14 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
                NC_KERNEL_PA + K_CLAIMED);
         return false;
     }
+    /* The top of RAM the console's kernel keeps from its boot on: the GPU's
+     * instance memory (D3D claims 20 KiB of it, MmClaimGpuInstanceMemory)
+     * under a 64 KiB pad. Left free until D3D started, a title's contiguous
+     * block asked for before took the last pages: Conflict: Desert Storm (and
+     * II) asks for 128 KiB first, got 0x83FE0000, and writes its heap's guard
+     * just past the end, at 0x84000000, where no RAM is (on the console the
+     * block ends 84 KiB lower and the guard lands in those kept pages). */
+    nc_vm_claim_phys(vm, vm->ram_size - NC_GPU_TOP, NC_GPU_TOP);
     /* A development kit's top 20 KiB stay out of every allocation: D3D's DMA
      * objects end below them (limit 0x07FFAFFF, its every build's, the GPU's
      * instance memory above), so a push buffer there runs past its object's
@@ -1356,6 +1364,47 @@ static void kcall(NcKernel *k, NcFrame *f, unsigned ordinal)
     nc_frame_set_eip(f, ret);
 }
 
+/* RDMSR / WRMSR: ECX the register, EDX:EAX its value. A write is kept, and
+ * read back as written; a register never written reads 0. The CPU's own
+ * MSRs (MTRRs, performance counters) mean nothing to the host, except the
+ * time stamp counter's (0x10): zero written, RDTSC counts from 0 again.
+ * Chase: Hollywood Stunt Driver zeroes it as its menu comes up, and the
+ * core stopped on the WRMSR (the intro's last frame left on screen). */
+#define MSR_TSC 0x10u
+static struct {
+    uint32_t index;
+    uint64_t value;
+} g_msr[32];
+static unsigned g_msrs;
+
+static void msr(NcKernel *k, NcFrame *f, bool write, uint32_t eip)
+{
+    const uint32_t index = nc_frame_gpr(f, NC_ECX);
+    unsigned i = 0;
+    while (i < g_msrs && g_msr[i].index != index) {
+        i++;
+    }
+    if (write) {
+        const uint64_t v = (uint64_t)nc_frame_gpr(f, NC_EDX) << 32 | nc_frame_gpr(f, NC_EAX);
+        const bool tsc_zero = index == MSR_TSC && v == 0;
+        if (i == g_msrs && g_msrs < sizeof(g_msr) / sizeof(g_msr[0])) {
+            g_msr[g_msrs++].index = index;
+            nc_log("hakuX-native", "cpu: wrmsr %08x <- %016llx at %08x (%s)", index, (unsigned long long)v, eip,
+                   tsc_zero ? "the time stamp counter from 0" : "kept, no effect");
+        }
+        if (i < g_msrs) {
+            g_msr[i].value = v;
+        }
+        if (tsc_zero) {
+            nc_cpu_guest_cycles_set(k->cpu, 0);
+        }
+        return;
+    }
+    const uint64_t v = i < g_msrs ? g_msr[i].value : 0;
+    nc_frame_set_gpr(f, NC_EAX, (uint32_t)v);
+    nc_frame_set_gpr(f, NC_EDX, (uint32_t)(v >> 32));
+}
+
 /* The Xbox CPU: Pentium III (Coppermine), GenuineIntel, max leaf 2. */
 static void cpuid(NcFrame *f)
 {
@@ -1684,6 +1733,11 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
         break;
     case NC_SYSOP_CPUID:
         cpuid(f);
+        nc_frame_set_eip(f, eip + size);
+        break;
+    case NC_SYSOP_RDMSR:
+    case NC_SYSOP_WRMSR:
+        msr(k, f, op == NC_SYSOP_WRMSR, eip);
         nc_frame_set_eip(f, eip + size);
         break;
     case NC_SYSOP_IN:

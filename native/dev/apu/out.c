@@ -359,8 +359,17 @@ int apu_out_open(int capacity_bytes, int samples, pthread_cond_t *wake)
         }
         SDL_SetAudioStreamGain(g_sdl, g_volume);
         pthread_mutex_unlock(&g_out.mu);
-        nc_log("hakuX-apu", "output stream: %s, %d frames a callback asked, %d channels",
-               SDL_GetAudioDeviceName(SDL_GetAudioStreamDevice(g_sdl)), samples, g_apu_out_channels);
+        /* what the device gives: PipeWire runs every client at the graph's
+         * quantum, smaller than asked when another client or the system's
+         * settings want it (128 frames, 2.7 ms, on one Linux machine) */
+        const SDL_AudioDeviceID dev = SDL_GetAudioStreamDevice(g_sdl);
+        SDL_AudioSpec got = {0};
+        int got_frames = 0;
+        SDL_GetAudioDeviceFormat(dev, &got, &got_frames);
+        nc_log("hakuX-apu", "output stream: %s (%s), %d frames a callback asked, %d channels; "
+                            "the device: %d frames a period, %d channels, %d Hz",
+               SDL_GetAudioDeviceName(dev), SDL_GetCurrentAudioDriver(), samples, g_apu_out_channels, got_frames,
+               got.channels, got.freq);
     }
     return samples * OUT_FRAME_BYTES;
 }

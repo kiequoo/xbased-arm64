@@ -179,6 +179,16 @@ static NcThread *thread_create(NcKernel *k, uint32_t stack_size, uint32_t tls_si
     const uint32_t tib = top - FX_SAVE_AREA;
 
     NcVm *vm = k->vm;
+    /* A page over the top, zeroed (the slot's room past the stack, never
+     * anyone else's): on the console a title's thread starts under more of
+     * the kernel's and XAPI's frames, and a read a little past the top lands
+     * in memory there. Dave Mirra Freestyle BMX 2 indexes an array on its
+     * stack with a stray byte (0xFF) at its title screen, 0x80 bytes over
+     * the top here: a fault the title doesn't handle. It goes with the stack
+     * (the scheduler's free of a terminated thread). */
+    if (nc_vm_phys(vm, top) == UINT32_MAX && nc_vm_alloc_at(vm, top, NC_PAGE, NULL)) {
+        memset(nc_vm_host(vm, top), 0, NC_PAGE);
+    }
     uint8_t *fx = nc_vm_host(vm, tib);         /* the top page's: a slot may come back used */
     memset(fx, 0, FX_SAVE_AREA);
     *(uint16_t *)(fx + FX_CONTROL_WORD) = 0x27F;
@@ -241,7 +251,8 @@ void nc_ps_old_stacks(NcKernel *k)
     unsigned n = 0;
     for (unsigned i = 0; i < NC_MAX_THREADS; i++) {
         const NcThread *t = &k->threads[i];
-        if (t->state == NC_T_FREE || t->tib_base || t->stack_base >= NC_GPU_WINDOW ||
+        /* every thread now (thread_create's page): a state from before it too */
+        if (t->state == NC_T_FREE || t->stack_base >= NC_GPU_WINDOW ||
             nc_vm_phys(k->vm, t->stack_base) != UINT32_MAX) {
             continue;
         }
@@ -251,7 +262,7 @@ void nc_ps_old_stacks(NcKernel *k)
         }
     }
     if (n) {
-        nc_log("hakuX-native", "ps: %u threads from a state without the FX save area: a page over each stack", n);
+        nc_log("hakuX-native", "ps: %u threads from an older state: a page over each stack", n);
     }
 }
 
@@ -518,7 +529,7 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
         /* Off its stack for good: the pages go back (titles start threads per
          * movie and load), the slot can hold a new thread. Its ETHREAD stays,
          * signaled, for whoever still holds a handle. */
-        const uint32_t end = cur->stack_base + (cur->tib_base ? 0 : NC_PAGE);  /* nc_ps_old_stacks's page */
+        const uint32_t end = cur->stack_base + NC_PAGE;     /* the page over the top (thread_create, nc_ps_old_stacks) */
         for (uint32_t p = cur->stack_limit; p < end; p += NC_PAGE) {
             const uint32_t pa = nc_vm_phys(k->vm, p);
             if (pa != UINT32_MAX) {

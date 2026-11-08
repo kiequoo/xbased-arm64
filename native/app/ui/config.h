@@ -32,6 +32,10 @@ void cfg_set(Config *c, const char *key, const char *val);
 void cfg_set_int(Config *c, const char *key, int v);
 void cfg_set_bool(Config *c, const char *key, bool v);
 void cfg_unset(Config *c, const char *key);
+/* Asynchronous shaders and the prebuild became off by default (1.0.73): a
+ * setting of either from before goes, once (a mark keeps one made since).
+ * True when one went. */
+bool cfg_shaders_migrate(Config *c);
 /* Keys that may repeat (mod=, cheat=): all their values. */
 int cfg_all(const Config *c, const char *key, const char **out, int max);
 void cfg_add(Config *c, const char *key, const char *val);

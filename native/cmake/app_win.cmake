@@ -6,6 +6,7 @@ set(NC_APP_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/app/win_mods.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/mod_fit.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/win_auto.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/app/win_aslr.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/present.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/vsync.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/ui/ui.c"

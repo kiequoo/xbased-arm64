@@ -110,6 +110,10 @@ static unsigned hex_bytes(const char *s, uint8_t *out, unsigned cap, const char 
 /* The patches of the mods on (applied) and off, for memory a savestate
  * brings back (it holds the code as it was saved, with the mods of then):
  * the XBE's path, the VA, the bytes the disc has there and the mod's. */
+/* The most bytes a patch line changes (OgXHD's widescreen database has 337), and
+ * so its manifest line (each byte "XX " twice, old -> new). */
+#define MOD_PATCH_MAX 512
+
 typedef struct MemPatch {
     char xbe[128];
     uint32_t va;
@@ -225,7 +229,7 @@ static void patch_update(NcDisc *disc, const char *xbe, const char *mod, uint32_
     char host[320];
     HleXbeInfo x;
     uint32_t off;
-    uint8_t cur[256];
+    uint8_t cur[MOD_PATCH_MAX];
     if (!update_host(disc, xbe, host, sizeof(host))) {
         nc_log("hakuX-native-mods", "%s: [%s] %08x: no title update installed", mod, xbe, va);
     } else if (!host_xbe_info(host, &x)) {
@@ -256,7 +260,7 @@ static void patch(NcDisc *disc, const char *xbe, const char *mod, const char *li
     while (*colon == ' ') {
         colon++;
     }
-    uint8_t old[256], neu[256];
+    uint8_t old[MOD_PATCH_MAX], neu[MOD_PATCH_MAX];
     const char *p = colon;
     unsigned nold = 0, nnew = 0;
     if (*colon == ':') {
@@ -285,13 +289,13 @@ static void patch(NcDisc *disc, const char *xbe, const char *mod, const char *li
         nc_log("hakuX-native-mods", "%s: [%s] %08x: not in the XBE's file", mod, xbe, va);
     } else if (!on) {
         NcDiscFile f;
-        uint8_t orig[256];
+        uint8_t orig[MOD_PATCH_MAX];
         if (nc_disc_find_orig(disc, xbe, &f) && nc_disc_read_orig(disc, &f, off, orig, nnew)) {
             remember(&g_mp, &g_nmp, xbe, va, orig, neu, nnew, false);
         }
     } else {
         NcDiscFile f;
-        uint8_t cur[256];
+        uint8_t cur[MOD_PATCH_MAX];
         if (!nc_disc_find(disc, xbe, &f) || !nc_disc_read(disc, &f, off, cur, nnew) ||
             (nold && memcmp(cur, old, nold))) {
             nc_log("hakuX-native-mods", "%s: [%s] %08x: other bytes there, skipped", mod, xbe, va);
@@ -333,7 +337,7 @@ static bool same_patch(const MemPatch *a, const MemPatch *b)
  * where it holds the mod's. */
 static bool flip(const MemPatch *p, bool on)
 {
-    uint8_t cur[256];
+    uint8_t cur[MOD_PATCH_MAX];
     const uint8_t *from = on ? p->old : p->neu, *to = on ? p->neu : p->old;
     return mem_read(NULL, p->va, cur, p->n) && !memcmp(cur, from, p->n) && mem_write(NULL, p->va, to, p->n);
 }
@@ -391,7 +395,7 @@ static bool header_as_now(const char *image_path, bool *any)
     *any = false;
     for (unsigned i = 0; i < g_nmp; i++) {
         const MemPatch *p = &g_mp[i];
-        uint8_t cur[256];
+        uint8_t cur[MOD_PATCH_MAX];
         if (p->on && of_image(p, image_path) && in_header(p)) {
             *any = true;
             if (!mem_read(NULL, p->va, cur, p->n) || memcmp(cur, p->neu, p->n)) {
@@ -503,7 +507,7 @@ void nc_mods_install(NcDisc *disc)
         nc_log("hakuX-native-mods", "no manifest at %s", g_manifest);
         return;
     }
-    char line[1024];
+    static char line[MOD_PATCH_MAX * 6 + 512];
     unsigned files = 0, bad = 0, lines = 0;
     bool sealed = false, have_cheat = false;
     while (fgets(line, sizeof(line), fp)) {

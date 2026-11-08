@@ -58,6 +58,9 @@ ssize_t nc_pread(int fd, void *buf, size_t n, int64_t off);
 ssize_t nc_pwrite(int fd, const void *buf, size_t n, int64_t off);
 #define pread nc_pread
 #define pwrite nc_pwrite
+/* SetEndOfFile, not mingw's zero-writing ftruncate (win.c) */
+int nc_ftruncate(int fd, int64_t len);
+#define ftruncate(fd, len) nc_ftruncate((fd), (int64_t)(len))
 
 int nc_setenv(const char *name, const char *value, int overwrite);
 int nc_unsetenv(const char *name);

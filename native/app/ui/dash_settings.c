@@ -21,6 +21,8 @@
 #define O_BINARY 0
 #endif
 
+int nc_io_title_device_mode(uint32_t title_id, const char *name); /* native/kernel/io.c: a title's disc speed */
+
 /* a game folder (or file) to take out of the library, once the user says so */
 static char g_unlist[1024], g_unlist_q[1200];
 static bool g_unlist_file;
@@ -226,8 +228,7 @@ void scr_settings(void)
         static const char *pv[] = {"hdtv", "standard", "svideo", "scart", "vga"};
         static const char *pn[] = {"HDTV (component)", "Standard (composite)", "S-Video", "SCART (RGB)", "VGA"};
         opt_choice(&l, S_AVPACK, "avpack", pv, pn, 5, "hdtv");
-        opt_bool(&l, S_ASYNC_SHADERS, "asyncpipe", true, false);
-        opt_bool(&l, S_PREBUILD, "prebuild", true, false);
+        opt_bool(&l, S_PREBUILD, "prebuild", false, false);
         break;
     }
     case 3: {
@@ -394,7 +395,17 @@ void scr_game_settings(void)
     opt_videoflag(&l, S_WIDESCREEN, 0x10000);
     rows_pal(&l);
     rows_ram(&l);
-    opt_bool(&l, S_ASYNC_SHADERS, "asyncpipe", true, false);
+    {
+        /* the disc's speed (devtime=): as fast as the PC reads, or the
+         * console's drive (a quarter or all of its time); a title that needs
+         * the drive's own gets it by default (native/kernel/io.c) */
+        static const char *const dv[] = {"0", "1", "2"};
+        const char *dn[] = {T(S_DISC_FAST), T(S_DISC_NEAR), T(S_DISC_CONSOLE)};
+        static char def[4];
+        const char *gv = cfg_get(&D.global, "devtime");
+        snprintf(def, sizeof(def), "%d", gv ? atoi(gv) : nc_io_title_device_mode(D.cur->g.title_id, D.cur->g.title));
+        opt_choice(&l, S_DISC_SPEED, "devtime", dv, dn, 3, def);
+    }
     if (list_row(&l, T(S_RESET_GAME), NULL, NULL)) {
         dash_ask(T(S_RESET_GAME), reset_game);
     }
@@ -1420,6 +1431,15 @@ void scr_online(void)
     }
     if (site && list_row(&l, T(S_OPEN_WEBSITE), site, NULL)) {
         SDL_OpenURL(site);
+    }
+    if (net && !strcmp(net, "nat")) {
+        /* Insignia's sign-up and the accounts: the Xbox dashboard's Xbox Live */
+        if (list_row(&l, T(S_XBOX_DASH), dash_xbox_dashboard_installed() ? NULL : T(S_NOT_INSTALLED), NULL)) {
+            dash_open_xbox_dashboard();
+        }
+        if (list_selected(&l)) {
+            help = T(S_XBOX_DASH_HELP);
+        }
     }
     list_end(&l);
     /* the help, wrapped */

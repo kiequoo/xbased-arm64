@@ -495,6 +495,20 @@ static uint8_t *eeprom(NcKernel *k)
                                        "game's settings to keep it)", lang);
             }
         }
+        /* A disc for North America and Japan both plays as a Japanese
+         * console's when the language is Japanese, Korean or Chinese (a
+         * console of those markets): Capcom Fighting Evolution's World disc
+         * reads the region, not the language, and is Capcom Fighting Jam on
+         * a Japanese console. Both regions NTSC, so the video stays. */
+        const uint32_t lang_now = nc_rd32(g_eeprom + 0x90);
+        if (k->game_region == 1 && (k->game_regions & 2) && (lang_now == 2 || lang_now == 7 || lang_now == 8)) {
+            k->game_region = 2;
+            nc_wr32(g_sec + 0x2C, 2);
+            if (g_sec_plain) {
+                memcpy(g_eeprom + 0x2C, g_sec + 0x2C, 4);
+            }
+            nc_log("hakuX-native", "ex: a disc for several regions, the language %u's: Japan", lang_now);
+        }
         /* And the time zone, the phone's: its offset from UTC now as the
          * bias (UTC = local time + bias, minutes), without daylight saving
          * rules of its own (no names, dates or standard / daylight biases). */
@@ -1116,6 +1130,7 @@ void nc_kernel_title_loaded(NcKernel *k, const NcDisc *disc, const NcDiscFile *x
     /* Certificate (header 0x118): GameRegion at 0xA0. */
     const uint32_t cert = nc_vm_rd32(k->vm, xbe_base + 0x118);
     const uint32_t region = nc_vm_rd32(k->vm, cert + 0xA0);
+    k->game_regions = region;
     k->game_region = region & 1 ? 1 : region & 2 ? 2 : region & 4 ? 4 : 1;
 
     /* XeImageFileName: ANSI_STRING { Length, MaximumLength, Buffer }. */
@@ -1151,6 +1166,13 @@ void nc_kernel_set_hd_key(NcKernel *k)
     if (va) {
         const uint8_t *e = eeprom(k);
         memcpy(nc_vm_host(k->vm, va), g_sec_plain ? e + 0x36 : g_sec + 0x1C, 16);
+    }
+    /* The AV pack the system controller reported at boot, which XAPI's
+     * XGetAVPack returns (and XGetVideoFlags keeps the HD modes by): left 0,
+     * SCART, X-Men Legends never took 720p and drew 4:3 with widescreen on. */
+    const uint32_t vm = data_va(k, "HalBootSMCVideoMode");
+    if (vm) {
+        nc_vm_wr32(k->vm, vm, av_pack_smc());
     }
 }
 

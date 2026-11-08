@@ -328,9 +328,17 @@ static uint8_t *read_xbe(int disc_fd, uint32_t *len)
  * XboxGraphicalPatches): ":<title id>" then pairs of lines, the bytes to
  * find in the game's XBE and what replaces them; "'" a comment. Each pair's
  * hex strings for title_id into find/repl, NULL when the title has none. */
+/* A pattern up to WS_MAX bytes (the database's longest is 337), a line up to
+ * WS_LINE characters. At 96 bytes and 512 characters 15 of its titles' longer
+ * patterns were cut, the bytes found and written only up to there: Phantom
+ * Dust's second (142 bytes, code moved to make room for a multiply) was half
+ * written, the rest of its function left as it was, and the game died at once. */
+#define WS_MAX 512
+#define WS_LINE (WS_MAX * 2 + 64)
+
 typedef struct {
     int n;
-    uint8_t find[64][96], repl[64][96];
+    uint8_t find[64][WS_MAX], repl[64][WS_MAX];
     int len[64];
 } WsPatch;
 
@@ -354,7 +362,8 @@ static bool widescreen_db(const char *exe_dir, uint32_t title_id, WsPatch *w)
     }
     char want[16];
     snprintf(want, sizeof(want), ":%08x", title_id);
-    char line[512], prev[512] = "";
+    static char line[WS_LINE], prev[WS_LINE];
+    prev[0] = 0;
     bool in = false;
     memset(w, 0, sizeof(*w));
     while (fgets(line, sizeof(line), f)) {
@@ -378,7 +387,7 @@ static bool widescreen_db(const char *exe_dir, uint32_t title_id, WsPatch *w)
             continue;
         }
         if (w->n < 64) {
-            const int a = hexbytes(prev, w->find[w->n], 96), b = hexbytes(s, w->repl[w->n], 96);
+            const int a = hexbytes(prev, w->find[w->n], WS_MAX), b = hexbytes(s, w->repl[w->n], WS_MAX);
             if (a && a == b) {
                 w->len[w->n++] = a;
             }
@@ -420,7 +429,7 @@ static int widescreen_patches(FILE *out, int disc_fd, const WsPatch *w, const ch
                 if (x[o] != w->find[p][0] || memcmp(x + o, w->find[p], (size_t)w->len[p])) {
                     continue;
                 }
-                char line[96 * 6 + 32];
+                static char line[WS_MAX * 6 + 32];
                 int n = snprintf(line, sizeof(line), "0x%08X:", sva + (o - raw));
                 for (int i = 0; i < w->len[p]; i++) {
                     n += snprintf(line + n, sizeof(line) - (size_t)n, " %02X", w->find[p][i]);

@@ -1,5 +1,5 @@
 /*
- * hakuX front end â€” the dashboard (dash.h): its loop, input, lists, and
+ * hakuX front end ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the dashboard (dash.h): its loop, input, lists, and
  * the main, games and game screens. Settings, controls, memory and online
  * are in dash_settings.c, dash_memory.c.
  */
@@ -17,10 +17,12 @@
 #include <time.h>
 #ifdef _WIN32
 #include <windows.h>
+
+#include "native/app/win_aslr.h"
 #endif
 
 #ifndef XBASED_VERSION
-#define XBASED_VERSION "1.0.55"
+#define XBASED_VERSION "1.0.75"
 #endif
 
 Dash D;
@@ -1086,25 +1088,108 @@ static struct {
     UiTex *pic;
 } g_go;
 
+#ifdef _WIN32
+static HANDLE g_follow;     /* the game's process on Windows (follow below) */
+
+/* s, quoted for a Windows command line, after cmd's n bytes */
+static size_t quote_arg(char *cmd, size_t n, size_t size, const char *s)
+{
+    size_t slashes = 0;
+    if (n && n + 1 < size) {
+        cmd[n++] = ' ';
+    }
+    if (n + 1 < size) {
+        cmd[n++] = '"';
+    }
+    for (; *s && n + 4 < size; s++) {
+        slashes = *s == '\\' ? slashes + 1 : 0;
+        cmd[n++] = *s;
+    }
+    for (; slashes && n + 3 < size; slashes--) {
+        cmd[n++] = '\\';    /* a closing quote after backslashes: each doubled */
+    }
+    if (n + 1 < size) {
+        cmd[n++] = '"';
+    }
+    cmd[n] = 0;
+    return n;
+}
+#endif
+
 static void go_spawn(void)
 {
-    const char *args[4] = {D.exe, g_go.path, g_go.has_extra ? g_go.extra : NULL, NULL};
 #ifdef _WIN32
     {   /* the game gives this window the foreground as it quits (win_main.c give_foreground) */
         char hv[32];
         void *h = SDL_GetPointerProperty(SDL_GetWindowProperties(g_win), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
         snprintf(hv, sizeof(hv), "%llx", (unsigned long long)(uintptr_t)h);
-        SDL_SetEnvironmentVariable(SDL_GetEnvironment(), "XBASED_DASH_HWND", hv, true);
+        SetEnvironmentVariableA("XBASED_DASH_HWND", hv);
     }
-#endif
+    /* the game's process with Windows' address randomization on for it
+     * (win_aslr.h), followed as a run started again is */
+    static char cmd[4096];
+    size_t n = quote_arg(cmd, 0, sizeof(cmd), D.exe);
+    n = quote_arg(cmd, n, sizeof(cmd), g_go.path);
+    if (g_go.has_extra) {
+        quote_arg(cmd, n, sizeof(cmd), g_go.extra);
+    }
+    PROCESS_INFORMATION pi;
+    if (xb_spawn(D.exe, cmd, NULL, &pi)) {
+        CloseHandle(pi.hThread);
+        g_follow = pi.hProcess;
+    } else {
+        char e[96];
+        snprintf(e, sizeof(e), "The game couldn't start (error %lu)", GetLastError());
+        dash_toast(e);
+#else
+    const char *args[4] = {D.exe, g_go.path, g_go.has_extra ? g_go.extra : NULL, NULL};
     g_child = SDL_CreateProcess(args, false);
     if (!g_child) {
         dash_toast(SDL_GetError());
+#endif
         g_go.back = ui_time();      /* the screen back */
         return;
     }
     /* shown until the game's window takes the screen (no desktop between) */
     g_hide_at = ui_time() + 8.0;
+}
+
+/* The Xbox dashboard (its Xbox Live account pages, Insignia's sign-up) from
+ * the hard disk's C: drive, the tray empty: win_main's "none dash". */
+bool dash_xbox_dashboard_installed(void)
+{
+    const char *hdd = cfg_get(&D.global, "hdd");
+    char p[1400];
+    if (hdd && hdd[0]) {
+        snprintf(p, sizeof(p), "%s/Partition2/xboxdash.xbe", hdd);
+    } else {
+        snprintf(p, sizeof(p), "%shdd/Partition2/xboxdash.xbe", cfg_data_dir());
+    }
+    return SDL_GetPathInfo(p, NULL);
+}
+
+void dash_open_xbox_dashboard(void)
+{
+    if (g_go.on || child_running()) {
+        return;
+    }
+    if (!dash_xbox_dashboard_installed()) {
+        dash_toast(T(S_NO_XBOX_DASH));
+        return;
+    }
+    dash_save_cfg();
+    snprintf(g_go.path, sizeof(g_go.path), "none");
+    g_go.has_extra = true;
+    snprintf(g_go.extra, sizeof(g_go.extra), "dash");
+    snd_play(SND_LAUNCH);
+    g_go.back = 0;
+    if (!cfg_bool(&D.global, "ui.fx", true)) {
+        SDL_Delay(400);
+        go_spawn();
+        return;
+    }
+    g_go.on = true;
+    g_go.t0 = -1;
 }
 
 void launch_game(LibGame *g, const char *extra)
@@ -1132,7 +1217,6 @@ void launch_game(LibGame *g, const char *extra)
 /* A game run again (a state loaded, a restart) is a new process on
  * Windows: the one that ends says its id (exit code, bit 30), and the
  * dashboard follows that one instead of coming back. */
-static HANDLE g_follow;
 
 static bool follow(DWORD code)
 {
@@ -1194,6 +1278,7 @@ static void wait_child(void)
     SDL_SetHint(SDL_HINT_FORCE_RAISEWINDOW, "0");
     cfg_load(&D.global, D.global.path);     /* the game may have changed settings */
     upscale_migrate(&D.global);
+    cfg_shaders_migrate(&D.global);
     cc_sync(&D.global);                     /* ... or its EEPROM (a title's own options) */
     g_auto_off = -1;    /* the scripted commands meanwhile were the game's */
 }
@@ -1305,6 +1390,24 @@ static void draw_card(LibGame *g, float x, float y, float w, float h, bool sel, 
 /* the last card of the grid: the file browser, games added */
 static void draw_add_card(float x, float y, float w, float h, bool sel, float alpha)
 {
+    if (w > h) {
+        /* the icons view's tile, laid out as a game's (draw_tile): the ring
+         * where the icon goes, the words beside it */
+        const UiColor fg = ui_alpha(sel ? UI_GREEN_HI : UI_GREEN, alpha);
+        if (sel) {
+            ui_glow(x + w / 2, y + h / 2, w * 0.7f, ui_alpha(UI_GREEN, 0.3f * alpha));
+        }
+        ui_round(x, y, w, h, 8, ui_alpha(sel ? (UiColor){0x1A, 0x44, 0x0C, 0xFF} : (UiColor){0x0E, 0x26, 0x07, 0xFF},
+                                         alpha));
+        const float is = h - 10, cx = x + 5 + is / 2, cy = y + h / 2, r = is * 0.36f;
+        ui_ring(cx, cy, r, r, 0, 2.5f, fg);
+        ui_rect(cx - r * 0.5f, cy - 2, r, 4, fg);
+        ui_rect(cx - 2, cy - r * 0.5f, 4, r, fg);
+        ui_text_fit(x + is + 14, y + h / 2 - 12, T(S_ADD_GAMES), 19, sel ? UI_FONT_BOLD : UI_FONT_REGULAR,
+                    ui_alpha(sel ? UI_WHITE : UI_GREY, alpha), UI_ALIGN_LEFT, w - is - 22);
+        ui_round_outline(x, y, w, h, 8, sel ? 2.5f : 1, ui_alpha(sel ? UI_GREEN_HI : UI_GREEN_DIM, alpha));
+        return;
+    }
     if (sel) {
         ui_glow(x + w / 2, y + h / 2, w * 1.1f, ui_alpha(UI_GREEN, 0.35f * alpha));
     }
@@ -1359,7 +1462,7 @@ static void draw_tile(LibGame *g, float x, float y, float w, float h, bool sel, 
     char info[120];
     const char *pub = lib_publisher(g);
     if (g->g.year) {
-        snprintf(info, sizeof(info), "%s%s%d", pub, *pub ? " · " : "", g->g.year);
+        snprintf(info, sizeof(info), "%s%s%d", pub, *pub ? " Ã‚Â· " : "", g->g.year);
     } else {
         snprintf(info, sizeof(info), "%s", pub);
     }
@@ -1377,6 +1480,9 @@ static void open_game(LibGame *g)
     game_cfg_path(g, p, sizeof(p));
     cfg_load(&D.game, p);
     upscale_migrate(&D.game);
+    if (cfg_shaders_migrate(&D.game)) {
+        cfg_save(&D.game);
+    }
     D.sel[SCR_GAME] = 0;
     dash_push(SCR_GAME);
 }
@@ -1963,7 +2069,8 @@ int dash_run(SDL_Window *win, const char *exe)
     char p[1200];
     snprintf(p, sizeof(p), "%sxbased.ini", cfg_data_dir());
     cfg_load(&D.global, p);
-    if (upscale_migrate(&D.global)) {
+    const bool up = upscale_migrate(&D.global), sh = cfg_shaders_migrate(&D.global);
+    if (up || sh) {
         cfg_save(&D.global);
     }
     if (cfg_get(&D.global, "uncap")) {
@@ -1982,7 +2089,11 @@ int dash_run(SDL_Window *win, const char *exe)
     if (!ui_init(win, fonts)) {
         return 1;
     }
-    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "0");
+    /* the gamepads drive the dashboard with its window behind another (no
+     * clicking it first after a game, a launcher or the desktop took the
+     * focus); while a game runs their events are only drained (the loop
+     * below), the game's process reads them */
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     snd_init();
     const char **fv;
     int fn;
@@ -2308,7 +2419,8 @@ int dash_ingame(SDL_Window *win, const char *key, const char *title, const char 
     char p[1200];
     snprintf(p, sizeof(p), "%sxbased.ini", cfg_data_dir());
     cfg_load(&D.global, p);
-    if (upscale_migrate(&D.global)) {
+    const bool up = upscale_migrate(&D.global), sh = cfg_shaders_migrate(&D.global);
+    if (up || sh) {
         cfg_save(&D.global);
     }
     i18n_set(cfg_get(&D.global, "ui.lang"));
@@ -2320,6 +2432,9 @@ int dash_ingame(SDL_Window *win, const char *key, const char *title, const char 
     game_cfg_path(&game, p, sizeof(p));
     cfg_load(&D.game, p);
     upscale_migrate(&D.game);
+    if (cfg_shaders_migrate(&D.game)) {
+        cfg_save(&D.game);
+    }
     D.stack[0] = SCR_INGAME;
     D.sel[SCR_INGAME] = 0;  /* on Resume each time, as a console's: no Quit by habit */
     g_auto_off = -1;

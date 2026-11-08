@@ -36,6 +36,41 @@ const HleFmtInfo *hle_fmt_info(uint32_t code)
     return NULL;
 }
 
+uint32_t hle_tex_sign_xor(uint32_t xfmt, unsigned signs, unsigned *eff)
+{
+    /* each channel's byte (A, R, G, B), -1 none; the bytes as in memory */
+    int byte[4];
+    switch (xfmt) {
+    case 0x06: case 0x07: case 0x12: case 0x1E:     /* A8R8G8B8, X8R8G8B8: B G R A */
+        byte[0] = 3; byte[1] = 2; byte[2] = 1; byte[3] = 0; break;
+    case 0x3A: case 0x3F:                           /* A8B8G8R8: R G B A */
+        byte[0] = 3; byte[1] = 0; byte[2] = 1; byte[3] = 2; break;
+    case 0x3B: case 0x40:                           /* B8G8R8A8: A R G B */
+        byte[0] = 0; byte[1] = 1; byte[2] = 2; byte[3] = 3; break;
+    case 0x3C: case 0x41:                           /* R8G8B8A8: A B G R */
+        byte[0] = 0; byte[1] = 3; byte[2] = 2; byte[3] = 1; break;
+    case 0x28: case 0x17:                           /* G8B8 (V8U8): B G, R reads B, A G */
+        byte[0] = 1; byte[1] = 0; byte[2] = 1; byte[3] = 0; break;
+    default:
+        *eff = 0;
+        return 0;
+    }
+    uint32_t x = 0;
+    for (unsigned c = 0; c < 4; c++) {
+        if ((signs >> c) & 1) {
+            x |= 0x80u << (8 * byte[c]);
+        }
+    }
+    unsigned e = 0;                     /* a byte shared by two channels: both */
+    for (unsigned c = 0; c < 4; c++) {
+        if ((x >> (8 * byte[c])) & 0x80) {
+            e |= 1u << c;
+        }
+    }
+    *eff = e;
+    return x;
+}
+
 static int log2_exact(uint32_t v)
 {
     if (!v || (v & (v - 1))) {

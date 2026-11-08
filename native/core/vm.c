@@ -46,6 +46,8 @@ static void guest_protect(NcVm *vm, uint32_t va, size_t len, int prot)
 #endif
 }
 
+const char *nc_vm_why;
+
 bool nc_vm_init(NcVm *vm, uint32_t ram_size)
 {
     memset(vm, 0, sizeof(*vm));

@@ -92,6 +92,18 @@ typedef struct HlePshKey {
     uint8_t sblend;                     /* the NV2A's signed blend equations (ff.h
                                            HleFfPsKey.sblend) */
 } HlePshKey;
+/* HlePshKey.dot_map's bits 16-31 (PSDotMapping has 12): per stage, 4 bits each
+ * (stage 0 lowest), the channels its texture holds as signed bytes,
+ * SET_TEXTURE_FILTER 31:28 (bit 0 A, 1 R, 2 G, 3 B). There, a key without any
+ * is the same bytes as before, and recorded pipelines stay valid. */
+#define HLE_PSH_TSIGN(k) ((k)->dot_map >> 16)
+/* bits 12-15: a signed stage (bit 12 + stage) whose texture is magnified
+ * point-sampled: its four texels are not blended (psh.c samps) */
+#define HLE_PSH_TPOINT(k) (((k)->dot_map >> 12) & 15)
+/* HlePshKey.input_tex bits 0-3 (PSInputTexture uses 16, 20-21): a signed
+ * stage (bit = stage) whose texture was defined with its signed bytes
+ * flipped (hle_tex_sign_xor): read centred on 0x80, filtered as signed. */
+#define HLE_PSH_TFLIP(k) ((k)->input_tex & 15)
 #define HLE_PSH_RECT 0x10u              /* HlePshKey.vol: a linear texture kept to its size */
 #define HLE_PSH_RECT4 0x20u             /* HlePshKey.vol: each stage's in pc.scr (programs) */
 

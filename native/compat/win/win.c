@@ -179,6 +179,34 @@ ssize_t nc_pwrite(int fd, const void *buf, size_t n, int64_t off)
     return (ssize_t)put;
 }
 
+/* A file's size set, grown or cut, with SetEndOfFile: mingw's ftruncate grows
+ * a file by writing its zeros (half a second for 512 MiB on an SSD, seconds
+ * on a USB hard disk: Forza Motorsport sizes its cache files before filling
+ * them, and the console stood still up to 23 s at a time). NTFS gives the
+ * grown part back as zeros all the same. The file pointer stays where it was. */
+int nc_ftruncate(int fd, int64_t len)
+{
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE || len < 0) {
+        errno = h == INVALID_HANDLE_VALUE ? EBADF : EINVAL;
+        return -1;
+    }
+    LARGE_INTEGER zero = {0}, cur, to;
+    to.QuadPart = len;
+    if (!SetFilePointerEx(h, zero, &cur, FILE_CURRENT)) {
+        errno = EIO;
+        return -1;
+    }
+    const bool ok = SetFilePointerEx(h, to, NULL, FILE_BEGIN) && SetEndOfFile(h);
+    const DWORD err = ok ? 0 : GetLastError();
+    SetFilePointerEx(h, cur, NULL, FILE_BEGIN);
+    if (!ok) {
+        errno = err == ERROR_DISK_FULL ? ENOSPC : EIO;
+        return -1;
+    }
+    return 0;
+}
+
 int statvfs(const char *path, struct statvfs *buf)
 {
     ULARGE_INTEGER avail, total, free_;

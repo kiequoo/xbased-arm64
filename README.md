@@ -56,8 +56,8 @@ No BIOS, MCPX ROM or hard-disk image is needed.
 
 | Platform | File | |
 |---|---|---|
-| **Windows** 10/11 (x64) | `xbased-1.0.55-windows-x64.zip` | Unzip anywhere and run `xbased.exe`. Portable: everything stays in its folder. |
-| **Linux** (x86-64) | `xbased-1.0.55-x86_64.AppImage` | `chmod +x` it and run. Ubuntu 22.04 or newer, or any distribution of the same age. |
+| **Windows** 10/11 (x64) | `xbased-1.0.75-windows-x64.zip` | Unzip anywhere and run `xbased.exe`. Portable: everything stays in its folder. |
+| **Linux** (x86-64) | `xbased-1.0.75-x86_64.AppImage` | `chmod +x` it and run. Ubuntu 22.04 or newer, or any distribution of the same age. |
 
 Get them from **[Releases](https://github.com/crazyriddler/xbased/releases/latest)**.
 
@@ -100,7 +100,7 @@ xbased doesn't include any copyrighted Xbox software.
 - **A page per game**: play, load a state, settings, patches, controls; rename
   it, pick your own cover image, hide it, or make a **desktop shortcut** that
   starts it straight away (handy for Steam and other front ends).
-- **Disc images**: ISO, XISO and **CHD** (`chdman createdvd`).
+- **Disc images**: ISO, XISO and **CHD** (`chdman createdvd` or `createcd`).
 - **Memory manager**: your games' saves with their icons; export, import and
   delete.
 - **Import from xemu**: xemu's saves copied in and re-signed so games accept

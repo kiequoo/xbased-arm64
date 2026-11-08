@@ -94,7 +94,7 @@ static void cover_path(const XdGame *g, char *out, size_t n)
  * 0), its name ("" for the disc's), then 1 if a favorite and when it was
  * last played (a time_t; both left out by older versions) */
 typedef struct {
-    char key[24];
+    char key[40];
     bool hidden, fav;
     char name[128];
     int64_t played;
@@ -148,6 +148,8 @@ static void custom_load(void)
     fclose(f);
 }
 
+static Custom *custom_of(const char *key, bool want);
+
 /* L.mu held */
 static void custom_save(void)
 {
@@ -163,7 +165,14 @@ static void custom_save(void)
     }
     for (int i = 0; i < g_ncustom; i++) {
         const Custom *c = &g_custom[i];
-        if (c->hidden || c->name[0] || c->fav || c->played) {
+        char base[40];
+        snprintf(base, sizeof(base), "%s", c->key);
+        char *hash = strchr(base, '#');
+        if (hash) {
+            *hash = 0;
+        }
+        /* a game's own line kept while an id line it overrides is there */
+        if (c->hidden || c->name[0] || c->fav || c->played || (hash && custom_of(base, false))) {
             fprintf(f, "%s\t%d\t%s\t%d\t%lld\n", c->key, c->hidden ? 1 : 0, c->name, c->fav ? 1 : 0,
                     (long long)c->played);
         }
@@ -195,10 +204,52 @@ static Custom *custom_of(const char *key, bool want)
     return c;
 }
 
+/* The disc's own name (a rename aside) */
+static const char *cert_title(const LibGame *g)
+{
+    return g->orig[0] ? g->orig : g->g.title;
+}
+
+/* The user's key for g: its title id and version, and its disc's name
+ * hashed. Prototypes, homebrew and modded discs often share a title id and
+ * version with another game (He-Man with an Aliens vs Predator homebrew):
+ * keyed by the id alone, hiding one hid both. An older custom.txt's line
+ * (the id and version alone) still applies to a game with none of its own,
+ * and is where a new line starts from. */
+static void user_key(const LibGame *g, char *out, size_t n)
+{
+    uint32_t h = 2166136261u;
+    for (const unsigned char *t = (const unsigned char *)cert_title(g); *t; t++) {
+        h = (h ^ (uint32_t)SDL_tolower(*t)) * 16777619u;
+    }
+    snprintf(out, n, "%s#%08x", g->g.key, h);
+}
+
+/* L.mu held: the user's for g (made if want, from the id's own line) */
+static Custom *custom_get(const LibGame *g, bool want)
+{
+    char k[40];
+    user_key(g, k, sizeof(k));
+    Custom *c = custom_of(k, false);
+    if (c || !want) {
+        return c ? c : custom_of(g->g.key, false);
+    }
+    const Custom *old = custom_of(g->g.key, false);
+    Custom from = old ? *old : (Custom){0};
+    c = custom_of(k, true);
+    if (c) {
+        c->hidden = from.hidden;
+        c->fav = from.fav;
+        c->played = from.played;
+        snprintf(c->name, sizeof(c->name), "%s", from.name);
+    }
+    return c;
+}
+
 /* L.mu held: a game as the user left it */
 static void custom_apply(LibGame *g)
 {
-    const Custom *c = custom_of(g->g.key, false);
+    const Custom *c = custom_get(g, false);
     g->hidden = c && c->hidden;
     g->fav = c && c->fav;
     g->played = c ? c->played : 0;
@@ -303,7 +354,8 @@ static void dedupe(LibGame *g)
     LibGame *best = NULL;
     for (int i = 0; i < L.n; i++) {
         LibGame *e = L.games[i];
-        if (e->g.title_id == g->g.title_id && e->g.version == g->g.version && e->g.regions == g->g.regions) {
+        if (e->g.title_id == g->g.title_id && e->g.version == g->g.version && e->g.regions == g->g.regions &&
+            !SDL_strcasecmp(cert_title(e), cert_title(g))) {
             e->dup = true;
             if (!e->gone && (!best || better(e, best))) {
                 best = e;
@@ -327,6 +379,10 @@ static int cmp_key(const void *a, const void *b)
     if (x->g.regions != y->g.regions) {
         return x->g.regions < y->g.regions ? -1 : 1;
     }
+    const int t = SDL_strcasecmp(cert_title(x), cert_title(y));
+    if (t) {
+        return t;
+    }
     if (x->gone != y->gone) {
         return x->gone ? 1 : -1;
     }
@@ -344,7 +400,8 @@ static void dedupe_all(void)
     qsort(v, L.n, sizeof(*v), cmp_key);
     for (int i = 0; i < L.n; i++) {
         const bool first = !i || v[i]->g.title_id != v[i - 1]->g.title_id || v[i]->g.version != v[i - 1]->g.version ||
-                           v[i]->g.regions != v[i - 1]->g.regions;
+                           v[i]->g.regions != v[i - 1]->g.regions ||
+                           SDL_strcasecmp(cert_title(v[i]), cert_title(v[i - 1]));
         v[i]->dup = v[i]->g.title_id && (!first || v[i]->gone);
     }
     free(v);
@@ -835,13 +892,13 @@ UiTex *lib_cover(LibGame *g)
 /* the same game as g (its key), not merely two discs that couldn't be read */
 static bool same_game(const LibGame *e, const LibGame *g)
 {
-    return g->g.title_id && !strcmp(e->g.key, g->g.key);
+    return g->g.title_id && !strcmp(e->g.key, g->g.key) && !SDL_strcasecmp(cert_title(e), cert_title(g));
 }
 
 void lib_set_name(LibGame *g, const char *name)
 {
     SDL_LockMutex(L.mu);
-    Custom *c = custom_of(g->g.key, true);
+    Custom *c = custom_get(g, true);
     if (c) {
         snprintf(c->name, sizeof(c->name), "%s", name ? name : "");
         for (int i = 0; i < L.n; i++) {
@@ -868,7 +925,7 @@ void lib_set_name(LibGame *g, const char *name)
 void lib_set_hidden(LibGame *g, bool hidden)
 {
     SDL_LockMutex(L.mu);
-    Custom *c = custom_of(g->g.key, true);
+    Custom *c = custom_get(g, true);
     if (c) {
         c->hidden = hidden;
         for (int i = 0; i < L.n; i++) {
@@ -885,7 +942,7 @@ void lib_set_hidden(LibGame *g, bool hidden)
  * of the game (its other copies) */
 static void custom_sync(const LibGame *g)
 {
-    const Custom *c = custom_of(g->g.key, false);
+    const Custom *c = custom_get(g, false);
     for (int i = 0; i < L.n; i++) {
         LibGame *e = L.games[i];
         if (e == g || same_game(e, g)) {
@@ -898,7 +955,7 @@ static void custom_sync(const LibGame *g)
 void lib_set_favorite(LibGame *g, bool fav)
 {
     SDL_LockMutex(L.mu);
-    Custom *c = custom_of(g->g.key, true);
+    Custom *c = custom_get(g, true);
     if (c) {
         c->fav = fav;
         custom_save();
@@ -910,7 +967,7 @@ void lib_set_favorite(LibGame *g, bool fav)
 void lib_set_played(LibGame *g)
 {
     SDL_LockMutex(L.mu);
-    Custom *c = custom_of(g->g.key, true);
+    Custom *c = custom_get(g, true);
     if (c) {
         c->played = (int64_t)time(NULL);
         custom_save();

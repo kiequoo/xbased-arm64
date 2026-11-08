@@ -208,6 +208,12 @@ int hle_vk_memtype(uint32_t bits, VkMemoryPropertyFlags want,
     return -1;
 }
 
+/* What the player is told when no GPU takes Vulkan: the games ran with
+ * sound and a black screen, nothing said (a GPU without a Vulkan driver) */
+static const char k_no_vulkan[] =
+    "No graphics card with a Vulkan driver was found, so the game can't be shown. xbased needs "
+    "Vulkan 1.1 or newer: update your graphics driver from your GPU maker's site.";
+
 int hle_vk_init(void)
 {
     HleVk *v = &g_hvk;
@@ -271,6 +277,7 @@ int hle_vk_init(void)
     };
     if (vkCreateInstance(&ici, NULL, &v->inst) != VK_SUCCESS) {
         hle_log("hakuX-hle-back", "vk: vkCreateInstance failed");
+        snprintf(g_hle_unavailable, sizeof(g_hle_unavailable), "%s", k_no_vulkan);
         return -1;
     }
     volkLoadInstanceOnly(v->inst);
@@ -281,6 +288,7 @@ int hle_vk_init(void)
     vkEnumeratePhysicalDevices(v->inst, &n, NULL);
     if (!n) {
         hle_log("hakuX-hle-back", "vk: no physical device");
+        snprintf(g_hle_unavailable, sizeof(g_hle_unavailable), "%s", k_no_vulkan);
         return -1;
     }
     {

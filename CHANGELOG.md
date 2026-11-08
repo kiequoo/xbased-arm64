@@ -1,5 +1,222 @@
 # xbased changelog
 
+## 1.0.75 (2026-11)
+
+### Changes
+- The shader caches are cleared the first time a new version starts, so
+  each update builds its shaders again and none kept from an older version
+  is used.
+
+## 1.0.74 (2026-11)
+
+### Changes
+- The asynchronous shaders setting is gone: shaders are always built when
+  they are first drawn. Built in the background, the draws waiting for them
+  were skipped, which showed as flickering or broken graphics, and it didn't
+  stutter less.
+
+## 1.0.73 (2026-11)
+
+### Changes
+- Asynchronous shaders and building cached shaders before the game are now
+  off by default, and an earlier setting of either is reset once. Timed
+  in-game with the shader cache cleared (Fable, Burnout 3, Vice City, Prince
+  of Persia: The Two Thrones), building shaders when they are first drawn
+  stuttered no more than building them in the background, while
+  asynchronous shaders skipped the draws that were waiting for theirs, which
+  shows as flickering or missing graphics. Turning asynchronous shaders back
+  on shows a warning about that.
+
+## 1.0.72 (2026-11)
+
+### Fixes
+- Water and other bump-mapped effects (Fable's pond, Burnout 3's lake and
+  many more) are drawn as on the console. Textures whose channels the game
+  marks as signed are now read and filtered as signed values, and the bump
+  matrix is taken in the order the GPU uses. Before, the water showed a
+  streaked or grainy pattern.
+
+## 1.0.71 (2026-11)
+
+### Fixes
+- GTA Vice City in 480p widescreen (NTSC consoles, 720 x 480) with Trails
+  on drew its night sky as a solid colour, white or yellow, and smeared the
+  picture. The trails pass now draws over the frame itself.
+
+## 1.0.70 (2026-11)
+
+### Fixes
+- A PC whose graphics card has no Vulkan driver (or one too old) ran every
+  game with its sound over a black screen, the reason only in the log. It's
+  said at once now, in a message that tells what to update.
+
+## 1.0.69 (2026-11)
+
+### Fixes
+- Games that share a title ID and version with another one (prototypes,
+  homebrew, modded discs: He-Man with an Aliens vs Predator homebrew) were
+  one game to the library: hiding one hid both, and only one of them was
+  listed. Two discs are the same game now only if their names match too;
+  each one is hidden, renamed or made a favorite on its own. What was set
+  before still applies until it's changed.
+
+## 1.0.68 (2026-11)
+
+### Fixes
+- Star Wars: Republic Commando took minutes to reach its title screen and
+  played its LucasArts logo at about 5 fps: while it loads it shows empty
+  frames as fast as it can, thousands a second, and xbased sent every one
+  of them to the screen on its own, far behind the game. Frames that come
+  faster than any monitor can show, with a newer one already waiting, are
+  now left out (the game still draws them all), and the title screen is up
+  in about 20 seconds with the movies at their normal speed. Games at a
+  normal frame rate keep every frame as before.
+
+## 1.0.67 (2026-11)
+
+### Fixes
+- Chase: Hollywood Stunt Driver froze on the last frame of its intro: as
+  its menu comes up it resets the processor's time stamp counter (WRMSR),
+  an instruction xbased didn't take, and the emulation stopped there. The
+  model-specific registers are written and read now, the time stamp
+  counter counting from 0 again when zeroed as on the console. The game
+  reaches its menu and plays.
+
+## 1.0.66 (2026-11)
+
+### Fixes
+- Linux: crackling sound, with the emulator never short of it. xbased asked
+  the sound server (PulseAudio, or PipeWire's) for a 512-sample buffer, and
+  it ran the stream every 128 samples (2.7 ms): the audio thread a little
+  late and the server ran dry for a moment. The buffer is 2048 samples on
+  Linux now, which took Forza Motorsport's crackles away on the machine
+  that had them. Still crackling: NC_APU_SAMPLES=4096 (more delay).
+
+## 1.0.65 (2026-11)
+
+### Fixes
+- A disc for North America and Japan both (a World release) always played
+  as on a North American console, whatever the language: Capcom Fighting
+  Evolution's World disc stayed Capcom Fighting Evolution in Japanese,
+  where a Japanese console has it Capcom Fighting Jam (the game reads the
+  console's region, not its language). With the language set to Japanese,
+  Korean or Chinese, such a disc now plays as on a Japanese console.
+
+## 1.0.64 (2026-11)
+
+### Fixes
+- CHD images made with `chdman createcd` (what most guides use, even for
+  DVD games) said the game's file wasn't an Xbox disc image: only
+  `createdvd`'s were read, and a CD's CHD keeps each 2048-byte sector in a
+  bigger CD frame. Both are read now, from an ISO or a raw .cue/.bin, the
+  same bytes as the image they were made from.
+
+## 1.0.63 (2026-11)
+
+### Fixes
+- Forza Motorsport stalled while loading from a slow drive (a USB hard
+  disk): it sets the size of each of its cache files before filling them,
+  and on Windows that wrote every one of the new bytes as zeros, the whole
+  console waiting meanwhile (up to 23 seconds at a time, 70 in all). A
+  file now takes its new size at once on any drive, its new part reading
+  back as zeros as before.
+
+### Other
+- The log says which audio driver plays the sound and the period the
+  device really runs at (PipeWire can run every app at a shorter period
+  than xbased asks for).
+
+## 1.0.62 (2026-11)
+
+### Fixes
+- Dave Mirra Freestyle BMX 2 crashed right after its intro, as its title
+  screen came up. It reads a little past the top of its stack there (an
+  index it never set), which on the Xbox lands in memory the console's
+  kernel keeps over every thread's stack. Every thread's stack now has
+  that memory over it too: the game reaches its menus and plays.
+- The widescreen database's longer patches were cut at 96 bytes, written
+  only halfway: Phantom Dust's 16:9 patch left a function half moved and
+  the game closed as it started. Patterns of any length the database has
+  (up to 337 bytes, 15 games' patches) are written whole now.
+
+## 1.0.61 (2026-11)
+
+### Fixes
+- Insignia never got past the first connection on Windows: as soon as a
+  game or the Setup Assistant opened a connection to the Internet, the
+  network stopped (Windows refused a kind of request the network asked
+  for). Insignia's Setup Assistant now registers the console, and the
+  Xbox dashboard signs in to Xbox Live through Insignia.
+- The gamepad works with xbased's window in the background: the menu (and
+  games) take it with another window in front, with no click on xbased
+  first.
+
+### New
+- Settings › Online › Open the Xbox dashboard (with Insignia chosen): the
+  Xbox's own dashboard, for creating or recovering an Xbox Live account on
+  Insignia. Its files (xboxdash.xbe and its folders, from your own Xbox)
+  go in hdd/Partition2, the hard disk's C: drive. It starts with the tray
+  empty.
+
+## 1.0.60 (2026-11)
+
+### Fixes
+- Conflict: Desert Storm and Conflict: Desert Storm II crashed before
+  showing anything. Both ask for a block of memory before the graphics
+  start and write a marker just past its end. xbased handed out the very
+  last bytes of the console's memory for it, so that marker landed
+  outside it. The Xbox keeps the top 84 KiB of its memory for the
+  graphics chip from the moment it boots, and now xbased does too: both
+  games boot, reach their menus and play.
+
+## 1.0.59 (2026-11)
+
+### Fixes
+- AMD FSR 1 filled the picture with noise and a diagonal seam on AMD
+  graphics cards at 1x and 2x internal resolution (the sizes FSR scales
+  up from), with FXAA on. Two of the passes that draw the picture into
+  the window shared one set of inputs, and AMD's driver read the later
+  one for both, so FXAA sampled the image it was drawing into. Each pass
+  has its own now (the Vulkan validation layer reported the old way as an
+  error, and reports nothing now).
+
+## 1.0.58 (2026-11)
+
+### Fixes
+- Games never saw the component (HDTV) cable xbased reports: the value
+  Xbox games read for the cable plugged in at boot was left empty, which
+  means SCART. So the 480p, 720p and 1080i settings were dropped before
+  games saw them, and a game that only goes widescreen in those modes
+  stayed 4:3 and got stretched. X-Men Legends now runs at 720p in
+  widescreen (or 720x480 widescreen with only 480p on), as on an Xbox,
+  and other games now use the HD modes turned on in Settings.
+
+## 1.0.57 (2026-11)
+
+### Fixes
+- Star Wars: KotOR II stayed on a black screen at the T3-M4 scene on
+  Peragus, after T3's part in the fuel depot. The game needs its disc read
+  at the speed of the Xbox's DVD drive there (players hit the same black
+  screen on the Xbox when they played it from the hard disk). Every
+  edition of KotOR II now reads its disc at the drive's speed by default.
+
+### New
+- Disc speed in a game's settings: Fast (as fast as the PC reads, the
+  default), Close to the console's, or Like the console, for games that
+  break when their loads finish too soon.
+
+## 1.0.56 (2026-11)
+
+### Fixes
+- No game booted on a Windows with "Randomize memory allocations
+  (Bottom-up ASLR)" turned off in Exploit protection: Windows put its own
+  memory where the game's program has to go, and every game said its
+  default.xbe couldn't be loaded. xbased now runs its games with that
+  protection on for their own process, without changing any setting,
+  and if the memory is still taken the message says what to turn on.
+- The "Add games" card in the icons view was drawn at the size of a
+  cover's, spilling out of its tile. It's laid out like a game's tile now.
+
 ## 1.0.55 (2026-11)
 
 ### Fixes

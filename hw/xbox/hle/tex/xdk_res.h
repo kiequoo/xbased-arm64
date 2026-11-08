@@ -22,6 +22,14 @@ typedef struct HleFmtInfo {
 
 const HleFmtInfo *hle_fmt_info(uint32_t code);
 
+/* A texture whose channels the texture unit gives signed (SET_TEXTURE_FILTER
+ * 31:28, signs: bit 0 A, 1 R, 2 G, 3 B), in a format of 8-bit channels: the
+ * texel's bytes to flip (XOR, 0x80 in each such byte), so a sampler filters
+ * and mipmaps them as the signed bytes they are (centred on 0x80). *eff: the
+ * channels a read of it then gives centred on 0x80 (same bits). 0, *eff 0:
+ * another format, kept as it is. */
+uint32_t hle_tex_sign_xor(uint32_t xfmt, unsigned signs, unsigned *eff);
+
 enum HleResKind {
     HLE_RK_VB = 1, HLE_RK_IB, HLE_RK_PUSHBUF, HLE_RK_FIXUP, HLE_RK_PALETTE,
     HLE_RK_TEXTURE, HLE_RK_CUBE, HLE_RK_VOLUME, HLE_RK_SURFACE,
