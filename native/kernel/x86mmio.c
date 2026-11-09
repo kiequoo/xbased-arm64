@@ -53,6 +53,9 @@ static void site_log(const char *what, uint32_t eip)
 
 int nc_x86mmio_site_state(uint32_t eip)
 {
+    if (!eip) {
+        return 0;   /* the empty slot's marker (nc_x86mmio_is_site) */
+    }
     const unsigned s = slot_of(eip);
     if (s < SITES && g_site[s] == eip) {
         return 1;
@@ -66,6 +69,13 @@ int nc_x86mmio_site_state(uint32_t eip)
 
 bool nc_x86mmio_is_site(uint32_t eip)
 {
+    /* 0 marks an empty slot: a title that jumps to 0 (a null function
+     * pointer) found one and was hooked, and the hook read its instruction
+     * from host address 0 (the whole emulator closed instead of the title's
+     * fault) */
+    if (!eip) {
+        return false;
+    }
     const unsigned s = slot_of(eip);
     return s < SITES && g_site[s] == eip;
 }

@@ -56,8 +56,8 @@ No BIOS, MCPX ROM or hard-disk image is needed.
 
 | Platform | File | |
 |---|---|---|
-| **Windows** 10/11 (x64) | `xbased-1.0.75-windows-x64.zip` | Unzip anywhere and run `xbased.exe`. Portable: everything stays in its folder. |
-| **Linux** (x86-64) | `xbased-1.0.75-x86_64.AppImage` | `chmod +x` it and run. Ubuntu 22.04 or newer, or any distribution of the same age. |
+| **Windows** 10/11 (x64) | `xbased-1.0.89-windows-x64.zip` | Unzip anywhere and run `xbased.exe`. Portable: everything stays in its folder. |
+| **Linux** (x86-64) | `xbased-1.0.89-x86_64.AppImage` | `chmod +x` it and run. Ubuntu 22.04 or newer, or any distribution of the same age. |
 
 Get them from **[Releases](https://github.com/crazyriddler/xbased/releases/latest)**.
 
@@ -77,7 +77,13 @@ xbased doesn't include any copyrighted Xbox software.
 - **Gamepad, keyboard or mouse** everywhere; button prompts follow the device
   you're using.
 - **Borderless full screen by default**, any resolution, ultrawide or portrait,
-  any DPI.
+  any DPI. On a 144 or 165 Hz monitor without G-Sync or FreeSync, full screen
+  can switch to the monitor's highest mode that's a multiple of 60 Hz
+  (Settings › Video › Full screen refresh), so every frame shows for the same
+  time.
+- **Overscan and crop**: hide a game's borders all round, or its sides and its
+  top and bottom apart, globally or per game; what's cut stays cut, also
+  beside a 4:3 picture.
 - **Exit from the gamepad**, with a confirmation.
 - **Automatic updates**: a new release is offered as xbased starts and
   installs itself (Settings › Interface turns the check off and on).
@@ -131,7 +137,10 @@ xbased doesn't include any copyrighted Xbox software.
   come with xbased and their options show up in each game's Mods & patches.
   Add your own to `cheats/<TITLE ID>/`.
 - **Frame rate per game**: Original, up to 60, up to 120 or unlocked, where
-  the game allows it (anything but Original can break a game).
+  the game allows it (anything but Original can break a game). An unlocked
+  game is held to your monitor's refresh rate by default, never under 60
+  (Settings › Video › Uncapped games' limit), as some games have no frame
+  cap of their own.
 - **Downloaded content and title updates** copied into
   `hdd/Partition1/TDATA/<title id>/` are signed for xbased as the game starts.
 - **Add your own**: drop the IPS patches shared online into
@@ -148,7 +157,8 @@ xbased doesn't include any copyrighted Xbox software.
 - **In-game menu** with F1, or **Back + Start** / the **Guide** button on a
   gamepad: states, settings, controls, restart, back to the dashboard.
 - **Shortcuts**: F5 quick save, F8 quick load, Tab fast forward, F2 pause,
-  F12 screenshot, F11 full screen; all configurable.
+  F12 screenshot, F11 full screen; all configurable, with Ctrl, Alt or Shift
+  too, and on the controller as Guide plus a button, the touchpad or Share.
 
 </td>
 <td valign="top">
@@ -234,7 +244,32 @@ Windows, in `~/.local/share/xbased/` on Linux.
 
 **Shortcuts:** F1 menu, F5 quick save, F8 quick load (Shift: slot 2), Tab fast
 forward (hold), F2 pause, F12 screenshot, F11 full screen. On a gamepad,
-Back + Start or the Guide button opens the menu.
+Back + Start or a tap of the Guide button opens the menu and Share takes a
+screenshot. In Settings › Shortcuts any of them can be a key with Ctrl, Alt
+or Shift, and on the controller Guide plus a button (held: the game doesn't
+see that button), the touchpad or Share. Those are buttons the Xbox
+controller doesn't have, so no game uses them.
+
+### Playing on Insignia
+
+[Insignia](https://insignia.live) is the community's free Xbox Live
+replacement. To play on it:
+
+1. In **Online**, set **Network** to **Insignia** (its DNS is filled in).
+2. Get Insignia's Setup Assistant disc image from
+   [insignia.live](https://insignia.live/guide/connect), add it to your games
+   like any other image and start it. It registers this console: follow its
+   steps and enter the code it shows on the website.
+3. For your Xbox Live account you need the Xbox dashboard (version 5960):
+   put its files (`xboxdash.xbe` and its folders) in `hdd/Partition2`, the
+   hard disk's C: drive, beside the executable. Then open it from **Online**
+   with **Xbox dashboard**, and in Xbox Live create a new account or recover
+   the one you have.
+4. Start a game that supports Xbox Live and sign in from its own Xbox Live
+   menu.
+
+The Insignia disc image doesn't go in `hdd/Partition2`: it's started as a
+game. Only the Xbox dashboard's files go there.
 
 ## Building from source
 
@@ -351,6 +386,8 @@ it's here thanks to them:
   [#3105](https://github.com/xemu-project/xemu/pull/3105)) the sound
   emulation follows: the HRTF taps and routing, the filters, the resampler,
   the volume curve, envelopes, LFOs and ramps.
+- **[P1Login](https://github.com/P1Login)**, for testing on AMD hardware,
+  logs, workarounds for other users and the help across many issues.
 - Everyone who reports issues, tests games and shares saves and logs: that's
   how the games on the list got fixed.
 

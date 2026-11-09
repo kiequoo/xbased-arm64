@@ -12,7 +12,7 @@ struct ANativeWindow;
 
 /* A frame smaller than its place in the window: scaled up bilinearly, or by
  * AMD FidelityFX Super Resolution 1 (a larger one is always averaged down). */
-enum { HLE_UPSCALE_BILINEAR, HLE_UPSCALE_FSR };
+enum { HLE_UPSCALE_BILINEAR, HLE_UPSCALE_FSR, HLE_UPSCALE_NEAREST };
 
 /* This refresh would put up what win already shows (the same front frame,
  * gamma ramp, window and swapchain, and key: the caller's placement and
@@ -43,8 +43,27 @@ void hle_present_shot(const char *path);
 /* The CRT filter on the window's picture: 0 none, 1 soft scanlines, 2 a
  * TV, 3 an arcade monitor (any thread; the next refresh). */
 void hle_present_set_crt(int kind);
+/* V-Sync on (the default) or off (tearing): applied at the next frame */
+void hle_present_set_vsync(bool on);
 /* The frame rate shown in the window's corner, 0 none (any thread). */
 void hle_present_set_osd(float fps);
+/* Windows: the pictures drawn for the game's frame (vk/share.h, token: its
+ * block's) instead of the window's own swapchain, from the next refresh;
+ * hle_present_remote, once they are. */
+void hle_present_set_remote(const char *token);
+bool hle_present_remote(void);
+/* 1 drawing for the frame, -1 it can't (the window's own swapchain), 0 not known yet */
+int hle_present_remote_state(void);
+/* the frame's word on why it can't present (empty: none) */
+const char *hle_present_remote_why(void);
+/* the frame's client area (pixels), its pointer shown or not, its mouse's
+ * events since *at (HleShareMouse each, n at most) */
+void hle_present_remote_size(uint32_t *w, uint32_t *h);
+void hle_present_remote_cursor(bool shown);
+uint32_t hle_present_remote_mouse(void *out, uint32_t n, int64_t *at);
+/* The picture's pass cut to its middle cx by cy (clip space half sizes, 1:
+ * the whole window): the frame grown past its place shows no more of it. */
+void hle_present_set_clip(float cx, float cy);
 
 /* The overlay: the front end's interface composited over the picture by the
  * presenter itself (the in-game menu, the transitions, notices), so the

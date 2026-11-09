@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "native/app/desk.h"
+#include <SDL3/SDL.h>
 
 #define AUTO_MAX 256
 
@@ -90,6 +91,37 @@ static void act(const char *a, const char *label)
     }
     if (!_stricmp(a, "menu")) {
         g_auto.menu = true;
+        return;
+    }
+    if (!_strnicmp(a, "vpad ", 5)) {
+        /* "VPAD <button> <1|0>": a virtual gamepad, plugged in the first time,
+         * its button pressed or let go; a gamepad as SDL gives the app one
+         * (its controls mapping and all), not the scripted inputs' path */
+        static SDL_Joystick *vj;
+        static const struct { const char *n; SDL_GamepadButton b; } k_b[] = {
+            {"A", SDL_GAMEPAD_BUTTON_SOUTH}, {"B", SDL_GAMEPAD_BUTTON_EAST}, {"X", SDL_GAMEPAD_BUTTON_WEST},
+            {"Y", SDL_GAMEPAD_BUTTON_NORTH}, {"START", SDL_GAMEPAD_BUTTON_START}, {"BACK", SDL_GAMEPAD_BUTTON_BACK},
+            {"UP", SDL_GAMEPAD_BUTTON_DPAD_UP}, {"DOWN", SDL_GAMEPAD_BUTTON_DPAD_DOWN},
+            {"LEFT", SDL_GAMEPAD_BUTTON_DPAD_LEFT}, {"RIGHT", SDL_GAMEPAD_BUTTON_DPAD_RIGHT}};
+        if (!vj) {
+            SDL_VirtualJoystickDesc d;
+            SDL_INIT_INTERFACE(&d);
+            d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+            d.naxes = SDL_GAMEPAD_AXIS_COUNT;
+            d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+            d.name = "xbased virtual gamepad";
+            vj = SDL_OpenJoystick(SDL_AttachVirtualJoystick(&d));
+        }
+        char bn[16] = "";
+        int down = 0;
+        sscanf(a + 5, "%15s %d", bn, &down);
+        for (unsigned i = 0; vj && i < sizeof(k_b) / sizeof(k_b[0]); i++) {
+            if (!_stricmp(bn, k_b[i].n)) {
+                SDL_SetJoystickVirtualButton(vj, k_b[i].b, down != 0);
+                nc_log("hakuX-auto", "%.1f s: virtual gamepad %s %s", now_s() - g_auto.t0, k_b[i].n,
+                       down ? "down" : "up");
+            }
+        }
         return;
     }
     if (!_stricmp(a, "quit")) {

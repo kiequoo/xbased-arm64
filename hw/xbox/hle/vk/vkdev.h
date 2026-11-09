@@ -99,6 +99,10 @@ typedef struct HleCaps {
                                    cache only (vk/draw.c, asynchronous builds) */
     bool swapchain;             /* the Android surface and VK_KHR_swapchain: the window's
                                    presenter (vk/swapchain.c) */
+    bool share;                 /* Windows: images and timeline semaphores exported as NT
+                                   handles (the game's frame presents them: vk/share.h) */
+    uint8_t luid[8];            /* the device's LUID (luid_valid), the frame's device found by it */
+    bool luid_valid;
     float max_lod_bias;         /* maxSamplerLodBias */
     float max_aniso;            /* maxSamplerAnisotropy (0: no anisotropic filtering) */
 } HleCaps;

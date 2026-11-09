@@ -1,5 +1,237 @@
 # xbased changelog
 
+## 1.0.89 (2026-11)
+
+### Fixes
+- Oddworld: Stranger's Wrath no longer crashes when you start a new game.
+  The first time it runs, the game fills its cache on the hard disk, and
+  one small file it writes and closes straight away was still being
+  written in the background when the game had already moved on. Finishing
+  that write later scribbled over the game's memory. Now a file's pending
+  reads and writes finish before it's closed, as on the console. This had
+  been broken since 1.0.49.
+
+## 1.0.88 (2026-11)
+
+### New
+- Cheats have a section of their own in Mods & patches, under the frame
+  rate and the other mods. Their names are cleaned up and written properly
+  (abbreviations and misspellings spelled out, stray symbols gone, the
+  player and the buttons at the end), and the common ones are translated
+  into the interface's language.
+- When a game has several cheat files, xbased picks the ones made for your
+  disc's exact release and region by itself, and an option that two files
+  both give shows only once.
+- The date sits under the clock at the top of the dashboard, in the
+  interface's language.
+
+### Fixes
+- The game's window no longer comes up with its title bar above the top of
+  the screen. With Windows' display scaling at 125% or more, the window
+  was taller than the screen; now it's made to fit the screen and the
+  taskbar, on the monitor the dashboard is on, and coming back from full
+  screen (Alt+Enter) keeps the title bar on screen too.
+- ReShade works again. Since 1.0.82 the session's window drew the game's
+  picture itself, which left ReShade nothing to draw on; with ReShade
+  loaded, the game now draws in its own window as it did before.
+- A game's settings changed from the in-game menu (Game settings) are no
+  longer undone when you play that game again from the dashboard.
+
+## 1.0.87 (2026-11)
+
+### New
+- The Games screen shows how long you've played each game and when you
+  last played it, under the selected game's details and on its page.
+- The game you played last is marked on the Games screen with a thin frame
+  and a small "Last played" tag, in every view.
+- Nearest neighbour upscaling (Settings > Video > Upscaling) keeps the
+  picture's pixels square and sharp.
+
+### Fixes
+- Hunter: The Reckoning - Redeemer no longer stops with a disc error at its
+  first level, and the soldiers' shadows are dark again instead of yellow.
+- Castlevania: Curse of Darkness gets past its title screen into the game.
+- Dr. Muto no longer stops right after New Game.
+- The in-game menu fades out completely when it's closed, without leaving
+  a tinted picture behind.
+
+## 1.0.86 (2026-11)
+
+### Fixes
+- G-Sync and FreeSync work again in full screen on Windows, with V-Sync on
+  or off. The session's window now presents the game's picture itself with
+  D3D12 and a DXGI swapchain, as RetroArch does when it presents Vulkan
+  through DXGI: the emulator draws into images the window made for it, and
+  the driver sees an ordinary full screen game, with independent flip and
+  variable refresh. Frame pacing on screen is a little steadier than in
+  1.0.84.
+- 1.0.84's way of handing the picture over, which left some PCs (such as
+  the ROG Xbox Ally) with a black screen, is gone. If the session's window
+  ever goes away, the game now goes back to the dashboard instead of
+  staying open where it can't be seen, and the log says why.
+- Starting a game from the dashboard and going back to it no longer show
+  the desktop or the taskbar for a moment.
+
+## 1.0.85 (2026-11)
+
+### Fixes
+- On some PCs, such as the ROG Xbox Ally, 1.0.84 showed no picture when a
+  game started. The game is drawn as in 1.0.83 again while that's sorted
+  out, so G-Sync and FreeSync in full screen are back to how 1.0.83 had
+  them for now.
+- The screen saver still doesn't start in the middle of a game played with
+  a controller.
+
+## 1.0.84 (2026-11)
+
+### Fixes
+- G-Sync and FreeSync work again in full screen on Windows, with V-Sync on
+  or off (off, there was tearing). Since 1.0.82 the game's picture was
+  drawn in a window inside the session's one, and the display stayed at
+  its fixed refresh. The session's window now presents the picture itself,
+  so the driver sees a full screen game again: independent flip and
+  variable refresh, with the same frame pacing as before.
+- The screen saver no longer starts in the middle of a game played with a
+  controller. Since 1.0.82 the session's window let it through.
+- Starting a game from the dashboard no longer shows the desktop or the
+  taskbar for a moment, and neither does going back to the dashboard when
+  the game closes.
+
+## 1.0.83 (2026-11)
+
+### Fixes
+- Starting a game no longer shows the taskbar for a moment on Windows. The
+  game's window asked for the foreground before it was allowed to, so
+  Windows flashed its taskbar button instead.
+
+## 1.0.82 (2026-11)
+
+### Changes
+- A game that launches another executable or reboots the console, a state
+  being loaded, or a restart from the menu no longer swap the window. The
+  emulator still starts again underneath, but its window now lives inside
+  one window kept for the whole game session: the next run's picture comes
+  up inside it, under the last one, and takes over once it has drawn. The
+  taskbar button, the focus, the window's place and full screen stay as
+  they were. On Windows always; on Linux under X11 (on Wayland a program
+  can't hold another one's window, so there it works as before).
+  `frame=0` on the command line turns it off.
+- Starting a game in full screen no longer shows the desktop for a moment.
+
+## 1.0.81 (2026-11)
+
+### Fixes
+- Modified copies of a game (same title ID, version and region) are no
+  longer folded into one entry with the original. The library tells two
+  dumps of the same disc (an XISO and a full image) from a changed one by
+  the game's executable headers and its root folder, and shows each modded
+  copy with its file's name to tell them apart. Each can be renamed or
+  hidden on its own.
+- Overscan now really hides the picture's edges: around a 4:3 picture in a
+  wide window they spilled into the black bars instead of being cut off.
+
+### Changes
+- Crop: the sides, and the top and bottom, can be cut by a number of
+  console pixels each, globally or per game (Settings › Video), for games
+  whose borders aren't the same all round. Overscan goes up to 20%.
+- Shortcuts can use Ctrl, Alt and Shift (Ctrl+1 and the like; the game
+  doesn't get the key while a shortcut has it), and each one can also be on
+  the controller: Guide plus a button, the touchpad or Share. The Guide
+  button's tap still opens the menu, now when it's let go, and Share takes a
+  screenshot by default.
+- Uncapped games' limit (Settings › Video): a game set to Uncapped is held
+  to the monitor's refresh rate by default, or 60, 120, 144, 240 fps, or no
+  limit. Some games have no frame cap of their own and ran at hundreds of
+  frames a second.
+- Full screen refresh (Settings › Video): full screen can switch the monitor
+  to its highest mode that's a multiple of 60 Hz (120 Hz on a 144 or 165 Hz
+  monitor, 240 on a 280). The console's 60 Hz then lines up with every
+  refresh and frames show for an even time without G-Sync or FreeSync. Off
+  by default (the screen goes black for a moment when the mode switches).
+- The README explains how to get on Insignia.
+
+## 1.0.80 (2026-11)
+
+### Fixes
+- Prince of Persia: Warrior Within could crash when the Prince falls into
+  the ship's hold, early in the first level. Its data arriving sooner than
+  from a real drive let the game use an object it had already freed. It
+  now always reads at the console drive's speed, whatever the disc speed
+  setting says, and so do The Sands of Time and The Two Thrones (the same
+  engine) and Star Wars: KotOR II. The setting is hidden for these games.
+- A game jumping to address 0 closed the whole emulator without a word.
+  It's now reported as the game's own crash in the log.
+
+### Changes
+- Disc speed is now also a global setting (System), for every game, and
+  it has two choices: Like the console, the default, or Fast. Games now
+  load at the console drive's speed unless you pick Fast, which shows a
+  warning because some games break with it (loading screens get longer
+  than in earlier versions). A game's own disc speed setting still wins
+  over the global one, and the games that need the console drive's speed
+  always get it. The old "Close to the console's" choice is gone: it
+  became Like the console.
+- Picking 128 MB of console memory shows a warning, as some games can
+  crash or not start with a debug kit's memory.
+
+## 1.0.79 (2026-11)
+
+### Changes
+- Asynchronous shaders are back as a setting (System, and per game), off by
+  default. Turning them on shows a warning: while a shader is being built
+  the draws that need it are skipped, so things can flicker or look broken
+  for a moment, in exchange for less stutter.
+
+## 1.0.78 (2026-11)
+
+### Fixes
+- Now and then, for a single frame, part of a scene was drawn with another
+  part's camera or vertices: a view from somewhere else, large black or
+  stretched polygons, a piece of a character or of the scenery flung across
+  the screen (Prince of Persia: Warrior Within's ship, most often in
+  fights). The memory holding a draw's vertices and constants could be
+  handed to other data before the GPU drew it, when the emulator had to
+  wait for the GPU while it was still preparing that draw.
+- Two copies into the same image (glow effects) could run in either order.
+- A texture made from a render target could show the image the target had
+  before it was recreated, on the frames already being drawn.
+- A rare CPU translation error when a game popped a value into memory the
+  emulator was watching.
+
+### Changes
+- The Windows download is smaller: its executable no longer carries debug
+  information.
+
+## 1.0.77 (2026-11)
+
+### Fixes
+- At higher internal resolutions, glow effects built from smaller copies of
+  the frame no longer draw a bright outline around characters and objects in
+  front of lit backgrounds (Prince of Persia: The Sands of Time and others).
+  Those small glow images now render at the console's resolution, as their
+  blur expects.
+- The CRT TV and arcade filters no longer show wavy moire bands at window
+  sizes where each scanline covers two or three screen pixels.
+
+## 1.0.76 (2026-11)
+
+### New
+- A Vertical sync setting (Settings, Video), on by default. Off, frames are
+  shown as soon as they're ready, with tearing.
+
+### Fixes
+- The Xbox dashboard (Settings, Online) took no controller or keyboard until
+  the in-game menu was opened and closed.
+- The library's bottom line shows the game's region and version, and two
+  games with the same name show theirs on their tiles, so different releases
+  can be told apart without opening them. The game's page lists its title
+  ID, version, region, publisher, year and size under the cover, no longer
+  running under the menu beside it. The separator between publisher and year
+  no longer shows as garbled characters.
+- The on-screen keyboard's highlight follows the mouse on mice that report
+  small steps. It stayed on the key the pointer had left while the click
+  typed the one under it.
+
 ## 1.0.75 (2026-11)
 
 ### Changes

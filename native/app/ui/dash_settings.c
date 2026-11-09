@@ -5,6 +5,7 @@
  */
 #include "native/app/ui/console_cfg.h"
 #include "native/app/ui/dash_int.h"
+#include "native/app/ui/cheat_text.h"
 #include "native/app/ui/input_map.h"
 #include "native/app/mod_fit.h"
 #include "native/app/win_mods.h"
@@ -47,16 +48,23 @@ static void rows_video(List *l)
     /* overscan as a TV's, in any shape: the share of the picture hidden
      * past the screen's edges (a CRT hid some 5-10%; 7% and 10% the
      * action-safe areas, EBU's and the classic), or underscan's border */
-    static const char *const ov[] = {"-10", "-5", "-3", "0", "3", "5", "7", "10", "15"};
-    const char *on[] = {"-10%", "-5%", "-3%", T(S_OFF), "3%", "5%", "7%", "10%", "15%"};
-    opt_choice(l, S_OVERSCAN, "overscan", ov, on, 9, "0");
+    static const char *const ov[] = {"-10", "-5", "-3", "0", "3", "5", "7", "10", "15", "20"};
+    const char *on[] = {"-10%", "-5%", "-3%", T(S_OFF), "3%", "5%", "7%", "10%", "15%", "20%"};
+    opt_choice(l, S_OVERSCAN, "overscan", ov, on, 10, "0");
+    /* a game's black borders cut off, the sides and the top and bottom
+     * apart (in console pixels each side, of 640x480): what overscan, the
+     * same all round, doesn't fit */
+    static const char *const crv[] = {"0", "2", "4", "8", "12", "16", "24", "32", "48"};
+    const char *crn[] = {T(S_OFF), "2 px", "4 px", "8 px", "12 px", "16 px", "24 px", "32 px", "48 px"};
+    opt_choice(l, S_CROP_H, "croph", crv, crn, 9, "0");
+    opt_choice(l, S_CROP_V, "cropv", crv, crn, 9, "0");
     opt_bool(l, S_FXAA, "fxaa", false, false);
     static const char *anv[] = {"0", "2", "4", "8", "16"};
     const char *ann[] = {T(S_OFF), "2x", "4x", "8x", "16x"};
     opt_choice(l, S_ANISO, "aniso", anv, ann, 5, "0");
-    static const char *uv[] = {"bilinear", "fsr"};
-    const char *un[] = {T(S_BILINEAR), "AMD FSR 1"};
-    opt_choice(l, S_UPSCALE, "upscale", uv, un, 2, "bilinear");
+    static const char *uv[] = {"bilinear", "fsr", "nearest"};
+    const char *un[] = {T(S_BILINEAR), "AMD FSR 1", T(S_NEAREST)};
+    opt_choice(l, S_UPSCALE, "upscale", uv, un, 3, "bilinear");
     static const char *cv[] = {"0", "1", "2", "3"};
     const char *cn[] = {T(S_OFF), T(S_CRT_SOFT), T(S_CRT_TV), T(S_CRT_ARCADE)};
     opt_choice(l, S_CRT, "crt", cv, cn, 4, "0");
@@ -205,6 +213,18 @@ void scr_settings(void)
         rows_video(&l);
         opt_bool(&l, S_FULLSCREEN, "fullscreen", true, true);
         opt_bool(&l, S_SHOW_FPS, "showfps", false, false);
+        opt_bool(&l, S_VSYNC, "vsync", true, false);
+        {
+            /* full screen at the panel's highest refresh a multiple of 60
+             * Hz (win_main.c fs_mode), and the limit of the games set to
+             * Uncapped (never under 60: the console's own rate) */
+            static const char *const fv[] = {"desktop", "60"};
+            const char *fn[] = {T(S_FSRATE_DESKTOP), T(S_FSRATE_60)};
+            opt_choice(&l, S_FSRATE, "fsrate", fv, fn, 2, "desktop");
+            static const char *const mv[] = {"refresh", "60", "120", "144", "240", "0"};
+            const char *mn[] = {T(S_MAXFPS_REFRESH), "60 fps", "120 fps", "144 fps", "240 fps", T(S_MAXFPS_NONE)};
+            opt_choice(&l, S_MAXFPS, "maxfps", mv, mn, 6, "refresh");
+        }
         break;
     case 1: {
         /* the console's audio setting and the speakers it plays on: stereo,
@@ -228,6 +248,16 @@ void scr_settings(void)
         static const char *pv[] = {"hdtv", "standard", "svideo", "scart", "vga"};
         static const char *pn[] = {"HDTV (component)", "Standard (composite)", "S-Video", "SCART (RGB)", "VGA"};
         opt_choice(&l, S_AVPACK, "avpack", pv, pn, 5, "hdtv");
+        {
+            /* the disc's speed for every game (devtime=): the console
+             * drive's by default, fast with a warning; a game's own setting
+             * over it, and a title that needs the drive's own has that
+             * anyway (native/kernel/io.c) */
+            static const char *const dv[] = {"2", "0"};
+            const char *dn[] = {T(S_DISC_CONSOLE), T(S_DISC_FAST)};
+            opt_choice(&l, S_DISC_SPEED, "devtime", dv, dn, 2, "2");
+        }
+        opt_bool(&l, S_ASYNC_SHADERS, "asyncpipe", false, false);
         opt_bool(&l, S_PREBUILD, "prebuild", false, false);
         break;
     }
@@ -338,6 +368,9 @@ void scr_settings(void)
         opt_bool(&l, S_RUMBLE, "rumble", true, false);
         break;
     case 5:
+        /* the keyboard's (a key, Ctrl/Alt/Shift with it if held), then the
+         * controller's: Guide with a button, the touchpad or Share, buttons
+         * the Xbox controller hasn't (no game means them) */
         for (int h = 0; h < IM_HOTKEYS; h++) {
             char val[64];
             im_hotkey_name(&D.global, h, val, sizeof(val));
@@ -345,6 +378,30 @@ void scr_settings(void)
                 D.remap_target = 1000 + h;
                 D.remap_since = ui_time();
                 dash_push(SCR_REMAP);
+            }
+        }
+        for (int h = 0; h < IM_HOTKEYS; h++) {
+            static const char *const k_names[IM_HOTKEYS] = {"menu", "save", "load", "turbo", "pause", "shot", "full"};
+            char key[24], label[96];
+            snprintf(key, sizeof(key), "hkpad.%s", k_names[h]);
+            snprintf(label, sizeof(label), "%s  (%s)", T(im_hotkey_label(h)), T(S_HK_PAD));
+            const char *v = cfg_get(&D.global, key);
+            if (!v) {
+                v = im_hkpad_default(h);
+            }
+            const int n = im_hkpad_count();
+            int cur = 0;
+            for (int i = 0; i < n; i++) {
+                if (!SDL_strcasecmp(v, im_hkpad_value(i))) {
+                    cur = i;
+                }
+            }
+            int delta = 0;
+            if (list_row(&l, label, im_hkpad_label(cur), &delta)) {
+                delta = 1;
+            }
+            if (delta) {
+                cfg_set(&D.global, key, im_hkpad_value((cur + (delta > 0 ? 1 : n - 1)) % n));
             }
         }
         break;
@@ -395,17 +452,15 @@ void scr_game_settings(void)
     opt_videoflag(&l, S_WIDESCREEN, 0x10000);
     rows_pal(&l);
     rows_ram(&l);
-    {
-        /* the disc's speed (devtime=): as fast as the PC reads, or the
-         * console's drive (a quarter or all of its time); a title that needs
-         * the drive's own gets it by default (native/kernel/io.c) */
-        static const char *const dv[] = {"0", "1", "2"};
-        const char *dn[] = {T(S_DISC_FAST), T(S_DISC_NEAR), T(S_DISC_CONSOLE)};
-        static char def[4];
-        const char *gv = cfg_get(&D.global, "devtime");
-        snprintf(def, sizeof(def), "%d", gv ? atoi(gv) : nc_io_title_device_mode(D.cur->g.title_id, D.cur->g.title));
-        opt_choice(&l, S_DISC_SPEED, "devtime", dv, dn, 3, def);
+    if (!nc_io_title_device_mode(D.cur->g.title_id, D.cur->g.title)) {
+        /* the disc's speed (devtime=): the console drive's, or as fast as
+         * the PC reads; a title that needs the drive's own always has it,
+         * and no choice (native/kernel/io.c) */
+        static const char *const dv[] = {"2", "0"};
+        const char *dn[] = {T(S_DISC_CONSOLE), T(S_DISC_FAST)};
+        opt_choice(&l, S_DISC_SPEED, "devtime", dv, dn, 2, "2");
     }
+    opt_bool(&l, S_ASYNC_SHADERS, "asyncpipe", false, false);
     if (list_row(&l, T(S_RESET_GAME), NULL, NULL)) {
         dash_ask(T(S_RESET_GAME), reset_game);
     }
@@ -436,7 +491,11 @@ typedef struct {
     char file[160];                 /* cheats/<TITLE ID>/<file> */
     char from[88];                  /* the file's own title */
     char label[88];
+    char shown[160];                /* the label as the screen says it (cheat_text) */
+    int shown_lang;                 /* in that language, -1 not yet */
     int idx, nopts;
+    int rank;                       /* 2 its trainer checks this disc's build, 1 it checks none */
+    bool dup;                       /* another trainer's option of the same name comes first */
 } XOpt;
 
 static XOpt g_xopts[256];
@@ -460,8 +519,11 @@ static void xcheats_scan(const char *root, const FitXbe *xbe)
         if (dup || !nc_xcheat_load(full, &x)) {
             continue;
         }
-        /* one made for another build (most name theirs) would patch
-         * nothing here: left out */
+        /* one made for another build (another region, another release:
+         * most name theirs) would patch nothing here: left out */
+        uint32_t builds[32];
+        bool checks = false;
+        const int nb = fit_cheat_builds(x.data, x.size, builds, 32, &checks);
         const bool other_build = xbe && !fit_cheat_for_build(x.data, x.size, xbe->time);
         if (nc_xcheat_for_title(&x, D.cur->g.title_id) && !other_build) {
             for (int o = 0; o < x.nopts && g_nxopts < 256; o++) {
@@ -469,8 +531,11 @@ static void xcheats_scan(const char *root, const FitXbe *xbe)
                 snprintf(e->file, sizeof(e->file), "%s", rel);
                 snprintf(e->from, sizeof(e->from), "%s", x.name);
                 snprintf(e->label, sizeof(e->label), "%s", x.labels[o]);
+                e->shown_lang = -1;
                 e->idx = o;
                 e->nopts = x.nopts;
+                e->rank = xbe && nb > 0 ? 2 : 1;
+                e->dup = false;
             }
         }
         nc_xcheat_free(&x);
@@ -491,6 +556,46 @@ static void xcheats_load(void)
     xcheats_scan(cfg_data_dir(), have ? &xbe : NULL);     /* the user's first */
     if (strcmp(cfg_data_dir(), cfg_exe_dir())) {
         xcheats_scan(cfg_exe_dir(), have ? &xbe : NULL);
+    }
+    /* the trainers that check this disc's build, when there are any: the
+     * others (that check nothing) may be another release's */
+    int best = 0;
+    for (int i = 0; i < g_nxopts; i++) {
+        best = g_xopts[i].rank > best ? g_xopts[i].rank : best;
+    }
+    int k = 0;
+    for (int i = 0; i < g_nxopts; i++) {
+        if (g_xopts[i].rank == best) {
+            g_xopts[k++] = g_xopts[i];
+        }
+    }
+    g_nxopts = k;
+    /* the trainer with the most options first (then a trainer's revision,
+     * "rev"), its options in their order, then the others' */
+    for (int i = 1; i < g_nxopts; i++) {
+        for (int j = i; j > 0; j--) {
+            const XOpt *a = &g_xopts[j - 1], *b = &g_xopts[j];
+            if (!strcmp(a->file, b->file)) {
+                break;
+            }
+            const int sa = a->nopts * 4 + (SDL_strcasestr(a->from, "rev") ? 1 : 0);
+            const int sb = b->nopts * 4 + (SDL_strcasestr(b->from, "rev") ? 1 : 0);
+            if (sb <= sa) {
+                break;
+            }
+            const XOpt t = g_xopts[j - 1];
+            g_xopts[j - 1] = g_xopts[j];
+            g_xopts[j] = t;
+        }
+    }
+    /* an option another trainer already gives (the same name): one row */
+    for (int i = 0; i < g_nxopts; i++) {
+        char a[160], b[160];
+        cheat_text(g_xopts[i].label, L_EN, a, sizeof(a));
+        for (int j = 0; j < i && !g_xopts[i].dup; j++) {
+            cheat_text(g_xopts[j].label, L_EN, b, sizeof(b));
+            g_xopts[i].dup = !SDL_strcasecmp(a, b) && strcmp(g_xopts[i].file, g_xopts[j].file);
+        }
     }
 }
 
@@ -773,29 +878,55 @@ void scr_mods(void)
             help = fp ? tip : T(S_UNCAP_HELP);
         }
     }
-    for (int i = 0; i < g_nmods; i++) {
-        ModItem *m = &g_mods[i];
-        char label[160];
-        snprintf(label, sizeof(label), "%s%s", m->cheat ? "[cheat] " : "", m->name);
-        int delta = 0;
-        if (list_row(&l, label, mod_on(m) ? T(S_ON) : T(S_OFF), &delta) || delta) {
-            if (mod_on(m)) {
-                cfg_remove_value(&D.game, m->cheat ? "cheat" : "mod", m->id);
-            } else {
-                cfg_add(&D.game, m->cheat ? "cheat" : "mod", m->id);
+    /* the mods and patches, then the cheats in a section of their own,
+     * their names written properly in the interface's language */
+    bool any_cheat = g_nxopts > 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < g_nmods; i++) {
+            ModItem *m = &g_mods[i];
+            if (m->cheat != (pass == 1)) {
+                any_cheat |= m->cheat;
+                continue;
+            }
+            char label[160];
+            if (m->cheat) {
+                cheat_text(m->name, i18n_lang(), label, sizeof(label));
+            }
+            if (!m->cheat || !label[0]) {
+                snprintf(label, sizeof(label), "%s", m->name);
+            }
+            int delta = 0;
+            if (list_row(&l, label, mod_on(m) ? T(S_ON) : T(S_OFF), &delta) || delta) {
+                if (mod_on(m)) {
+                    cfg_remove_value(&D.game, m->cheat ? "cheat" : "mod", m->id);
+                } else {
+                    cfg_add(&D.game, m->cheat ? "cheat" : "mod", m->id);
+                }
+            }
+            if (list_selected(&l)) {
+                shown = m;
             }
         }
-        if (list_selected(&l)) {
-            shown = m;
+        if (pass == 0 && any_cheat) {
+            list_heading(&l, T(S_CHEATS));
         }
     }
     static char xhelp[512];
     for (int i = 0; i < g_nxopts; i++) {
-        const XOpt *e = &g_xopts[i];
-        char label[160];
-        snprintf(label, sizeof(label), "[cheat] %s", e->label);
+        XOpt *e = &g_xopts[i];
+        if (e->shown_lang != (int)i18n_lang()) {
+            cheat_text(e->label, i18n_lang(), e->shown, sizeof(e->shown));
+            e->shown_lang = (int)i18n_lang();
+        }
+        if (!e->shown[0]) {
+            continue;       /* a trainer's empty slot ("", "---") */
+        }
+        const char *label = e->shown;
         const char *st = xcheat_states(e->file);
         const bool on = e->idx < (int)strlen(st) && st[e->idx] == '1';
+        if (e->dup && !on) {
+            continue;       /* the first trainer's row gives it (one left on stays, to turn off) */
+        }
         int delta = 0;
         if (list_row(&l, label, on ? T(S_ON) : T(S_OFF), &delta) || delta) {
             xcheat_toggle(e);
@@ -1343,11 +1474,16 @@ void scr_remap(void)
         return;     /* the press that opened it */
     }
     bool done = left <= 0;
+    const SDL_Keycode k = D.in.key;
+    const bool modifier = k == SDLK_LCTRL || k == SDLK_RCTRL || k == SDLK_LALT || k == SDLK_RALT ||
+                          k == SDLK_LSHIFT || k == SDLK_RSHIFT || k == SDLK_LGUI || k == SDLK_RGUI;
     if (D.in.key == SDLK_ESCAPE) {
         done = true;
+    } else if (hotkey && modifier) {
+        /* Ctrl, Alt or Shift: the key that goes with them still to come */
     } else if (D.in.key) {
         if (hotkey) {
-            im_set_hotkey(c, D.remap_target - 1000, D.in.key);
+            im_set_hotkey(c, D.remap_target - 1000, D.in.key, D.in.mod);
         } else {
             im_bind_key(c, D.player, D.remap_target, D.in.key);
         }

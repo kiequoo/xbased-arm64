@@ -56,12 +56,12 @@ chmod 755 "$APPDIR/AppRun"
 curl_retry() { local n=5; while ! curl -fL --retry 3 --retry-delay 5 "$@"; do n=$((n-1)); [ $n -gt 0 ] || return 1; sleep 15; done; }
 TOOL=${APPIMAGETOOL:-$OUT/appimagetool-$ARCH.AppImage}
 if [ ! -x "$TOOL" ]; then
-  curl_retry -o "$TOOL" "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$ARCH.AppImage"
+  curl_retry -o "$TOOL" "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-$ARCH.AppImage"
   chmod 755 "$TOOL"
 fi
 RUNTIME=${APPIMAGE_RUNTIME:-$OUT/runtime-$ARCH}
 if [ ! -s "$RUNTIME" ]; then
-  curl_retry -o "$RUNTIME" "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$ARCH"
+  curl_retry -o "$RUNTIME" "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-$ARCH"
 fi
 IMG=$OUT/xbased-$VERSION-$ARCH.AppImage
 rm -f "$IMG"

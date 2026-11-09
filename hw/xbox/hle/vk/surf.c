@@ -82,6 +82,23 @@ static uint32_t surf_scale(const HleSurfDesc *d, VkImageAspectFlags aspect)
     if (small) {
         return 1;
     }
+    /* A linear colour target of half a frame or less (a glow or blur
+     * chain's): at guest resolution too. Its passes tap at texel corners and
+     * half-texel offsets, which blend two texels at 1x; scaled, each tap
+     * read inside one texel's image, the blur came out sharper and shifted,
+     * and added back over the scene it drew a bright outline around what
+     * stands against a lit background (Prince of Persia: The Sands of Time's
+     * Prince, 640 -> 320 -> 160 -> ... -> 16, #151). debug:
+     * HAKUX_HLE_HALFSCALE=0, scaled as before (A/B). */
+    static int half = -1;
+    if (half < 0) {
+        const char *e = getenv("HAKUX_HLE_HALFSCALE");
+        half = !e || strcmp(e, "0");
+    }
+    if (half && d->pitch && !d->role && !d->parent && (aspect & VK_IMAGE_ASPECT_COLOR_BIT) && d->w <= 360 &&
+        d->h <= 288) {
+        return 1;
+    }
     /* The largest whole scale the device's images take: at 7x and 8x a
      * 2048-wide target outgrows maxImageDimension2D (16384 on desktop GPUs). */
     const uint32_t lim = MAX(g_hvk.props.limits.maxImageDimension2D, 1u);
@@ -694,6 +711,12 @@ void hle_surf_transition(VkCommandBuffer cb, HleVkSurf *s, VkImageLayout to)
     if (s->layout != to) {
         hle_img_barrier(cb, s->img, s->aspect, s->layout, to);
         s->layout = to;
+    } else if (to == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        /* a transfer after a transfer into it (a blit, then a copy over
+         * it): the second one's writes after the first one's. The layout
+         * stays, which made no barrier, and the two ran in either order
+         * (the synchronization validation's write after write). */
+        hle_img_barrier(cb, s->img, s->aspect, to, to);
     }
 }
 

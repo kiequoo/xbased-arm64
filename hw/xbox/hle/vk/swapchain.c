@@ -39,6 +39,11 @@
 #include "hw/xbox/hle/vk/swapchain.h"
 
 #include "hw/xbox/hle/vk/native_window.h"
+#ifdef _WIN32
+#include <windows.h>
+#include "hw/xbox/hle/vk/share.h"
+#include <psapi.h>
+#endif
 #if defined(NC_DESKTOP) && !defined(_WIN32)
 #include <SDL3/SDL_vulkan.h>
 #endif
@@ -89,6 +94,7 @@ static struct {
     VkSemaphore tl;             /* timeline: each submit's value */
     uint64_t submitted;
     VkSampler smp;
+    VkSampler smp_near;         /* the picture's, upscaled as nearest neighbour (HLE_UPSCALE_NEAREST) */
     VkDescriptorSetLayout dsl;
     VkPipelineLayout pl;
     VkDescriptorPool dp;
@@ -135,6 +141,28 @@ static struct {
     VkDeviceMemory shot_mem;
     VkDeviceSize shot_size;
 } g_ps;
+
+#ifdef _WIN32
+/* the game's frame's pictures (hle_present_set_remote, vk/share.h): its
+ * D3D12 images and fences, imported */
+static struct {
+    bool want, on, failed, checked;
+    char token[64];
+    HANDLE map, ev, frame;      /* the block, its event, the frame's process (its handles) */
+    HANDLE freed_ev;            /* our source's freed moved */
+    HleShare *sh;
+    int slot;                   /* our source in the block */
+    int64_t order, gen;
+    uint32_t w, h;
+    VkImage img[HLE_SHARE_IMAGES];
+    VkDeviceMemory mem[HLE_SHARE_IMAGES];
+    VkImageView view[HLE_SHARE_IMAGES];
+    uint64_t val[HLE_SHARE_IMAGES];   /* the picture last drawn into each */
+    VkSemaphore ready;          /* the frame's fence: our pictures drawn (v) */
+    uint64_t v;                 /* pictures so far */
+    uint32_t next;
+} g_rm;
+#endif
 
 /* ---- shaders ---- */
 
@@ -213,14 +241,21 @@ static const char k_fs_crt[] =
     "  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) { o = vec4(0.0, 0.0, 0.0, 1.0); return; }\n"
     "  vec2 size = vec2(textureSize(u_tex, 0)) / vec2(1.0, max(pc.extra.y, 1.0));\n"
     "  float y = uv.y * size.y - 0.5;\n"
-    "  scan *= smoothstep(1.2, 2.2, 1.0 / max(fwidth(y), 1e-4));\n"
-    "  float fy = fract(y);\n"
-    "  vec2 at0 = vec2(uv.x, (floor(y) + 0.5) / size.y), at1 = at0 + vec2(0.0, 1.0 / size.y);\n"
-    "  vec3 c0 = texture(u_tex, at0).rgb, c1 = texture(u_tex, at1).rgb;\n"
-    "  /* the beam: brighter lines are wider */\n"
-    "  vec3 w0 = exp(-pow(fy / (0.32 + 0.22 * c0), vec3(2.0)) * 2.0);\n"
-    "  vec3 w1 = exp(-pow((1.0 - fy) / (0.32 + 0.22 * c1), vec3(2.0)) * 2.0);\n"
-    "  vec3 lit = c0 * w0 + c1 * w1;\n"
+    "  float dy = fwidth(y);\n"
+    "  scan *= smoothstep(1.2, 2.2, 1.0 / max(dy, 1e-4));\n"
+    "  /* the beam (brighter lines are wider) over the pixel's height, four\n"
+    "   * samples across it: taken at its centre alone, lines of 2-3 pixels\n"
+    "   * beat with the pixel rows where the tube curves (moire, #151) */\n"
+    "  vec3 lit = vec3(0.0);\n"
+    "  for (int k = 0; k < 4; k++) {\n"
+    "    float ys = y + dy * (float(k) - 1.5) * 0.25;\n"
+    "    float fy = fract(ys);\n"
+    "    vec2 at0 = vec2(uv.x, (floor(ys) + 0.5) / size.y), at1 = at0 + vec2(0.0, 1.0 / size.y);\n"
+    "    vec3 c0 = texture(u_tex, at0).rgb, c1 = texture(u_tex, at1).rgb;\n"
+    "    vec3 w0 = exp(-pow(fy / (0.32 + 0.22 * c0), vec3(2.0)) * 2.0);\n"
+    "    vec3 w1 = exp(-pow((1.0 - fy) / (0.32 + 0.22 * c1), vec3(2.0)) * 2.0);\n"
+    "    lit += (c0 * w0 + c1 * w1) * 0.25;\n"
+    "  }\n"
     "  vec3 flat_ = texture(u_tex, uv).rgb;\n"
     "  vec3 col = mix(flat_, lit * 1.35, scan);\n"
     "  /* the mask: an aperture grille's stripes, R G B */\n"
@@ -567,6 +602,14 @@ static bool init(void)
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = b };
     if (T.vkCreateSemaphore(g_hvk.dev, &tsi, NULL, &g_ps.tl) != VK_SUCCESS ||
         T.vkCreateSampler(g_hvk.dev, &sci, NULL, &g_ps.smp) != VK_SUCCESS ||
+        T.vkCreateSampler(g_hvk.dev, &(VkSamplerCreateInfo){ .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                                                              .magFilter = VK_FILTER_NEAREST,
+                                                              .minFilter = VK_FILTER_NEAREST,
+                                                              .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                                              .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                                              .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                                              .maxLod = 0.0f },
+                          NULL, &g_ps.smp_near) != VK_SUCCESS ||
         T.vkCreateDescriptorSetLayout(g_hvk.dev, &dci, NULL, &g_ps.dsl) != VK_SUCCESS) {
         return false;
     }
@@ -656,8 +699,15 @@ static void idle(void)
     hle_vk_check(r, "vkQueueWaitIdle (present)");
 }
 
+static bool remote_images(void);
+
 static void drop_images(void)
 {
+    if (remote_images()) {
+        g_ps.img = NULL;    /* the frame's pictures' (static, freed by remote_drop) */
+        g_ps.view = NULL;
+        return;
+    }
     for (uint32_t i = 0; i < g_ps.nimg; i++) {
         T.vkDestroyImageView(g_hvk.dev, g_ps.view[i], NULL);
         T.vkDestroySemaphore(g_hvk.dev, g_ps.drawn[i], NULL);
@@ -689,6 +739,8 @@ static void drop_window(void)
     }
     g_ps.win = NULL;
 }
+
+static bool g_vsync;               /* hle_present_set_vsync */
 
 static bool make_swapchain(uint32_t w, uint32_t h)
 {
@@ -754,6 +806,22 @@ static bool make_swapchain(uint32_t w, uint32_t h)
     VkCompositeAlphaFlagBitsKHR ca = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)
                                          ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
                                          : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+    VkPresentModeKHR pm = VK_PRESENT_MODE_FIFO_KHR;
+    if (!g_vsync) {
+        uint32_t nm = 0;
+        VkPresentModeKHR modes[16];
+        if (vkGetPhysicalDeviceSurfacePresentModesKHR(g_hvk.phys, g_ps.surf, &nm, NULL) == VK_SUCCESS) {
+            nm = MIN(nm, 16u);
+            vkGetPhysicalDeviceSurfacePresentModesKHR(g_hvk.phys, g_ps.surf, &nm, modes);
+        }
+        for (uint32_t i = 0; i < nm; i++) {
+            if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+                pm = modes[i];
+            } else if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR && pm == VK_PRESENT_MODE_FIFO_KHR) {
+                pm = modes[i];
+            }
+        }
+    }
     VkSwapchainKHR old = g_ps.sc;
     if (old) {
         idle();
@@ -766,7 +834,7 @@ static bool make_swapchain(uint32_t w, uint32_t h)
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                       (g_ps.shot_can ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0),
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = tf, .compositeAlpha = ca,
-        .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE, .oldSwapchain = old };
+        .presentMode = pm, .clipped = VK_TRUE, .oldSwapchain = old };
     VkSwapchainKHR sc = VK_NULL_HANDLE;
     VkResult r = T.vkCreateSwapchainKHR(g_hvk.dev, &ci, NULL, &sc);
     drop_images();
@@ -778,6 +846,12 @@ static bool make_swapchain(uint32_t w, uint32_t h)
         g_ps.sc = VK_NULL_HANDLE;
         hle_log("hakuX-hle-back", "present: vkCreateSwapchainKHR %ux%u: %d", w, h, r);
         return false;
+    }
+    static VkPresentModeKHR s_told = (VkPresentModeKHR)-1;
+    if (pm != s_told) {
+        s_told = pm;
+        hle_log("hakuX-hle-back", "present: V-Sync %s", pm == VK_PRESENT_MODE_FIFO_KHR ? "on" :
+                pm == VK_PRESENT_MODE_IMMEDIATE_KHR ? "off (immediate)" : "off (mailbox)");
     }
     uint32_t ni = 0;
     VkResult ri = T.vkGetSwapchainImagesKHR(g_hvk.dev, sc, &ni, NULL);
@@ -845,9 +919,31 @@ static void lose_window(void)
 static int g_crt;   /* the CRT filter's kind, 0 none */
 static float g_osd; /* the frame rate shown, 0 none */
 
+static float g_clip_x = 1.0f, g_clip_y = 1.0f;
+
+void hle_present_set_clip(float cx, float cy)
+{
+    g_clip_x = cx < 0.0f ? 0.0f : cx > 1.0f ? 1.0f : cx;
+    g_clip_y = cy < 0.0f ? 0.0f : cy > 1.0f ? 1.0f : cy;
+}
+
 void hle_present_set_osd(float fps)
 {
     g_osd = fps;
+}
+
+/* V-Sync: on (FIFO, the default), or off for whoever likes tearing
+ * (IMMEDIATE, else MAILBOX, else FIFO: what the surface has). A change
+ * makes the swapchain again at the next frame. The emulated display's
+ * 60 Hz paces the frames either way (present.c). */
+static bool g_vsync = true;
+
+void hle_present_set_vsync(bool on)
+{
+    if (on != g_vsync) {
+        g_vsync = on;
+        g_ps.stale = true;
+    }
 }
 
 void hle_present_set_crt(int kind)
@@ -934,12 +1030,25 @@ static void shot_write(uint32_t w, uint32_t h)
 }
 
 static bool ov_on(void);
+/* the overlay was in the last picture: the one after it goes off isn't
+ * unchanged (a still frame, a logo, kept the menu's last fading picture on
+ * screen: Dead or Alive 3's, #193) */
+static bool g_ov_shown;
 
 bool hle_present_unchanged(struct ANativeWindow *win, uint64_t key)
 {
-    if (ov_on() || g_ps.shot_want || !g_ps.shown || !win || win != g_ps.win || g_ps.stale || !g_ps.sc || key != g_ps.shown_key ||
-        (uint32_t)ANativeWindow_getWidth(win) != g_ps.wsize.width ||
-        (uint32_t)ANativeWindow_getHeight(win) != g_ps.wsize.height || hle_disp_gamma_seq() != g_ps.ramp_gen) {
+    uint32_t ww = win ? (uint32_t)ANativeWindow_getWidth(win) : 0, wh = win ? (uint32_t)ANativeWindow_getHeight(win) : 0;
+    bool have_sc = g_ps.sc != VK_NULL_HANDLE;
+#ifdef _WIN32
+    if (g_rm.on) {
+        ww = g_rm.sh->cw;   /* the frame's pictures: its size */
+        wh = g_rm.sh->ch;
+        have_sc = g_rm.sh->src[g_rm.slot].vsync == (g_vsync ? 1u : 0u);
+    }
+#endif
+    if (ov_on() || g_ov_shown || g_ps.shot_want || !g_ps.shown || !win || win != g_ps.win || g_ps.stale || !have_sc ||
+        key != g_ps.shown_key || ww != g_ps.wsize.width || wh != g_ps.wsize.height ||
+        hle_disp_gamma_seq() != g_ps.ramp_gen) {
         return false;
     }
     uint32_t gen, swap_id;
@@ -949,6 +1058,443 @@ bool hle_present_unchanged(struct ANativeWindow *win, uint64_t key)
     }
     return !front || (gen == g_ps.f.gen && swap_id == g_ps.f.swap_id);
 }
+
+/* ---- the frame's pictures (vk/share.h): a ring of shared images instead
+ * of a swapchain, the frame presenting them ---- */
+
+#ifdef _WIN32
+
+static bool remote_images(void)
+{
+    return g_ps.img && g_ps.img == g_rm.img;
+}
+
+int hle_present_remote_state(void)
+{
+    return g_rm.on ? 1 : g_rm.failed ? -1 : 0;
+}
+
+const char *hle_present_remote_why(void)
+{
+    static char why[sizeof(((HleShare *)0)->why)];
+    if (g_rm.sh) {
+        memcpy(why, g_rm.sh->why, sizeof(why) - 1);
+    }
+    return why;
+}
+
+void hle_present_set_remote(const char *token)
+{
+    g_rm.want = token && token[0];
+    snprintf(g_rm.token, sizeof(g_rm.token), "%s", token ? token : "");
+}
+
+bool hle_present_remote(void)
+{
+    return g_rm.on;
+}
+
+void hle_present_remote_size(uint32_t *w, uint32_t *h)
+{
+    *w = g_rm.sh ? g_rm.sh->cw : 0;
+    *h = g_rm.sh ? g_rm.sh->ch : 0;
+}
+
+void hle_present_remote_cursor(bool shown)
+{
+    if (g_rm.sh) {
+        g_rm.sh->cursor = shown ? 1 : 0;
+    }
+}
+
+/* the frame's mouse events since the last call (n at most), the next read's place in *at */
+uint32_t hle_present_remote_mouse(void *out, uint32_t n, int64_t *at)
+{
+    if (!g_rm.sh) {
+        return 0;
+    }
+    const int64_t head = g_rm.sh->mouse_head;
+    if (*at < head - HLE_SHARE_MICE) {
+        *at = head - HLE_SHARE_MICE;    /* fell behind: the newest */
+    }
+    uint32_t k = 0;
+    while (*at < head && k < n) {
+        ((HleShareMouse *)out)[k++] = g_rm.sh->mouse[*at % HLE_SHARE_MICE];
+        (*at)++;
+    }
+    return k;
+}
+
+static void remote_drop(void)
+{
+    if (g_rm.v) {
+        idle();
+    }
+    for (uint32_t i = 0; i < HLE_SHARE_IMAGES; i++) {
+        if (g_rm.view[i]) {
+            T.vkDestroyImageView(g_hvk.dev, g_rm.view[i], NULL);
+        }
+        if (g_rm.img[i]) {
+            T.vkDestroyImage(g_hvk.dev, g_rm.img[i], NULL);
+        }
+        if (g_rm.mem[i]) {
+            T.vkFreeMemory(g_hvk.dev, g_rm.mem[i], NULL);
+        }
+        g_rm.view[i] = VK_NULL_HANDLE;
+        g_rm.img[i] = VK_NULL_HANDLE;
+        g_rm.mem[i] = VK_NULL_HANDLE;
+        g_rm.val[i] = 0;
+    }
+    if (g_rm.ready) {
+        T.vkDestroySemaphore(g_hvk.dev, g_rm.ready, NULL);
+    }
+    g_rm.ready = VK_NULL_HANDLE;
+    g_rm.v = 0;
+    g_rm.on = false;
+}
+
+/* ReShade in this process (its Vulkan layer, or a DLL of its in the
+ * folder): any module that exports its add-on entry */
+static bool reshade_loaded(void)
+{
+    HMODULE mods[512];
+    DWORD bytes = 0;
+    if (!K32EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &bytes)) {
+        return false;
+    }
+    const DWORD n = bytes / sizeof(HMODULE) < 512 ? bytes / sizeof(HMODULE) : 512;
+    for (DWORD i = 0; i < n; i++) {
+        if (GetProcAddress(mods[i], "ReShadeRegisterAddon")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Whether this GPU's driver imports D3D12 images and fences (as RetroArch
+ * asks before presenting Vulkan through DXGI): said once in the log. With
+ * ReShade loaded, no: it draws on a swapchain of this process's, which the
+ * frame's pictures leave it none of (#198), so the window has its own
+ * again, as before the frame. */
+static bool remote_can(void)
+{
+    static int can = -1;
+    if (can >= 0) {
+        return can != 0;
+    }
+    if (reshade_loaded()) {
+        can = 0;
+        hle_log("hakuX-hle-back", "present: ReShade is loaded: the window's own swapchain, for it to draw on");
+        return false;
+    }
+    VkPhysicalDeviceExternalSemaphoreInfo si = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO,
+                                                 .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT };
+    VkExternalSemaphoreProperties sp = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES };
+    vkGetPhysicalDeviceExternalSemaphoreProperties(g_hvk.phys, &si, &sp);
+    VkPhysicalDeviceExternalImageFormatInfo ei = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
+                                                   .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT };
+    VkPhysicalDeviceImageFormatInfo2 fi = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, .pNext = &ei,
+                                            .format = VK_FORMAT_B8G8R8A8_UNORM, .type = VK_IMAGE_TYPE_2D,
+                                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT };
+    VkExternalImageFormatProperties ep = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES };
+    VkImageFormatProperties2 fp = { .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, .pNext = &ep };
+    const VkResult r = vkGetPhysicalDeviceImageFormatProperties2(g_hvk.phys, &fi, &fp);
+    const bool fences = (sp.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT) != 0;
+    const bool images = r == VK_SUCCESS &&
+                        (ep.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT);
+    can = g_hvk.caps.share && g_hvk.caps.luid_valid && fences && images;
+    hle_log("hakuX-hle-back", "present: D3D12 pictures: images %s (%d, features %x), fences %s (features %x), LUID %s",
+            images ? "importable" : "NOT importable", (int)r, ep.externalMemoryProperties.externalMemoryFeatures,
+            fences ? "importable" : "NOT importable", sp.externalSemaphoreFeatures,
+            g_hvk.caps.luid_valid ? "valid" : "NOT valid");
+    return can != 0;
+}
+
+/* one of the frame's handles, ours */
+static HANDLE remote_handle(uint64_t theirs)
+{
+    HANDLE h = NULL;
+    if (!g_rm.frame || !DuplicateHandle(g_rm.frame, (HANDLE)(uintptr_t)theirs, GetCurrentProcess(), &h, 0, FALSE,
+                                        DUPLICATE_SAME_ACCESS)) {
+        return NULL;
+    }
+    return h;
+}
+
+static bool remote_fence(VkSemaphore *sem, uint64_t theirs)
+{
+    const VkSemaphoreCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    if (T.vkCreateSemaphore(g_hvk.dev, &sci, NULL, sem) != VK_SUCCESS) {
+        return false;
+    }
+    HANDLE h = remote_handle(theirs);
+    if (!h) {
+        return false;
+    }
+    const VkImportSemaphoreWin32HandleInfoKHR ii = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR, .semaphore = *sem,
+        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT, .handle = h };
+    const VkResult r = T.vkImportSemaphoreWin32HandleKHR(g_hvk.dev, &ii);
+    CloseHandle(h);     /* an NT handle's import doesn't take it */
+    if (r != VK_SUCCESS) {
+        hle_log("hakuX-hle-back", "present: the frame's fence couldn't be imported (%d)", (int)r);
+    }
+    return r == VK_SUCCESS;
+}
+
+/* The frame's images for this run at w x h: asked for, made by the frame,
+ * imported. */
+static bool remote_make(uint32_t w, uint32_t h)
+{
+    remote_drop();
+    if (!g_rm.sh) {
+        wchar_t n[128];
+        swprintf(n, 128, HLE_SHARE_BLOCK_FMT, g_rm.token);
+        g_rm.map = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, n);
+        g_rm.sh = g_rm.map ? (HleShare *)MapViewOfFile(g_rm.map, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(HleShare)) : NULL;
+        swprintf(n, 128, HLE_SHARE_EVENT_FMT, g_rm.token);
+        g_rm.ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, n);
+        if (!g_rm.sh || !g_rm.ev || g_rm.sh->magic != HLE_SHARE_MAGIC || g_rm.sh->version != HLE_SHARE_VERSION) {
+            hle_log("hakuX-hle-back", "present: the frame's block isn't there");
+            return false;
+        }
+        g_rm.frame = OpenProcess(PROCESS_DUP_HANDLE, FALSE, g_rm.sh->frame_pid);
+        if (!g_rm.frame) {
+            hle_log("hakuX-hle-back", "present: the frame's process can't be opened (%lu)", GetLastError());
+            return false;
+        }
+        /* the source not shown (an older run's, or none): the newest shows */
+        g_rm.slot = g_rm.sh->src[0].order > g_rm.sh->src[1].order ? 1 : 0;
+        g_rm.order = InterlockedIncrement64((volatile LONG64 *)&g_rm.sh->orders);
+        swprintf(n, 128, HLE_SHARE_FREED_FMT, g_rm.token, g_rm.slot);
+        g_rm.freed_ev = OpenEventW(SYNCHRONIZE, FALSE, n);
+    }
+    if (!remote_can()) {
+        return false;
+    }
+    /* the ask */
+    HleShareSrc *src = &g_rm.sh->src[g_rm.slot];
+    InterlockedExchange64((volatile LONG64 *)&src->gen, 0);
+    src->pid = GetCurrentProcessId();
+    src->w = w;
+    src->h = h;
+    src->vsync = g_vsync ? 1 : 0;
+    memcpy(src->luid, g_hvk.caps.luid, 8);
+    src->luid_valid = g_hvk.caps.luid_valid;
+    src->latest = 0;
+    src->shown = 0;
+    src->order = g_rm.order;
+    const int64_t gen = ++g_rm.gen;
+    InterlockedExchange64((volatile LONG64 *)&src->gen, gen);
+    SetEvent(g_rm.ev);
+    /* the answer: the frame makes D3D12 itself at the first (a moment) */
+    const int64_t t0 = hle_now_ns();
+    int64_t made = 0;
+    while ((made = src->made) != gen && made != -gen && !g_rm.sh->failed && hle_now_ns() - t0 < 5000000000ll) {
+        Sleep(1);
+    }
+    if (made != gen) {
+        char why[sizeof(g_rm.sh->why)];
+        memcpy(why, g_rm.sh->why, sizeof(why) - 1);
+        why[sizeof(why) - 1] = 0;
+        hle_log("hakuX-hle-back", "present: the frame made no images for %ux%u (%s)", w, h,
+                made == -gen || g_rm.sh->failed ? why : "no answer in 5 s");
+        return false;
+    }
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_hvk.phys, &mp);
+    const VkFormat fmt = VK_FORMAT_B8G8R8A8_UNORM;
+    for (uint32_t i = 0; i < HLE_SHARE_IMAGES; i++) {
+        VkExternalMemoryImageCreateInfo xi = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+                                               .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT };
+        VkImageCreateInfo ici = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = &xi, .imageType = VK_IMAGE_TYPE_2D,
+            .format = fmt, .extent = { w, h, 1 }, .mipLevels = 1, .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED };
+        VkResult r = T.vkCreateImage(g_hvk.dev, &ici, NULL, &g_rm.img[i]);
+        if (r != VK_SUCCESS) {
+            hle_log("hakuX-hle-back", "present: no image for the frame's (%d)", (int)r);
+            return false;
+        }
+        VkMemoryRequirements mr;
+        T.vkGetImageMemoryRequirements(g_hvk.dev, g_rm.img[i], &mr);
+        HANDLE hh = remote_handle(src->res[i]);
+        if (!hh) {
+            hle_log("hakuX-hle-back", "present: the frame's image handle couldn't be had (%lu)", GetLastError());
+            return false;
+        }
+        VkMemoryWin32HandlePropertiesKHR hp = { .sType = VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR };
+        r = T.vkGetMemoryWin32HandlePropertiesKHR(g_hvk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT, hh, &hp);
+        uint32_t type = UINT32_MAX;
+        for (uint32_t t = 0; r == VK_SUCCESS && t < mp.memoryTypeCount; t++) {
+            if ((mr.memoryTypeBits & hp.memoryTypeBits & (1u << t)) &&
+                (type == UINT32_MAX || (mp.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))) {
+                type = t;
+                if (mp.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+                    break;
+                }
+            }
+        }
+        VkImportMemoryWin32HandleInfoKHR ii = { .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,
+                                                .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT,
+                                                .handle = hh };
+        VkMemoryDedicatedAllocateInfo di = { .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, .pNext = &ii,
+                                             .image = g_rm.img[i] };
+        VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &di,
+                                    .allocationSize = mr.size, .memoryTypeIndex = type };
+        if (type != UINT32_MAX) {
+            r = T.vkAllocateMemory(g_hvk.dev, &ai, NULL, &g_rm.mem[i]);
+        }
+        CloseHandle(hh);
+        if (type == UINT32_MAX || r != VK_SUCCESS ||
+            (r = T.vkBindImageMemory(g_hvk.dev, g_rm.img[i], g_rm.mem[i], 0)) != VK_SUCCESS) {
+            hle_log("hakuX-hle-back", "present: the frame's image couldn't be imported (%d, types %x of %x)", (int)r,
+                    hp.memoryTypeBits, mr.memoryTypeBits);
+            return false;
+        }
+        VkImageViewCreateInfo vci = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = g_rm.img[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = fmt,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+        if (T.vkCreateImageView(g_hvk.dev, &vci, NULL, &g_rm.view[i]) != VK_SUCCESS) {
+            return false;
+        }
+    }
+    if (!remote_fence(&g_rm.ready, src->ready)) {
+        return false;
+    }
+    g_rm.w = w;
+    g_rm.h = h;
+    g_rm.next = 0;
+    g_rm.on = true;
+    /* the window's pass draws into them as into a swapchain's */
+    g_ps.ext = (VkExtent2D){ w, h };
+    g_ps.wsize = (VkExtent2D){ w, h };
+    g_ps.rot[0] = 1.0f;
+    g_ps.rot[1] = 0.0f;
+    g_ps.rot[2] = 0.0f;
+    g_ps.rot[3] = 1.0f;
+    g_ps.shot_can = true;
+    if (fmt != g_ps.pipe_fmt) {
+        for (unsigned i = 0; i < P_FXAA; i++) {
+            if (g_ps.pipe[i]) {
+                T.vkDestroyPipeline(g_hvk.dev, g_ps.pipe[i], NULL);
+            }
+            g_ps.pipe[i] = pipeline(g_ps.fs[i], fmt);
+        }
+        g_ps.pipe_fmt = fmt;
+    }
+    g_ps.fmt = fmt;
+    hle_log("hakuX-hle-back", "present: %ux%u pictures for the frame (D3D12, source %d)", w, h, g_rm.slot);
+    return g_ps.pipe[P_BILINEAR] != VK_NULL_HANDLE;
+}
+
+static bool remote_begin(struct ANativeWindow *win, uint32_t *w, uint32_t *h)
+{
+    if (!g_hvk.caps.share || (g_rm.sh && g_rm.sh->failed)) {
+        remote_drop();
+        g_rm.failed = true;     /* no sharing, or the frame has no presenter: the window's own swapchain */
+        return false;
+    }
+    uint32_t cw = g_rm.sh ? g_rm.sh->cw : 0, ch = g_rm.sh ? g_rm.sh->ch : 0;
+    if (!g_rm.sh || !cw || !ch) {
+        cw = cw ? cw : 1280;
+        ch = ch ? ch : 960;
+    }
+    if (!g_rm.on || cw != g_rm.w || ch != g_rm.h ||
+        (g_rm.sh && g_rm.sh->src[g_rm.slot].vsync != (g_vsync ? 1u : 0u))) {
+        if (!remote_make(cw, ch)) {
+            remote_drop();
+            g_rm.failed = true;
+            return false;
+        }
+    }
+    if (!g_ps.sc) {
+        /* only a window's swapchain goes out of date (V-Sync turned, a
+         * present out of date): the frame's pictures follow its size and
+         * V-Sync above. Left set, nothing ever looked unchanged and the
+         * same picture went to the frame as fast as the loop ran. */
+        g_ps.stale = false;
+    }
+    g_ps.win = win;
+    PsFrame *f = &g_ps.fr[g_ps.cur];
+    const int64_t tw0 = hle_now_ns();
+    if (!wait_value(f->value)) {
+        return false;
+    }
+    /* the image free once the frame is done with what it held (copied it,
+     * or a newer one): waited here, on the CPU, as RetroArch's bridge waits
+     * its target (no GPU wait on the frame's fence: one for a value not
+     * reached yet held the queue for good) */
+    const uint32_t idx = g_rm.next % HLE_SHARE_IMAGES;
+    const volatile int64_t *freed = &g_rm.sh->src[g_rm.slot].freed;
+    for (int tries = 0; *freed < (int64_t)g_rm.val[idx] && tries < 3; tries++) {
+        if (g_rm.freed_ev) {
+            WaitForSingleObject(g_rm.freed_ev, 100);
+        } else {
+            Sleep(1);
+        }
+        if (g_rm.sh->failed) {
+            g_acquire_ns += hle_now_ns() - tw0;
+            return false;   /* the frame's gone to its word: the next begin says so */
+        }
+    }
+    g_acquire_ns += hle_now_ns() - tw0;
+    g_rm.next++;
+    g_ps.idx = idx;
+    g_ps.img = g_rm.img;    /* the pass's target (not freed by drop_images: nimg stays 0) */
+    g_ps.view = g_rm.view;
+    *w = g_rm.w;
+    *h = g_rm.h;
+    return true;
+}
+#else
+int hle_present_remote_state(void)
+{
+    return -1;
+}
+
+const char *hle_present_remote_why(void)
+{
+    return "";
+}
+
+static bool remote_images(void)
+{
+    return false;
+}
+
+void hle_present_set_remote(const char *token)
+{
+    (void)token;
+}
+
+bool hle_present_remote(void)
+{
+    return false;
+}
+
+void hle_present_remote_size(uint32_t *w, uint32_t *h)
+{
+    *w = *h = 0;
+}
+
+void hle_present_remote_cursor(bool shown)
+{
+    (void)shown;
+}
+
+uint32_t hle_present_remote_mouse(void *out, uint32_t n, int64_t *at)
+{
+    (void)out;
+    (void)n;
+    (void)at;
+    return 0;
+}
+#endif
 
 bool hle_present_begin(struct ANativeWindow *win, uint32_t *w, uint32_t *h)
 {
@@ -964,6 +1510,17 @@ bool hle_present_begin(struct ANativeWindow *win, uint32_t *w, uint32_t *h)
             return false;
         }
     }
+#ifdef _WIN32
+    if (g_rm.want && !g_rm.failed) {
+        if (remote_begin(win, w, h)) {
+            return true;
+        }
+        if (!g_rm.failed) {
+            return false;   /* not this refresh */
+        }
+        hle_log("hakuX-hle-back", "present: the frame's pictures failed: the window's own swapchain");
+    }
+#endif
     /* a lost surface's window may come back at the same address: a while
      * later, whatever window there is gets a new one */
     if (win != g_ps.win && (!win || hle_now_ns() - g_ps.lost_ns > 250000000ll)) {
@@ -1120,10 +1677,14 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImage
     T.vkCmdPipelineBarrier2(cb, &di);
 }
 
+/* the sampler set_src gives: the picture's pass upscaling as nearest
+ * neighbour (#183, the pixels kept square and sharp), else linear */
+static bool g_smp_near;
+
 /* Set ds to sample src (and the frame's share of the ramp). */
 static void set_src(PsFrame *f, VkDescriptorSet ds, VkImageView src)
 {
-    VkDescriptorImageInfo ii = { g_ps.smp, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkDescriptorImageInfo ii = { g_smp_near ? g_ps.smp_near : g_ps.smp, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkDescriptorBufferInfo bi = { g_ps.ubo, (VkDeviceSize)(f - g_ps.fr) * PS_RAMP, 768 };
     VkWriteDescriptorSet wr[2] = {
         { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0,
@@ -1152,6 +1713,29 @@ static void quad(VkCommandBuffer cb, PsFrame *f, unsigned set, VkPipeline p, VkI
                  const float pc[12], uint32_t w, uint32_t h)
 {
     quad_ds(cb, f, f->set[set], p, src, pc, w, h);
+}
+
+/* The picture's quad, cut to the clip rectangle (hle_present_set_clip):
+ * the window's axes, swapped for a display turned a quarter */
+static void quad_clipped(VkCommandBuffer cb, PsFrame *f, unsigned set, VkPipeline p, VkImageView src,
+                         const float pc[12], uint32_t w, uint32_t h)
+{
+    if (g_clip_x >= 1.0f && g_clip_y >= 1.0f) {
+        quad(cb, f, set, p, src, pc, w, h);
+        return;
+    }
+    const bool turned = fabsf(g_ps.rot[0]) < 0.5f;
+    const float cx = turned ? g_clip_y : g_clip_x, cy = turned ? g_clip_x : g_clip_y;
+    set_src(f, f->set[set], src);
+    VkViewport vp = { 0, 0, (float)w, (float)h, 0.0f, 1.0f };
+    const uint32_t sw = (uint32_t)(cx * (float)w + 0.5f), sh = (uint32_t)(cy * (float)h + 0.5f);
+    VkRect2D sc = { { (int32_t)((w - sw) / 2), (int32_t)((h - sh) / 2) }, { sw, sh } };
+    T.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    T.vkCmdSetViewport(cb, 0, 1, &vp);
+    T.vkCmdSetScissor(cb, 0, 1, &sc);
+    T.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ps.pl, 0, 1, &f->set[set], 0, NULL);
+    T.vkCmdPushConstants(cb, g_ps.pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 48, pc);
+    T.vkCmdDraw(cb, 4, 1, 0, 0);
 }
 
 static void rendering(VkCommandBuffer cb, VkImageView v, uint32_t w, uint32_t h, bool clear)
@@ -1472,7 +2056,16 @@ static bool ov_init(void)
 
 bool hle_ov_ready(void)
 {
-    return g_ps.inited && !g_ps.failed && g_ps.sc && ov_init();
+    /* a window of its own (its swapchain), or the frame's pictures: the
+     * overlay draws over either. Asked for the swapchain only, the in-game
+     * menu took the way without the overlay under the frame and left its
+     * last fading picture up when it closed (#193) */
+#ifdef _WIN32
+    const bool target = g_ps.sc || g_rm.on;
+#else
+    const bool target = g_ps.sc != VK_NULL_HANDLE;
+#endif
+    return g_ps.inited && !g_ps.failed && target && ov_init();
 }
 
 /* A host-visible buffer of at least need bytes, mapped (a frame's own: its
@@ -1823,6 +2416,82 @@ static void ov_draw(VkCommandBuffer cb, PsFrame *f, uint32_t iw, uint32_t ih, bo
     }
 }
 
+#ifdef _WIN32
+/* The pass done into a shared image: handed over to the frame (its queue
+ * family the external's), our timeline and the frame's drawn one signalled,
+ * the frame told. */
+static void remote_end(VkCommandBuffer cb, PsFrame *f, VkImage dst, bool shot, uint32_t iw, uint32_t ih, uint64_t key)
+{
+    VkImageLayout at = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkPipelineStageFlags2 st = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkAccessFlags2 ac = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    if (shot) {
+        barrier(cb, dst, at, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, st, ac, VK_PIPELINE_STAGE_2_COPY_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferImageCopy r = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                                .imageExtent = { iw, ih, 1 } };
+        T.vkCmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_ps.shot_buf, 1, &r);
+        at = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        st = VK_PIPELINE_STAGE_2_COPY_BIT;
+        ac = 0;
+    }
+    /* to D3D12 (the external queue family), in the layout its COMMON is */
+    VkImageMemoryBarrier2 rel = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = st, .srcAccessMask = ac,
+        .dstStageMask = VK_PIPELINE_STAGE_2_NONE, .dstAccessMask = 0, .oldLayout = at,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = g_hvk.qfam,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL, .image = dst,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+    VkDependencyInfo di = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
+                            .pImageMemoryBarriers = &rel };
+    T.vkCmdPipelineBarrier2(cb, &di);
+    T.vkEndCommandBuffer(cb);
+    const uint64_t value = g_ps.submitted + 1, v = g_rm.v + 1;
+    /* Two batches: the picture, its drawing signalling the frame's `ready`
+     * fence = v (a binary semaphore with the D3D12 fence's value, as
+     * RetroArch's present gives it: VkD3D12FenceSubmitInfoKHR); then this
+     * side's timeline, after it. */
+    const VkD3D12FenceSubmitInfoKHR fv = { .sType = VK_STRUCTURE_TYPE_D3D12_FENCE_SUBMIT_INFO_KHR,
+                                           .signalSemaphoreValuesCount = 1, .pSignalSemaphoreValues = &v };
+    const VkTimelineSemaphoreSubmitInfo tv = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                               .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &value };
+    const VkSubmitInfo si[2] = {
+        { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &fv, .commandBufferCount = 1,
+          .pCommandBuffers = &cb, .signalSemaphoreCount = 1, .pSignalSemaphores = &g_rm.ready },
+        { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &tv, .signalSemaphoreCount = 1,
+          .pSignalSemaphores = &g_ps.tl } };
+    hle_vk_queue_lock();
+    const int64_t ts0 = hle_now_ns();
+    const VkResult r = T.vkQueueSubmit(g_hvk.queue, 2, si, VK_NULL_HANDLE);
+    g_submit_ns += hle_now_ns() - ts0;
+    hle_vk_queue_unlock();
+    if (g_ps.using) {
+        g_ps.using = false;
+        hle_disp_use_end();
+    }
+    if (r != VK_SUCCESS) {
+        hle_vk_check(r, "vkQueueSubmit (the frame's picture)");
+        g_ps.cur = (g_ps.cur + 1) % PS_FRAMES;
+        return;
+    }
+    g_ps.submitted = value;
+    f->value = value;
+    g_rm.v = v;
+    g_rm.val[g_ps.idx] = v;
+    if (shot && wait_value(value)) {
+        shot_write(iw, ih);
+        g_ps.shot_want = false;
+    }
+    /* the newest picture, then the frame woken (it takes the newest it finds) */
+    InterlockedExchange64((volatile LONG64 *)&g_rm.sh->src[g_rm.slot].latest, (LONG64)((v << 2) | g_ps.idx));
+    SetEvent(g_rm.ev);
+    g_ps.shown = true;
+    g_ps.shown_key = key;
+    g_ov.presented++;
+    g_ps.cur = (g_ps.cur + 1) % PS_FRAMES;
+}
+#endif
+
 void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, uint64_t key)
 {
     g_ps.shown = false;
@@ -1910,6 +2579,7 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
     }
     /* the overlay: its textures first, the picture as one under a cover */
     const bool ov = g_ov.on && ov_init();
+    g_ov_shown = ov;
     const bool cover = ov && (g_ov.flags & HLE_OV_COVER);
     bool scene_ok = false;
     if (ov || (g_ov.ok && g_ov.dirty)) {
@@ -1922,12 +2592,28 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
         }
     }
     VkImage dst = g_ps.img[g_ps.idx];
+#ifdef _WIN32
+    if (g_rm.on) {
+        /* the frame's image back from D3D12 (the external queue family) */
+        VkImageMemoryBarrier2 acq = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL,
+            .dstQueueFamilyIndex = g_hvk.qfam, .image = dst, .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+        VkDependencyInfo adi = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
+                                 .pImageMemoryBarriers = &acq };
+        T.vkCmdPipelineBarrier2(cb, &adi);
+    } else
+#endif
     barrier(cb, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     rendering(cb, g_ps.view[g_ps.idx], iw, ih, true);
     if (g_ps.have && !cover) {
-        quad(cb, f, SET_WINDOW, g_ps.pipe[p], from, pc, iw, ih);
+        g_smp_near = p == P_BILINEAR && upscale == HLE_UPSCALE_NEAREST;
+        quad_clipped(cb, f, SET_WINDOW, g_ps.pipe[p], from, pc, iw, ih);
+        g_smp_near = false;
         if (g_osd > 0 && g_ps.pipe[P_OSD]) {
             /* top left, 4 digits each 0.022 of the window's height wide */
             const float dh = 0.045f, dw = dh * 0.62f * (float)wh / (float)ww;
@@ -1942,6 +2628,12 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
     }
     T.vkCmdEndRendering(cb);
     const bool shot = g_ps.shot_want && g_ps.shot_can && shot_buf((VkDeviceSize)iw * ih * 4);
+#ifdef _WIN32
+    if (g_rm.on) {
+        remote_end(cb, f, dst, shot, iw, ih, key);
+        return;
+    }
+#endif
     if (shot) {
         barrier(cb, dst, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,

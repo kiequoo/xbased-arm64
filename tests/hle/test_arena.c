@@ -20,8 +20,34 @@ static void test_alloc_wrap_retire(void)
     HT_EQ_U32(hle_arena_alloc(&a, 1024, 16, 5), 0);         /* empty -> rewinds */
 }
 
+/* A draw's space (from a mark) retagged with the submission it went out
+ * in outlives the one it was allocated under; given back, it joins the
+ * block before it again. */
+static void test_mark_retag_coalesce(void)
+{
+    hle_arena_init(&a, 1024);
+    HT_EQ_U32(hle_arena_alloc(&a, 100, 16, 1), 0);
+    const uint64_t m = hle_arena_mark(&a);
+    HT_EQ_U32(hle_arena_alloc(&a, 100, 16, 1), 112);        /* a block of its own */
+    HT_EQ_U32(a.nb, 2);
+    hle_arena_retag(&a, m, 2);                              /* a kick inside the draw */
+    hle_arena_coalesce(&a);                                 /* values differ: kept apart */
+    HT_EQ_U32(a.nb, 2);
+    hle_arena_retire(&a, 1);                                /* the first goes, the draw's stays */
+    HT_EQ_U32(a.nb, 1);
+    HT_EQ_U32(hle_arena_used(&a), 112);                     /* [100, 212): its alignment too */
+    HT_EQ_U32(hle_arena_alloc(&a, 100, 16, 2), 224);        /* not over the draw's [112, 212) */
+    hle_arena_init(&a, 1024);
+    HT_EQ_U32(hle_arena_alloc(&a, 100, 16, 1), 0);
+    hle_arena_mark(&a);
+    HT_EQ_U32(hle_arena_alloc(&a, 100, 16, 1), 112);
+    hle_arena_coalesce(&a);                                 /* no kick: one block again */
+    HT_EQ_U32(a.nb, 1);
+}
+
 int main(void)
 {
     HT_RUN(test_alloc_wrap_retire);
+    HT_RUN(test_mark_retag_coalesce);
     HT_DONE();
 }

@@ -21,6 +21,7 @@ typedef struct LibGame {
     bool hidden;            /* hidden from the Games screen (lib_show_hidden) */
     bool fav;               /* a favorite (first on the Games screen) */
     int64_t played;         /* when it was last played (time_t), 0 never */
+    int64_t playtime;       /* how long it has been played, in seconds */
     /* the library's own (library.c): a file is an entry for good (its
      * pointer stays valid until lib_shutdown); one that went away, or a
      * second copy of a game and version another entry shows, isn't shown */
@@ -67,6 +68,11 @@ void lib_show_hidden(bool show);
 /* A favorite or not; played now (launched). Kept in custom.txt too. */
 void lib_set_favorite(LibGame *g, bool fav);
 void lib_set_played(LibGame *g);
+/* A session of g's ended after seconds of play: its time played grows. */
+void lib_add_playtime(LibGame *g, int64_t seconds);
+/* When the game played last was played (time_t), 0 none: the Games screen
+ * marks that game. */
+int64_t lib_last_played_time(void);
 /* A picture file (PNG or JPEG) as the game's box art: false if it can't
  * be read. The UI's thread. */
 bool lib_set_cover_file(LibGame *g, const char *path);

@@ -162,6 +162,56 @@ static bool dir_find(Disc *d, uint32_t sec, uint32_t size, const char *name, uin
     return hit;
 }
 
+/* The root directory's files and folders, their names and sizes, as one
+ * number: the same disc in another dump (an XISO rebuilt, a full image)
+ * has the same, a modified one most often not. Order-free: a rebuilt
+ * image can lay the directory's tree out another way. 0: unreadable. */
+static uint32_t dir_sig(Disc *d, uint32_t sec, uint32_t size)
+{
+    if (!size || size > 4u << 20) {
+        return 0;
+    }
+    uint8_t *t = malloc(size);
+    if (!t || !rd_at(d, (int64_t)sec * 2048, t, size)) {
+        free(t);
+        return 0;
+    }
+    uint32_t sum = 0, stack[64], sp = 0, depth = 0;
+    stack[sp++] = 0;
+    while (sp && depth++ < size / 14) {
+        const uint32_t o = stack[--sp] * 4;
+        if (o + 14 > size) {
+            continue;
+        }
+        const uint16_t l = rd16(t + o), r = rd16(t + o + 2);
+        if (l == 0xFFFF) {
+            continue;
+        }
+        const uint8_t nl = t[o + 13];
+        /* a folder by its name alone (its table's size is the layout's), and
+         * not $SystemUpdate (some XISO tools leave it out) */
+        if (o + 14 + nl <= size && !(nl == 13 && !SDL_strncasecmp((const char *)t + o + 14, "$SystemUpdate", 13))) {
+            uint32_t h = 2166136261u;
+            for (unsigned i = 0; i < nl; i++) {
+                h = (h ^ (uint32_t)SDL_tolower(t[o + 14 + i])) * 16777619u;
+            }
+            const uint32_t fsize = (t[o + 12] & 0x10) ? 0 : rd32(t + o + 8);
+            for (int i = 0; i < 4; i++) {
+                h = (h ^ ((fsize >> (8 * i)) & 0xFF)) * 16777619u;
+            }
+            sum += h;
+        }
+        if (l && sp < 64) {
+            stack[sp++] = l;
+        }
+        if (r && sp < 64) {
+            stack[sp++] = r;
+        }
+    }
+    free(t);
+    return sum;
+}
+
 /* A section of the XBE whose headers are x (n bytes): its file offset and
  * size (the names are in the headers). */
 static bool xbe_section(const uint8_t *x, size_t n, const char *want, uint32_t *off, uint32_t *len)
@@ -245,6 +295,13 @@ bool xd_read_game(const char *path, XdGame *g)
             x = malloc(size);
         }
         if (x && rd_at(&d, (int64_t)sec * 2048, x, size)) {
+            /* this disc and not another made from it: the XBE's headers
+             * (its sections' digests are in them) and the root directory */
+            uint32_t h = dir_sig(&d, rd32(vd + 20), rd32(vd + 24)) ^ xsize;
+            for (uint32_t i = 0; i < size; i++) {
+                h = (h ^ x[i]) * 16777619u;
+            }
+            g->disc_sig = h ? h : 1;
             const uint32_t base = rd32(x + 0x104), cert = rd32(x + 0x118) - base;
             if (cert < size && size - cert >= 0xB0) {
                 g->title_id = rd32(x + cert + 8);

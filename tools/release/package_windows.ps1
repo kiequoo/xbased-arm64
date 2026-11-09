@@ -12,6 +12,12 @@ $dst = Join-Path $Out $name
 if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
 New-Item -ItemType Directory -Force $dst | Out-Null
 Copy-Item (Join-Path $Build "xbased.exe") $dst
+# without its debug sections (as the Linux package's strip --strip-debug):
+# the build's own copy keeps them, for the offsets a crash log gives
+$strip = (Get-Command llvm-strip -ErrorAction SilentlyContinue).Source
+if (-not $strip) { $strip = "C:\msys64\clang64\bin\llvm-strip.exe" }
+& $strip --strip-debug (Join-Path $dst "xbased.exe")
+if ($LASTEXITCODE) { throw "llvm-strip failed" }
 Copy-Item -Recurse (Join-Path $repo "native\app\ui\fonts") (Join-Path $dst "fonts")
 Copy-Item -Recurse (Join-Path $repo "mods") (Join-Path $dst "mods")
 Copy-Item -Recurse (Join-Path $repo "cheats") (Join-Path $dst "cheats")   # the Xbox scene's cheat files, by title ID

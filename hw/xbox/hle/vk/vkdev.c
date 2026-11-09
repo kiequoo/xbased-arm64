@@ -586,6 +586,17 @@ int hle_vk_init(void)
                            : e_pcc && q_pcc.pipelineCreationCacheControl;
     c->occl_precise = q.features.occlusionQueryPrecise;
     c->swapchain = nix && has_ext(ext, ne, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+#ifdef _WIN32
+    c->share = e_tl && has_ext(ext, ne, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME) &&
+               has_ext(ext, ne, VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
+    {
+        VkPhysicalDeviceIDProperties idp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES };
+        VkPhysicalDeviceProperties2 ip2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &idp };
+        vkGetPhysicalDeviceProperties2(v->phys, &ip2);
+        memcpy(c->luid, idp.deviceLUID, 8);
+        c->luid_valid = idp.deviceLUIDValid != 0;
+    }
+#endif
     VkFormatProperties fp;
     vkGetPhysicalDeviceFormatProperties(v->phys, VK_FORMAT_R16G16_SSCALED, &fp);
     c->sscaled = fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT;
@@ -751,6 +762,12 @@ int hle_vk_init(void)
     if (c->swapchain) {
         exts[nx++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     }
+#ifdef _WIN32
+    if (c->share) {
+        exts[nx++] = VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME;
+        exts[nx++] = VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME;
+    }
+#endif
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,

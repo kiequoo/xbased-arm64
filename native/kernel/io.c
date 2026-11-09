@@ -730,10 +730,13 @@ static void flush_later(const NcFile *nf)
     closer_queue(&j);
 }
 
+static void io_drain_file(NcKernel *k, unsigned i);
+
 void nc_io_close(NcKernel *k, uint32_t object)
 {
     uint32_t i = nc_vm_rd32(k->vm, object + FO_INDEX);
     if (i < MAX_FILES && g_files[i].used) {
+        io_drain_file(k, i);    /* its reads and writes in flight complete first */
         NcFile *nf = &g_files[i];
         if (nf->fd >= 0 && nf->wrote) {
             close_later(nf);
@@ -848,7 +851,8 @@ static void complete(NcKernel *k, const uint32_t *a)
  * time. NC_DEVTIME="disc_us,disc_kBps,hdd_us,hdd_kBps" (or the property
  * debug.hakux.devtime, read at boot) tunes the drives. */
 static bool g_devtime;
-static bool g_devtime_set;      /* the run's options chose (devtime=), a title's default doesn't apply */
+static bool g_devtime_set;      /* the run's options chose (devtime=) */
+static int g_devtime_title;     /* a title's own mode (nc_io_title_device_mode): over the options' */
 static struct DevRate {
     uint32_t req_us, kbps;
 } g_dev_disc = {125, 27600},    /* the DVD drive at 5x: 500 us, 6900 kB/s */
@@ -877,29 +881,42 @@ static void device_time(int mode)
 void nc_io_set_device_time(int mode)
 {
     g_devtime_set = true;
-    device_time(mode);
+    device_time(g_devtime_title ? g_devtime_title : mode);  /* the options again (in-game menu): the title's stays */
 }
 
-/* The titles that need the drives' own time, the run's options not saying:
+/* The titles that need the drives' own time, whatever the run's options say
+ * (a faster disc breaks them):
  * KotOR II's T3-M4 scene on Peragus (the fuel line blown) stays black at any
  * faster disc, as on an Xbox playing it from its hard disk (the players'
- * fix then: that part from the DVD). A quarter of the time wasn't enough. */
+ * fix then: that part from the DVD). A quarter of the time wasn't enough.
+ * Warrior Within's fall into the ship's hold (its first level) calls through
+ * a freed object now and then when its data comes in sooner: from a
+ * savestate before it, 5 of 26 loads ended in the title's fault with the
+ * disc as fast as the PC reads, 16 of 20 at a quarter of the drive's time,
+ * none of 24 at the drive's own. The Sands of Time and The Two Thrones,
+ * on its engine, with it. */
 int nc_io_title_device_mode(uint32_t title_id, const char *name)
 {
     /* every edition: the id the US and PAL discs share, and the name */
     static const struct {
         uint32_t id;
-        const char *name;   /* in the certificate's title, any case */
+        const char *name;   /* in the certificate's title, any case (NULL: the id only) */
     } k_titles[] = {
         {0x4C410014, "kotor ii"},       /* Star Wars: KotOR II - The Sith Lords */
         {0, "sith lords"},
+        /* the Sands of Time trilogy, one engine (each certificate's title
+         * starts so): Warrior Within US-059 (Kenshi no Kokoro, Japan, too),
+         * The Sands of Time US-029 (USA, Europe), The Two Thrones US-088 */
+        {0x5553003B, "prince of persia"},
+        {0x5553001D, NULL},
+        {0x55530058, NULL},
     };
     char low[64] = "";
     for (unsigned i = 0; name && name[i] && i < sizeof(low) - 1; i++) {
         low[i] = (char)tolower((unsigned char)name[i]);
     }
     for (unsigned i = 0; i < sizeof(k_titles) / sizeof(k_titles[0]); i++) {
-        if ((k_titles[i].id && k_titles[i].id == title_id) || strstr(low, k_titles[i].name)) {
+        if ((k_titles[i].id && k_titles[i].id == title_id) || (k_titles[i].name && strstr(low, k_titles[i].name))) {
             return 2;
         }
     }
@@ -909,8 +926,13 @@ int nc_io_title_device_mode(uint32_t title_id, const char *name)
 void nc_io_title_device_time(uint32_t title_id, const char *name)
 {
     const int mode = nc_io_title_device_mode(title_id, name);
-    if (!g_devtime_set && mode) {
-        nc_log("hakuX-native-io", "console timing: the drives' own for %08x (%s)", title_id, name ? name : "");
+    g_devtime_title = mode;
+    if (!mode && !g_devtime_set) {
+        device_time(2);     /* the options not saying: the console drive's time (1.0.80) */
+    }
+    if (mode) {
+        nc_log("hakuX-native-io", "console timing: the drives' own for %08x (%s)%s", title_id, name ? name : "",
+               g_devtime_set ? ", over the options' disc speed" : "");
         device_time(mode);
     }
 }
@@ -956,6 +978,7 @@ typedef struct DiscJob {
     uint32_t thread_id;      /* its id then: the slot may hold another thread by the end */
     bool sync;               /* a synchronous handle's: the thread waits for it (nc_ke_block) */
     bool write;              /* a hard disk file's write from the buffer (write_data), not a read */
+    unsigned slot;           /* its file's slot (g_files), counted in g_file_jobs till it completes */
     bool ok;
     int err;
     char path[64]; /* for the log */
@@ -978,6 +1001,7 @@ typedef struct Reader {
 
 static Reader g_readers[2] = {{PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER},
                               {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER}};
+static unsigned g_file_jobs[MAX_FILES];    /* each file's jobs queued and not yet completed (the guest CPU's) */
 static bool g_io_hurry;      /* a savestate's drain: no drive time left to wait (atomic) */
 
 static uint64_t mono_ns(void)
@@ -1093,7 +1117,7 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
     DiscJob j = {.disc = k->disc, .file = nf->disc, .fd = -1, .off = off, .va = run[0].va, .n = n,
                  .dev_us = dev_us, .iosb = a[4], .event = event, .apc = a[2], .apc_ctx = a[3],
                  .thread = k->current, .thread_id = k->current ? k->current->id : 0, .sync = sync,
-                 .write = write};
+                 .write = write, .slot = (unsigned)(nf - g_files)};
     snprintf(j.path, sizeof(j.path), "%s", nf->path);
     const struct FilePort *fp = file_port(k, a);
     if (fp) {
@@ -1145,6 +1169,7 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
     }
     const bool queued = r->started && r->busy < DISC_JOBS;
     if (queued) {
+        g_file_jobs[j.slot]++;
         pin_buffer(k, &j, 1);
         r->q[(r->head + r->n++) % DISC_JOBS] = j;
         r->busy++;
@@ -1165,6 +1190,9 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
 
 static void disc_read_done(NcKernel *k, const DiscJob *j)
 {
+    if (j->slot < MAX_FILES && g_file_jobs[j->slot]) {
+        g_file_jobs[j->slot]--;
+    }
     pin_buffer(k, j, -1);
     const bool ok = j->ok;
     const int err = j->err;
@@ -1201,12 +1229,10 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
     }
 }
 
-void nc_io_poll(NcKernel *k)
+/* The jobs the drives finished, completed: their IoStatusBlocks, events,
+ * APCs, waiting threads. done: room for DISC_JOBS. */
+static void io_complete_done(NcKernel *k, DiscJob *done)
 {
-    if (!nc_irq_take_work()) {
-        return;
-    }
-    static DiscJob done[DISC_JOBS]; /* the guest CPU's thread only */
     for (unsigned d = 0; d < 2; d++) {
         Reader *const r = &g_readers[d];
         pthread_mutex_lock(&r->mu);
@@ -1218,6 +1244,43 @@ void nc_io_poll(NcKernel *k)
         for (unsigned i = 0; i < n; i++) {
             disc_read_done(k, &done[i]);
         }
+    }
+}
+
+void nc_io_poll(NcKernel *k)
+{
+    if (!nc_irq_take_work()) {
+        return;
+    }
+    static DiscJob done[DISC_JOBS]; /* the guest CPU's thread only */
+    io_complete_done(k, done);
+}
+
+/* A file's last handle closes with its reads and writes still in flight:
+ * they complete before it goes, as the console's do by then. Oddworld:
+ * Stranger's Wrath writes a 512-byte file overlapped and unbuffered, its
+ * OVERLAPPED on the stack, and closes it at once without waiting; the
+ * write's IoStatusBlock, completed later, landed where the stack then held
+ * a saved EBP and a return address, and the thread returned to 0x200 (the
+ * byte count) as New Game began (#208). In the guest CPU's thread, which
+ * waits here: a moment, on any drive. */
+static void io_drain_file(NcKernel *k, unsigned i)
+{
+    if (!g_file_jobs[i]) {
+        return;
+    }
+    static DiscJob done[DISC_JOBS];
+    const uint64_t t0 = mono_ns();
+    while (g_file_jobs[i] && mono_ns() - t0 < 10000000000ull) {
+        io_complete_done(k, done);
+        if (g_file_jobs[i]) {
+            usleep(200);
+        }
+    }
+    if (g_file_jobs[i]) {
+        nc_log("hakuX-native-io", "%s closed with %u requests still in flight after 10 s", g_files[i].path,
+               g_file_jobs[i]);
+        g_file_jobs[i] = 0;
     }
 }
 
@@ -2180,8 +2243,14 @@ static uint64_t write_data(NcKernel *k, const uint32_t *a, const uint8_t *src, u
      * synchronous handle's) and the rest of the title runs on. In place, a
      * slow drive (a USB hard disk, an SD card) held the whole console:
      * Project Gotham Racing 2's intro video stood still for minutes while
-     * it copied its cars to its cache. */
-    if (later && len && va && (nf->async || can_block(k))) {
+     * it copied its cars to its cache. An overlapped write only when it
+     * pends on the console too (io_finish): with an event or an APC, or past
+     * the cache (no_buffering). One with neither, through the cache, is done
+     * in the call there: pended, Hunter: The Reckoning - Redeemer took its
+     * settings' write as failed as its first level began ("a problem with
+     * the disc"), since 1.0.49. */
+    const bool pends = nf->async ? a[1] || a[2] || nf->no_buffering : can_block(k);
+    if (later && len && va && pends) {
         const IoRun run = {va, len};
         if (disc_read_later(k, nf, a, &run, 1, off, len, !nf->async, 0, true)) {
             nf->wrote = true;

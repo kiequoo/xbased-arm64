@@ -225,6 +225,27 @@ static bool is_high8(ZydisRegister r)
 }
 
 /* ESP's forms to R12's; anything else as it is. */
+/* 0F xx: an MMX instruction on a Pentium III (MMX, and SSE's integer ones on
+ * MMX registers), which a 66 prefix would make SSE2's elsewhere */
+static bool nc_x86_mmx_opcode(uint8_t op)
+{
+    switch (op) {
+    case 0x60: case 0x61: case 0x62: case 0x63: case 0x64: case 0x65: case 0x66: case 0x67:
+    case 0x68: case 0x69: case 0x6A: case 0x6B: case 0x6E: case 0x6F:
+    case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75: case 0x76: case 0x7E: case 0x7F:
+    case 0xC4: case 0xC5:
+    case 0xD1: case 0xD2: case 0xD3: case 0xD5: case 0xD7: case 0xD8: case 0xD9: case 0xDA: case 0xDB:
+    case 0xDC: case 0xDD: case 0xDE: case 0xDF:
+    case 0xE0: case 0xE1: case 0xE2: case 0xE3: case 0xE4: case 0xE5: case 0xE7: case 0xE8: case 0xE9:
+    case 0xEA: case 0xEB: case 0xEC: case 0xED: case 0xEE: case 0xEF:
+    case 0xF1: case 0xF2: case 0xF3: case 0xF5: case 0xF6: case 0xF7: case 0xF8: case 0xF9: case 0xFA:
+    case 0xFC: case 0xFD: case 0xFE:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static ZydisRegister remap(ZydisRegister r, ZydisRegister esp32 = ZYDIS_REGISTER_R12D)
 {
     if (r == ZYDIS_REGISTER_ESP) {
@@ -870,6 +891,18 @@ struct Translator {
                 push_imm(selector(o0.reg.value));
                 return CONTINUE;
             }
+            if (in.operand_width == 16 && o0.type != ZYDIS_OPERAND_TYPE_MEMORY) {
+                /* a word pushed (66 50+r, 66 6A / 68): ESP down by 2.
+                 * Castlevania: Curse of Darkness pushes DX as its title
+                 * screen ends: a system op, the core stopped there. */
+                if (o0.type == ZYDIS_OPERAND_TYPE_REGISTER) {
+                    a.op(ZYDIS_MNEMONIC_MOV, {M(ZYDIS_REGISTER_R12D, -2, 2), R(remap(o0.reg.value))}, true);
+                } else {
+                    a.op(ZYDIS_MNEMONIC_MOV, {M(ZYDIS_REGISTER_R12D, -2, 2), I((int16_t)o0.imm.value.s)}, true);
+                }
+                esp_add(-2);
+                return CONTINUE;
+            }
             if (in.operand_width != 32) {
                 return FAIL;
             }
@@ -890,6 +923,15 @@ struct Translator {
                 esp_add(4);
                 return CONTINUE;
             }
+            if (in.operand_width == 16 && o0.type == ZYDIS_OPERAND_TYPE_REGISTER) {
+                /* a word popped (66 58+r): ESP up by 2 (SP itself: the value) */
+                const ZydisRegister r = remap(o0.reg.value);
+                a.op(ZYDIS_MNEMONIC_MOV, {R(r), M(ZYDIS_REGISTER_R12D, 0, 2)}, true);
+                if (r != ZYDIS_REGISTER_R12W) {
+                    esp_add(2);
+                }
+                return CONTINUE;
+            }
             if (in.operand_width != 32) {
                 return FAIL;
             }
@@ -901,12 +943,19 @@ struct Translator {
                 }
                 return CONTINUE;
             }
-            a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_R13D), M(ZYDIS_REGISTER_R12D, 0, 4)}, true);
-            esp_add(4);
+            /* the store before ESP moves: a store that faults (a write-
+             * watched page) restarts the instruction from the frame the
+             * fault saw, which must not have ESP popped already (a second
+             * pop then, of the next slot). The address is the one after
+             * the pop (ESP + 4 as the base); the value in R14, as an FS
+             * operand's address takes R13. */
+            a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_R14D), M(ZYDIS_REGISTER_R12D, 0, 4)}, true);
             ZydisEncoderOperand m;
-            if (!mem_operand(o0, m) || !a.op(ZYDIS_MNEMONIC_MOV, {m, R(ZYDIS_REGISTER_R13D)}, true)) {
+            const int64_t after = o0.mem.base == ZYDIS_REGISTER_ESP ? 4 : 0;
+            if (!mem_operand(o0, m, after) || !a.op(ZYDIS_MNEMONIC_MOV, {m, R(ZYDIS_REGISTER_R14D)}, true)) {
                 return FAIL;
             }
+            esp_add(4);
             return CONTINUE;
         }
         case ZYDIS_MNEMONIC_PUSHAD:
@@ -1182,9 +1231,21 @@ static Block *translate(NcCpu *cpu, uint32_t eip, bool bypass)
                                                                                : 0x1000 - (at & 0xFFF);
         ZydisDecodedInstruction in;
         ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
-        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&cpu->dec, (const void *)(uintptr_t)at, avail, &in, ops))) {
+        /* The Xbox's CPU is a Pentium III: no SSE2. An MMX instruction with
+         * an operand-size prefix (66 0F xx) is MMX there, the prefix ignored;
+         * on the host it would be SSE2's (XMM registers, 16 bytes, a 16-byte
+         * aligned operand). Dr. Muto adds a pixel so (66 0F DC: PADDUSB) from
+         * an unaligned address: SSE2's general protection fault, the title
+         * gone. Decoded without the prefix, as the console runs it. */
+        const uint8_t *ib = (const uint8_t *)(uintptr_t)at;
+        const bool mmx66 = avail >= 3 && ib[0] == 0x66 && ib[1] == 0x0F && nc_x86_mmx_opcode(ib[2]);
+        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&cpu->dec, (const void *)(uintptr_t)(at + (mmx66 ? 1 : 0)),
+                                                 avail - (mmx66 ? 1 : 0), &in, ops))) {
             t.sysop(at, NC_SYSOP_UD2, 0);
             break;
+        }
+        if (mmx66) {
+            in.length++;    /* the prefix is the instruction's too */
         }
         uint8_t *const insn_start = a.p;
         const Translator::Result r = t.insn(in, ops);

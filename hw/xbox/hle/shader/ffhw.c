@@ -214,13 +214,22 @@ size_t hle_ffhw_glsl(const uint32_t *tokens, unsigned nslots, const HleVshKey *v
         }
     }
     if (k.fog) {
-        /* the fog coordinate by SET_FOG_GEN_MODE */
+        /* the fog coordinate by SET_FOG_GEN_MODE, from the eye-space point:
+         * the eye position over its w. A model view whose last row isn't
+         * (0, 0, 0, 1) (a planar projected shadow's: Hunter: The Reckoning -
+         * Redeemer's under its characters, w ~18) leaves it homogeneous; the
+         * screen position cancels the scale, the fog distance didn't, and the
+         * shadows were the fog's colour (yellow) at 18 times their distance.
+         * w 1 (every other draw): the same as before. */
+        if (k.fog - 1 == 1 || k.fog - 1 == 2 || k.fog - 1 == 3) {
+            put(&b, "    vec3 fE = tPos.w != 0.0 && tPos.w != 1.0 ? tPos.xyz / tPos.w : tPos.xyz;\n");
+        }
         switch (k.fog - 1) {
         case 0: put(&b, "    oFog = vec4(clamp(v4.a, 0.0, 1.0));\n"); break;
-        case 1: put(&b, "    oFog = vec4(length(tPos.xyz));\n"); break;
-        case 2: put(&b, "    oFog = vec4(dot(c[%u].xyz, tPos.xyz) + c[%u].w);\n",
+        case 1: put(&b, "    oFog = vec4(length(fE));\n"); break;
+        case 2: put(&b, "    oFog = vec4(dot(c[%u].xyz, fE) + c[%u].w);\n",
                     HLE_FFHW_C_FOGPLANE, HLE_FFHW_C_FOGPLANE); break;
-        case 3: put(&b, "    oFog = vec4(abs(dot(c[%u].xyz, tPos.xyz) + c[%u].w));\n",
+        case 3: put(&b, "    oFog = vec4(abs(dot(c[%u].xyz, fE) + c[%u].w));\n",
                     HLE_FFHW_C_FOGPLANE, HLE_FFHW_C_FOGPLANE); break;
         default: put(&b, "    oFog = vec4(v5.x);\n"); break;
         }

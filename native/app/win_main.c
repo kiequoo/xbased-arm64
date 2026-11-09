@@ -34,9 +34,15 @@
 #include "native/app/ui/input_map.h"
 #include "native/app/ui/ui.h"
 #include "hw/xbox/hle/vk/swapchain.h"
+#include "hw/xbox/hle/vk/share.h"
 #include "native/app/ui/xbox_data.h"
 #include "native/app/ui/xemu_import.h"
 #include "native/app/win_aslr.h"
+#include "native/app/win_frame.h"
+#ifndef _WIN32
+#include <poll.h>
+#include <sys/wait.h>
+#endif
 #include "native/app/win_auto.h"
 #include "native/app/win_mods.h"
 #include "native/core/cheats.h"
@@ -325,11 +331,21 @@ static void give_foreground(bool to_dash)
  * dashboard waiting behind it. TerminateProcess skips that; what the run
  * wrote is written (stderr isn't buffered, files are closed as they go).
  * A code with bit 30 is a run started again (run_again): no dashboard. */
+static void *g_frame;   /* the session's frame (win_frame.h), NULL: the run's window on its own */
+static bool g_frame_hidden;     /* the run's window out of sight in it: the frame presents the pictures */
+static bool g_frame_keep;   /* this run ends for another (run_again): the frame stays */
+
 static _Noreturn void exit_now(int code)
 {
+    const bool closing = g_frame && !(code & 0x40000000) && !g_frame_keep;
+    if (closing) {
+        nc_frame_close(g_frame);    /* the session's end: the frame hands the screen back to the dashboard */
+    }
     fflush(NULL);
 #ifdef _WIN32
-    give_foreground(!(code & 0x40000000));
+    if (!closing) {
+        give_foreground(!(code & 0x40000000));
+    }
     TerminateProcess(GetCurrentProcess(), (UINT)code);
 #endif
     _exit(code);
@@ -386,14 +402,14 @@ static void run_again(const char *extra, bool hold)
     HANDLE ev = CreateEventA(NULL, TRUE, FALSE, ev_name);
     SetEnvironmentVariableA("XBASED_READY", ev ? ev_name : NULL);
     char rect[64] = "";
-    if (g_nw.sdl_window && !(SDL_GetWindowFlags(g_nw.sdl_window) & SDL_WINDOW_FULLSCREEN)) {
+    if (!g_frame && g_nw.sdl_window && !(SDL_GetWindowFlags(g_nw.sdl_window) & SDL_WINDOW_FULLSCREEN)) {
         int x = 0, y = 0, w = 0, h = 0;
         SDL_GetWindowPosition(g_nw.sdl_window, &x, &y);
         SDL_GetWindowSize(g_nw.sdl_window, &w, &h);
         snprintf(rect, sizeof(rect), "%d,%d,%d,%d", x, y, w, h);
     }
     SetEnvironmentVariableA("XBASED_RECT", rect[0] ? rect : NULL);
-    if (g_nw.hwnd) {
+    if (g_nw.hwnd && !g_frame) {
         SetWindowPos((HWND)g_nw.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
     PROCESS_INFORMATION pi;
@@ -405,7 +421,7 @@ static void run_again(const char *extra, bool hold)
          * exit code (bit 30 set) lets it follow the game on (dash.c) */
         exit_now((int)(0x40000000u | (pi.dwProcessId & 0x3FFFFFFFu)));
     }
-    if (g_nw.hwnd) {
+    if (g_nw.hwnd && !g_frame) {
         SetWindowPos((HWND)g_nw.hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 #else
@@ -434,6 +450,32 @@ static void run_again(const char *extra, bool hold)
     }
     argv[k] = NULL;
     fflush(stderr);
+    if (g_frame) {
+        /* inside the frame: the next run a process of its own, its window
+         * coming up under this one's, this one going once it has drawn
+         * (it writes to the pipe); exec'ing this one dropped its window */
+        int rp[2];
+        if (pipe(rp) == 0) {
+            char fd[16];
+            snprintf(fd, sizeof(fd), "%d", rp[1]);
+            setenv("XBASED_READY_FD", fd, 1);
+            const pid_t pid = fork();
+            if (pid == 0) {
+                close(rp[0]);
+                execv(exe, argv);
+                _exit(127);
+            }
+            close(rp[1]);
+            unsetenv("XBASED_READY_FD");
+            if (pid > 0) {
+                wait_next_run((void *)(intptr_t)(rp[0] + 1), (void *)(intptr_t)pid);
+                close(rp[0]);
+                g_frame_keep = true;
+                exit_now(0);
+            }
+            close(rp[0]);
+        }
+    }
     execv(exe, argv);
 #endif
     exit_now(0);
@@ -547,9 +589,36 @@ static void pad_removed(SDL_JoystickID id)
     }
 }
 
+/* Keys a shortcut with Ctrl or Alt took: the game doesn't see them until
+ * they're let go (Ctrl+1 a shortcut, 1 the left trigger) */
+static bool g_hk_eaten[SDL_SCANCODE_COUNT];
+static bool g_hk_any_eaten;
+/* Gamepads whose Guide button is held: the shortcuts' layer, the game
+ * seeing that pad let go meanwhile (Guide + A no A in the game) */
+static bool pad_guide_held(SDL_Gamepad *pad)
+{
+    return pad && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
+}
+
 static void update_pads(bool focused)
 {
     const bool *keys = SDL_GetKeyboardState(NULL);
+    static bool kept[SDL_SCANCODE_COUNT];
+    if (g_hk_any_eaten) {
+        memcpy(kept, keys, sizeof(kept));
+        bool any = false;
+        for (int i = 0; i < SDL_SCANCODE_COUNT; i++) {
+            if (g_hk_eaten[i] && !keys[i]) {
+                g_hk_eaten[i] = false;      /* let go */
+            }
+            if (g_hk_eaten[i]) {
+                kept[i] = false;
+                any = true;
+            }
+        }
+        g_hk_any_eaten = any;
+        keys = kept;
+    }
     for (unsigned i = 0; i < 4; i++) {
         NcPadState s;
         memset(&s, 0, sizeof(s));
@@ -557,7 +626,7 @@ static void update_pads(bool focused)
         /* the keyboard: player 1 on auto, any player set to it */
         const bool kb = focused && (g_map.device[i] == -1 || (i == 0 && g_map.device[i] == 0));
         ImPad m;
-        im_read(&g_map, (int)i, kb ? keys : NULL, pad, &m);
+        im_read(&g_map, (int)i, kb ? keys : NULL, pad_guide_held(pad) ? NULL : pad, &m);
         s.buttons = m.buttons;
         memcpy(s.analog, m.analog, sizeof(s.analog));
         s.lx = m.lx;
@@ -656,6 +725,71 @@ static void load_state(int slot)
 }
 
 static bool g_uncap;    /* the run's frame rate setting (fast forward goes back to it) */
+static int g_crop[2];   /* croph=, cropv= of the run's options */
+static int g_maxfps = -1;   /* maxfps=: an uncapped game's limit (-1 the display's refresh, 0 none) */
+static bool g_fs60;         /* fsrate=60: full screen in the panel's highest mode a multiple of 60 Hz */
+
+/* The display's refresh rate (Hz, rounded; 60 if unknown) */
+static int display_hz(SDL_Window *w)
+{
+    const SDL_DisplayMode *m = SDL_GetDesktopDisplayMode(w ? SDL_GetDisplayForWindow(w) : SDL_GetPrimaryDisplay());
+    const int hz = m && m->refresh_rate > 0 ? (int)(m->refresh_rate + 0.5f) : 60;
+    return hz < 60 ? 60 : hz;
+}
+
+/* Full screen, fsrate=60: the display's highest mode at its desktop size
+ * whose refresh is a whole number of 60 Hz (59.94 too), no faster than the
+ * desktop's: 120 Hz on a 144 or 165 Hz panel, 240 on a 280. The emulated
+ * vblank then keeps to the panel's (nv2a.c), and every frame shows for as
+ * long as on the console; at 144 Hz a 30 fps game's frames showed 28 and 35
+ * ms in turn. Already a multiple, or none: the desktop's, borderless. */
+static void fs_mode(SDL_Window *w)
+{
+    if (!g_fs60) {
+        SDL_SetWindowFullscreenMode(w, NULL);
+        return;
+    }
+    const SDL_DisplayID d = SDL_GetDisplayForWindow(w);
+    const SDL_DisplayMode *dm = SDL_GetDesktopDisplayMode(d);
+    if (!dm || dm->refresh_rate <= 0) {
+        SDL_SetWindowFullscreenMode(w, NULL);
+        return;
+    }
+    /* the desktop's own rate: a run started again (a state loaded) comes
+     * up while the last one's mode is still on the panel, and took that
+     * for the desktop's (the game then stayed at the desktop's 280 Hz) */
+    const char *was = getenv("XBASED_DESKTOP_HZ");
+    const float r0 = was && atof(was) > 0 ? (float)atof(was) : dm->refresh_rate;
+    if (!was) {
+        char hz[24];
+        snprintf(hz, sizeof(hz), "%.3f", r0);
+        setenv("XBASED_DESKTOP_HZ", hz, 1);  /* for the runs this one starts */
+    }
+    const int k0 = (int)(r0 / 60.0f + 0.5f);
+    if (k0 >= 1 && k0 <= 4 && fabsf(r0 - 60.0f * (float)k0) <= 0.01f * 60.0f * (float)k0) {
+        SDL_SetWindowFullscreenMode(w, NULL);  /* the desktop's is one */
+        return;
+    }
+    int n = 0;
+    SDL_DisplayMode **ms = SDL_GetFullscreenDisplayModes(d, &n);
+    const SDL_DisplayMode *best = NULL;
+    for (int i = 0; ms && i < n; i++) {
+        const SDL_DisplayMode *m = ms[i];
+        const int k = (int)(m->refresh_rate / 60.0f + 0.5f);
+        if (m->w == dm->w && m->h == dm->h && k >= 1 && k <= 4 && m->refresh_rate <= r0 + 0.5f &&
+            fabsf(m->refresh_rate - 60.0f * (float)k) <= 0.01f * 60.0f * (float)k &&
+            (!best || m->refresh_rate > best->refresh_rate)) {
+            best = m;
+        }
+    }
+    SDL_SetWindowFullscreenMode(w, best);
+    nc_log("hakuX-app", "full screen: %s", best ? "the panel's highest mode a multiple of 60 Hz" : "the desktop's");
+    if (best) {
+        nc_log("hakuX-app", "full screen mode %dx%d at %.2f Hz (the desktop's %.2f)", best->w, best->h,
+               best->refresh_rate, r0);
+    }
+    SDL_free(ms);
+}
 static int g_fps_cap;   /* ... its limit, uncapped (0: none) */
 static float g_volume = 1.0f;
 static bool g_mute_bg = true;   /* silent while the window isn't the active one */
@@ -692,6 +826,8 @@ static double g_notice_t0;
 static char g_notice_file[MAX_PATH + 160];  /* shown once this is written (a picture) */
 #ifdef _WIN32
 static HANDLE g_ready_ev;       /* the run before this one waits on it (run_again) */
+#else
+static int g_ready_fd = -1;     /* the run before this one waits on it (run_again, inside the frame) */
 #endif
 
 static void ov_present(void)
@@ -703,8 +839,25 @@ static void ov_present(void)
 
 static void ov_size(int *w, int *h)
 {
-    *w = g_nw.width;
-    *h = g_nw.height;
+    uint32_t fw = 0, fh = 0;
+    if (hle_present_remote()) {
+        hle_present_remote_size(&fw, &fh);  /* the frame's pictures: its size */
+    }
+    *w = fw ? (int)fw : g_nw.width;
+    *h = fh ? (int)fh : g_nw.height;
+}
+
+/* the frame's pointer (its pictures: the frame has the mouse) */
+static float g_frame_mx = -1, g_frame_my = -1;
+
+static bool frame_pointer(float *x, float *y)
+{
+    if (!hle_present_remote()) {
+        return false;
+    }
+    *x = g_frame_mx;
+    *y = g_frame_my;
+    return true;
 }
 
 static bool ov_ok(void)
@@ -752,8 +905,21 @@ static void wait_next_run(void *ev, void *proc)
         CloseHandle((HANDLE)ev);
     }
 #else
-    (void)ev;
-    (void)proc;
+    /* ev: the pipe's read end + 1, proc the next run's pid */
+    const int fd = (int)(intptr_t)ev - 1;
+    const pid_t pid = (pid_t)(intptr_t)proc;
+    const uint64_t until = SDL_GetTicks() + 15000;
+    while (fd >= 0 && SDL_GetTicks() < until) {
+        struct pollfd pf = {fd, POLLIN, 0};
+        if (poll(&pf, 1, 0) > 0 || waitpid(pid, NULL, WNOHANG) == pid) {
+            break;      /* drawn (a byte, or its end: gone) */
+        }
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+        }
+        ov_present();
+        SDL_Delay(4);
+    }
 #endif
 }
 
@@ -892,6 +1058,7 @@ static void overlay_tick(void)
 static void apply_cfg(const Config *global, const Config *game, bool sound)
 {
     const Config *pick[2] = {game, global};
+    int crop_h = 0, crop_v = 0;     /* none unless set (a game's back to "global" leaves none) */
     for (int k = 1; k >= 0; k--) {
         const Config *c = pick[k];
         const char *v;
@@ -902,6 +1069,12 @@ static void apply_cfg(const Config *global, const Config *game, bool sound)
         if ((v = cfg_get(c, "overscan"))) {
             nc_present_set_overscan(atoi(v));
         }
+        if ((v = cfg_get(c, "croph"))) {
+            crop_h = atoi(v);
+        }
+        if ((v = cfg_get(c, "cropv"))) {
+            crop_v = atoi(v);
+        }
         if ((v = cfg_get(c, "fxaa"))) {
             nc_present_set_fxaa(atoi(v) != 0);
         }
@@ -910,6 +1083,9 @@ static void apply_cfg(const Config *global, const Config *game, bool sound)
         }
         if ((v = cfg_get(c, "crt"))) {
             hle_present_set_crt(atoi(v));
+        }
+        if ((v = cfg_get(c, "vsync"))) {
+            hle_present_set_vsync(atoi(v) != 0);
         }
         if ((v = cfg_get(c, "showfps"))) {
             nc_present_set_show_fps(atoi(v) != 0);
@@ -925,6 +1101,7 @@ static void apply_cfg(const Config *global, const Config *game, bool sound)
             g_mute_bg = atoi(v) != 0;
         }
     }
+    nc_present_set_crop(crop_h, crop_v);
     g_fx = cfg_bool(global, "ui.fx", true);
 }
 
@@ -940,7 +1117,9 @@ static void quit_to_dash(SDL_Window *win)
      * presenter's swapchain, the paused threads), so nothing can hold the
      * window */
     nc_log("hakuX-app", "quit to the dashboard");
-    give_foreground(true);
+    if (!g_frame) {
+        give_foreground(true);  /* else the frame hands it back (exit_now) */
+    }
     SDL_HideWindow(win);
     exit_now(0);
 }
@@ -1114,7 +1293,7 @@ static const char *pick_disc(void)
 }
 
 #ifndef XBASED_VERSION
-#define XBASED_VERSION "1.0.75"
+#define XBASED_VERSION "1.0.89"
 #endif
 
 static void rm_tree(const char *path)
@@ -1190,9 +1369,70 @@ static void shader_cache_by_version(const char *base)
 #define NC_PLATFORM_NAME "Linux"
 #endif
 
+/* A shortcut pressed (down) or let go: only fast forward lasts while held;
+ * slot: quick save and load's (Shift with the key: 2) */
+static int g_pad_held_hk = -1, g_pad_held_code;
+static bool g_guide_alone;      /* Guide pressed, nothing with it yet: a tap opens the menu */
+
+static void hotkey_do(SDL_Window *win, int h, bool down, int slot, bool *paused, bool minimized)
+{
+    if (!down) {
+        if (h == IM_HK_TURBO) {
+            nc_win_prop_set("debug.hakux.uncap", g_uncap ? "1" : "0");
+            char cap[16];
+            snprintf(cap, sizeof(cap), "%d", g_fps_cap);
+            nc_win_prop_set("debug.hakux.fpscap", cap);
+        }
+        return;
+    }
+    switch (h) {
+    case IM_HK_FULL:
+        if (g_frame) {
+            nc_frame_toggle_fullscreen(g_frame);
+            break;
+        }
+        fs_mode(win);
+        SDL_SetWindowFullscreen(win, !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN));
+        break;
+    case IM_HK_PAUSE:
+        *paused = !*paused;
+        nc_kernel_set_paused(&g_core.kernel, *paused || minimized);
+        nc_audio_set_paused(*paused || minimized);
+        nc_log("hakuX-app", "%s", *paused ? "paused" : "resumed");
+        break;
+    case IM_HK_SAVE:
+        save_state(slot);
+        break;
+    case IM_HK_LOAD:
+        load_state(slot);
+        break;
+    case IM_HK_TURBO:
+        nc_win_prop_set("debug.hakux.uncap", "1");  /* frames as fast as they come, while held */
+        nc_win_prop_set("debug.hakux.fpscap", "0");
+        break;
+    case IM_HK_SHOT:
+        screenshot();
+        break;
+    case IM_HK_MENU:
+        ingame_menu(win, paused, minimized);
+        break;
+    default:
+        break;
+    }
+}
+
+/* The in-game menu's full screen key (dash.c): the frame's */
+static void frame_fullscreen(void)
+{
+    nc_frame_toggle_fullscreen(g_frame);
+}
+
 int main(int argc, char *argv[])
 {
 #ifdef _WIN32
+    if (argc > 1 && !strcmp(argv[1], "frame")) {
+        return nc_frame_main(argc, argv);      /* the game's frame (win_frame.h) */
+    }
     xb_aslr_check();    /* Windows' first memory where the guest's goes: run again without (win_aslr.h) */
 #endif
     /* The gamepads with the window in the background (the dashboard behind a
@@ -1227,6 +1467,18 @@ int main(int argc, char *argv[])
     for (int i = 0; i < g_nargs; i++) {
         again |= !strncmp(g_args[i], "loadstate=", 10);
     }
+#ifndef _WIN32
+    {
+        /* a game's run, X11: this process stays as the session's frame, a
+         * child of it goes on as the run (win_frame.h); frame=0, the
+         * dashboard or a disc to pick: as before */
+        const char *fv = opt_value("frame");
+        const char *fr = opt_value("fsrate");
+        if (disc && strcmp(disc, "none") && !opt_flag("pick") && (!fv || strcmp(fv, "0"))) {
+            nc_frame_fork(want_fullscreen(), fr && !strcmp(fr, "60"));
+        }
+    }
+#endif
     log_setup(opt_flag("console"), again);
     if (again) {
         nc_log("hakuX-app", "---- started again (%s)", opt_flag("relaunch") ? "the title's relaunch" : "a state loaded");
@@ -1285,6 +1537,16 @@ int main(int argc, char *argv[])
         if (g_disc_fd < 0) {
             nc_log("hakuX-app", "can't open the disc %s", g_disc);
         }
+    } else {
+        /* the controls as a game's (game_options), xbased.ini's alone: left
+         * unresolved, the Xbox dashboard got no controller until the in-game
+         * menu resolved them on Resume (#124) */
+        char path[MAX_PATH + 16];
+        snprintf(path, sizeof(path), "%sxbased.ini", g_data_dir);
+        Config global, none;
+        cfg_load(&global, path);
+        memset(&none, 0, sizeof(none));
+        im_resolve(&g_map, &global, &none);
     }
     char hdd[1024];
     const char *hv = opt_value("hdd");
@@ -1345,12 +1607,24 @@ int main(int argc, char *argv[])
                                                           : NC_ASPECT_AUTO);
         } else if (!strncmp(a, "overscan=", 9)) {
             nc_present_set_overscan(atoi(a + 9));
+        } else if (!strncmp(a, "maxfps=", 7)) {
+            g_maxfps = !strcmp(a + 7, "refresh") ? -1 : atoi(a + 7);
+        } else if (!strncmp(a, "fsrate=", 7)) {
+            g_fs60 = !strcmp(a + 7, "60");
+        } else if (!strncmp(a, "croph=", 6)) {
+            g_crop[0] = atoi(a + 6);
+            nc_present_set_crop(g_crop[0], g_crop[1]);
+        } else if (!strncmp(a, "cropv=", 6)) {
+            g_crop[1] = atoi(a + 6);
+            nc_present_set_crop(g_crop[0], g_crop[1]);
         } else if (!strncmp(a, "fxaa=", 5)) {
             nc_present_set_fxaa(atoi(a + 5) != 0);
         } else if (!strncmp(a, "upscale=", 8)) {
             nc_present_set_upscale(nc_upscale_from_name(a + 8));
         } else if (!strncmp(a, "crt=", 4)) {
             hle_present_set_crt(atoi(a + 4));
+        } else if (!strncmp(a, "vsync=", 6)) {
+            hle_present_set_vsync(atoi(a + 6) != 0);
         } else if (!strncmp(a, "volume=", 7)) {
             g_volume = atoi(a + 7) / 100.0f;
             nc_audio_set_volume(g_volume);
@@ -1361,6 +1635,11 @@ int main(int argc, char *argv[])
         }
     }
     nc_win_mods_prepare(g_exe_dir, g_disc_fd, g_args, g_nargs);
+    if (opt.uncap && opt.fps_cap <= 0 && g_maxfps != 0) {
+        /* uncapped with no limit of the game's own: the global one, never
+         * under 60 (games without a frame cap of their own ran at hundreds) */
+        opt.fps_cap = g_maxfps < 0 ? display_hz(NULL) : g_maxfps < 60 ? 60 : g_maxfps;
+    }
     nc_options_apply(&opt);
     g_uncap = opt.uncap;
     g_fps_cap = opt.fps_cap;
@@ -1377,14 +1656,40 @@ int main(int argc, char *argv[])
 #else
     const SDL_WindowFlags vk_flag = SDL_WINDOW_VULKAN; /* SDL_Vulkan_CreateSurface's (swapchain.c) */
 #endif
-    SDL_Window *win = SDL_CreateWindow(wtitle, 1280, 960, vk_flag | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
-                                                              (want_fullscreen() ? SDL_WINDOW_FULLSCREEN : 0));
+    const SDL_WindowFlags hidden = SDL_WINDOW_HIDDEN;   /* shown inside the frame, or on its own below */
+    SDL_Window *win = SDL_CreateWindow(wtitle, 1280, 960,
+                                       vk_flag | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | hidden);
     if (!win) {
         fatal_box("xbased", SDL_GetError());
         return 1;
     }
-    SDL_HideCursor();   /* the game doesn't use the mouse */
     {
+        /* the session's frame (win_frame.h): a run started again comes up
+         * inside the same window; frame=0 the run's window on its own */
+        const char *fv = opt_value("frame");
+        if (!fv || strcmp(fv, "0")) {
+            g_frame = nc_frame_get(wtitle, want_fullscreen(), g_fs60);
+        }
+        if (g_frame) {
+            /* the frame presents this run's pictures (hle_present_set_remote):
+             * its window out of sight; else (no token, or they can't be had,
+             * below) filling the frame and presenting itself */
+            const char *tok = nc_frame_token();
+            g_frame_hidden = tok && tok[0];
+            if (g_frame_hidden) {
+                hle_present_set_remote(tok);
+                dash_set_pointer_hook(frame_pointer);
+            }
+            nc_frame_adopt(g_frame, win, wtitle, g_frame_hidden);
+            dash_set_fullscreen_hook(frame_fullscreen);
+            nc_log("hakuX-app", "window: inside the session's frame");
+        }
+    }
+    if (!g_frame) {
+        fs_mode(win);       /* the full screen's mode before it's full screen */
+        if (want_fullscreen()) {
+            SDL_SetWindowFullscreen(win, true);
+        }
         /* the run before's window's place (run_again), windowed */
         const char *r = getenv("XBASED_RECT");
         int x, y, w, h;
@@ -1393,7 +1698,9 @@ int main(int argc, char *argv[])
             SDL_SetWindowSize(win, w, h);
             SDL_SetWindowPosition(win, x, y);
         }
+        SDL_ShowWindow(win);
     }
+    SDL_HideCursor();   /* the game doesn't use the mouse */
     SDL_PropertiesID props = SDL_GetWindowProperties(win);
     g_nw.hwnd = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
     g_nw.hinstance = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_INSTANCE_POINTER, NULL);
@@ -1438,6 +1745,11 @@ int main(int argc, char *argv[])
         SetEnvironmentVariableA("XBASED_RECT", NULL);
 #else
         unsetenv("XBASED_HOLD");
+        const char *rf = getenv("XBASED_READY_FD");
+        if (rf && rf[0]) {
+            g_ready_fd = atoi(rf);
+        }
+        unsetenv("XBASED_READY_FD");
 #endif
     }
     nc_vsync_start();
@@ -1463,45 +1775,61 @@ int main(int argc, char *argv[])
             case SDL_EVENT_QUIT:
                 quit = true;
                 break;
-            case SDL_EVENT_KEY_DOWN:
+            case SDL_EVENT_KEY_DOWN: {
                 if (ev.key.repeat) {
                     break;
                 }
-                /* the shortcuts (Settings > Shortcuts); Shift with quick save/load: slot 2 */
-                if (ev.key.key == g_map.hotkey[IM_HK_FULL] ||
-                    (ev.key.key == SDLK_RETURN && (ev.key.mod & SDL_KMOD_ALT))) {
-                    SDL_SetWindowFullscreen(win, !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN));
-                } else if (ev.key.key == g_map.hotkey[IM_HK_PAUSE]) {
-                    paused = !paused;
-                    nc_kernel_set_paused(&g_core.kernel, paused || minimized);
-                    nc_audio_set_paused(paused || minimized);
-                    nc_log("hakuX-app", "%s", paused ? "paused" : "resumed");
-                } else if (ev.key.key == g_map.hotkey[IM_HK_SAVE]) {
-                    save_state(ev.key.mod & SDL_KMOD_SHIFT ? 2 : 1);
-                } else if (ev.key.key == g_map.hotkey[IM_HK_LOAD]) {
-                    load_state(ev.key.mod & SDL_KMOD_SHIFT ? 2 : 1);
-                } else if (ev.key.key == g_map.hotkey[IM_HK_TURBO]) {
-                    nc_win_prop_set("debug.hakux.uncap", "1");  /* frames as fast as they come, while held */
-                    nc_win_prop_set("debug.hakux.fpscap", "0");
-                } else if (ev.key.key == g_map.hotkey[IM_HK_SHOT]) {
-                    screenshot();
-                } else if (ev.key.key == g_map.hotkey[IM_HK_MENU]) {
-                    ingame_menu(win, &paused, minimized);
+                /* the shortcuts (Settings > Shortcuts): the key with the
+                 * Ctrl and Alt it was set with (exactly), Shift too if it
+                 * was; Shift with quick save/load otherwise: slot 2 */
+                const uint8_t held = ((ev.key.mod & SDL_KMOD_CTRL) ? 1 : 0) | ((ev.key.mod & SDL_KMOD_ALT) ? 2 : 0) |
+                                     ((ev.key.mod & SDL_KMOD_SHIFT) ? 4 : 0);
+                if (ev.key.key == SDLK_RETURN && (held & 2) && !(held & 1)) {
+                    hotkey_do(win, IM_HK_FULL, true, 1, &paused, minimized);
+                    break;
+                }
+                for (int h = 0; h < IM_HOTKEYS; h++) {
+                    const uint8_t need = g_map.hk_mod[h];
+                    if (ev.key.key == g_map.hotkey[h] && (held & 3) == (need & 3) && (!(need & 4) || (held & 4))) {
+                        if (need & 3) {
+                            g_hk_eaten[ev.key.scancode] = true;   /* the game doesn't get the key */
+                            g_hk_any_eaten = true;
+                        }
+                        hotkey_do(win, h, true, (held & 4) && !(need & 4) ? 2 : 1, &paused, minimized);
+                        break;
+                    }
                 }
                 break;
+            }
             case SDL_EVENT_KEY_UP:
                 if (ev.key.key == g_map.hotkey[IM_HK_TURBO]) {
-                    nc_win_prop_set("debug.hakux.uncap", g_uncap ? "1" : "0");
-                    char cap[16];
-                    snprintf(cap, sizeof(cap), "%d", g_fps_cap);
-                    nc_win_prop_set("debug.hakux.fpscap", cap);
+                    hotkey_do(win, IM_HK_TURBO, false, 1, &paused, minimized);
                 }
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
+                /* the controller's shortcuts: Guide with a button (Guide
+                 * alone, a tap: on its release, nothing else pressed), the
+                 * touchpad, Share; and the menu with Back and Start */
                 SDL_Gamepad *gp = SDL_GetGamepadFromID(ev.gbutton.which);
-                if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) {
-                    ingame_menu(win, &paused, minimized);
-                    break;
+                const int b = ev.gbutton.button;
+                int code = IM_HKP_NONE;
+                if (b == SDL_GAMEPAD_BUTTON_GUIDE) {
+                    g_guide_alone = true;
+                } else if (b == SDL_GAMEPAD_BUTTON_TOUCHPAD) {
+                    code = IM_HKP_TOUCHPAD;
+                } else if (b == SDL_GAMEPAD_BUTTON_MISC1) {
+                    code = IM_HKP_SHARE;
+                } else if (pad_guide_held(gp)) {
+                    code = IM_HKP_WITH + b;
+                    g_guide_alone = false;
+                }
+                for (int h = 0; code != IM_HKP_NONE && h < IM_HOTKEYS; h++) {
+                    if (g_map.hk_pad[h] == code) {
+                        g_pad_held_hk = h;
+                        g_pad_held_code = code;
+                        hotkey_do(win, h, true, 1, &paused, minimized);
+                        break;
+                    }
                 }
                 /* EmuDeck-style combos: Select (Back) held + a second button */
                 if (gp && SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_BACK)) {
@@ -1543,6 +1871,28 @@ int main(int argc, char *argv[])
                         pad_turbo = want;
                         nc_win_prop_set("debug.hakux.uncap", pad_turbo ? "1" : (g_uncap ? "1" : "0"));
                     }
+                }
+                break;
+            }
+            case SDL_EVENT_GAMEPAD_BUTTON_UP: {
+                const int b = ev.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_GUIDE && g_guide_alone) {
+                    g_guide_alone = false;
+                    for (int h = 0; h < IM_HOTKEYS; h++) {
+                        if (g_map.hk_pad[h] == IM_HKP_GUIDE) {
+                            hotkey_do(win, h, true, 1, &paused, minimized);
+                            hotkey_do(win, h, false, 1, &paused, minimized);
+                            break;
+                        }
+                    }
+                }
+                /* a held shortcut (fast forward) ends with either button let go */
+                if (g_pad_held_hk >= 0 &&
+                    (b == SDL_GAMEPAD_BUTTON_GUIDE || IM_HKP_WITH + b == g_pad_held_code ||
+                     (b == SDL_GAMEPAD_BUTTON_TOUCHPAD && g_pad_held_code == IM_HKP_TOUCHPAD) ||
+                     (b == SDL_GAMEPAD_BUTTON_MISC1 && g_pad_held_code == IM_HKP_SHARE))) {
+                    hotkey_do(win, g_pad_held_hk, false, 1, &paused, minimized);
+                    g_pad_held_hk = -1;
                 }
                 break;
             }
@@ -1621,6 +1971,75 @@ int main(int argc, char *argv[])
             SDL_Delay(8); /* nothing to wait for the display on */
         }
 #ifdef _WIN32
+        if (g_frame && !IsWindow((HWND)g_frame)) {
+            /* the frame's window went (its process fell), this run's with it:
+             * not left running unseen, back to the dashboard */
+            const char *why = hle_present_remote_why();
+            nc_log("hakuX-app", "window: the frame's gone%s%s: leaving", why[0] ? ": " : "", why);
+            exit_now(0);
+        }
+#endif
+        if (g_frame && g_frame_hidden) {
+            if (hle_present_remote_state() < 0) {
+                g_frame_hidden = false;     /* no shared pictures: the window fills the frame, as before */
+                nc_frame_fill(g_frame, win);
+                nc_log("hakuX-app", "window: the frame's pictures can't be had: drawn in the window");
+            } else if (hle_present_remote()) {
+                /* the frame's mouse, as this window's (the in-game menu's pointer) */
+                HleShareMouse ms[32];
+                static int64_t at;
+                const uint32_t n = hle_present_remote_mouse(ms, 32, &at);
+                for (uint32_t k = 0; k < n; k++) {
+                    SDL_Event e;
+                    SDL_zero(e);
+                    if (ms[k].type == 1) {
+                        e.type = SDL_EVENT_MOUSE_MOTION;
+                        e.motion.windowID = SDL_GetWindowID(win);
+                        e.motion.x = (float)ms[k].x;
+                        e.motion.y = (float)ms[k].y;
+                        e.motion.xrel = g_frame_mx < 0 ? 4.0f : (float)ms[k].x - g_frame_mx;
+                        e.motion.yrel = g_frame_my < 0 ? 4.0f : (float)ms[k].y - g_frame_my;
+                        g_frame_mx = (float)ms[k].x;
+                        g_frame_my = (float)ms[k].y;
+                    } else if (ms[k].type == 2 || ms[k].type == 3) {
+                        e.type = ms[k].type == 2 ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+                        e.button.windowID = SDL_GetWindowID(win);
+                        e.button.button = (Uint8)ms[k].button;
+                        e.button.down = ms[k].type == 2;
+                        e.button.clicks = 1;
+                        e.button.x = (float)ms[k].x;
+                        e.button.y = (float)ms[k].y;
+                    } else {
+                        e.type = SDL_EVENT_MOUSE_WHEEL;
+                        e.wheel.windowID = SDL_GetWindowID(win);
+                        e.wheel.y = (float)ms[k].wheel;
+                    }
+                    SDL_PushEvent(&e);
+                }
+                hle_present_remote_cursor(SDL_CursorVisible());
+            }
+        }
+        static bool raised;
+        if (g_frame && !raised && hle_present_count() > 0) {
+            raised = true;
+            nc_frame_raise(g_frame, win);   /* over the run before's, which goes next */
+        }
+        if (g_frame) {
+            const bool m = nc_frame_minimized(g_frame);
+            if (m != minimized) {
+                minimized = m;      /* a child window hears nothing of its frame's minimizing */
+                nc_kernel_set_paused(&g_core.kernel, paused || minimized);
+                nc_audio_set_paused(paused || minimized);
+            }
+        }
+#ifndef _WIN32
+        if (g_ready_fd >= 0 && hle_present_count() > 0) {
+            if (write(g_ready_fd, "1", 1) < 0) {
+            }
+            close(g_ready_fd);  /* drawn: the run before may go */
+            g_ready_fd = -1;
+        }
+#else
         if (g_ready_ev && hle_present_count() > 0) {
             SetEvent(g_ready_ev);   /* drawn: the run before may go */
             CloseHandle(g_ready_ev);

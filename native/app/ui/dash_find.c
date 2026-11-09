@@ -382,7 +382,7 @@ static void osk(float x, float y, float ks, const In *in)
             const int col = r < 4 ? c : k_wide_at[c], wn = r < 4 ? 1 : k_wide_n[c];
             const float kx = x + col * (ks + gap), ky = y + r * (ks + gap), kw = wn * ks + (wn - 1) * gap;
             const bool over = in->mx >= kx && in->mx < kx + kw && in->my >= ky && in->my < ky + ks;
-            if (over && in->moved) {
+            if (over && (in->moved || in->click)) {     /* a click selects what it presses */
                 F.ky = r;
                 F.kx = col;
             }

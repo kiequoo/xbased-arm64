@@ -16,6 +16,39 @@
 
 /* ---- arena ------------------------------------------------------------------- */
 
+/* A draw being put together (hle_draw_arena_hold): its blocks are tagged
+ * with the submission open when each was made, but the draw goes out with
+ * the one open when its command is written. A kick or a wait between (a
+ * landing, a texture's upload with the arena full, a copy it waits on) had
+ * the GPU pass the first while the draw was not even recorded: its blocks
+ * went, and with the GPU idle the arena started again at 0 over its
+ * constants and vertices. Warrior Within's ship then drew whole passes with
+ * another pass's matrices (a view from under the sail, the deck black) or a
+ * mesh's vertices from another, now and then, as the kicks fell. Held:
+ * the draw's allocations in blocks of their own; before a retirement
+ * the draw's own blocks (those made since its start) move on to the open
+ * submission once the one they were tagged with is done; at its command,
+ * to the submission it went out in. */
+static uint64_t g_hold = UINT64_MAX, g_hold_made;
+
+void hle_draw_arena_hold(bool on)
+{
+    if (on) {
+        g_hold = hle_fe_last_value() + 1;
+        g_hold_made = hle_arena_mark(&g_harena.alloc);
+        return;
+    }
+    if (g_hold == UINT64_MAX) {
+        return;
+    }
+    const uint64_t v = hle_fe_last_value() + 1;   /* the submission the draw is in */
+    if (v > g_hold) {
+        hle_arena_retag(&g_harena.alloc, g_hold_made, v);
+    }
+    hle_arena_coalesce(&g_harena.alloc);          /* its blocks back with the others */
+    g_hold = UINT64_MAX;
+}
+
 /* Room in arena a for len bytes (HLE_ARENA_FULL: none even with the GPU
  * idle). Full: while its oldest block is a submitted one, wait for just
  * that submission (the blocks behind it stay in flight, the GPU busy);
@@ -25,7 +58,14 @@
 static uint32_t ring_alloc(HleArena *a, uint32_t len, uint32_t align)
 {
     for (unsigned kicks = 0; kicks < 2;) {
-        hle_arena_retire(a, hle_tl_completed());
+        const uint64_t done = hle_tl_completed();
+        if (a == &g_harena.alloc && g_hold != UINT64_MAX && done >= g_hold) {
+            /* the draw being put together: its blocks go with the open
+             * submission now (the one it will be in, or a later one) */
+            g_hold = hle_fe_last_value() + 1;
+            hle_arena_retag(a, g_hold_made, g_hold);
+        }
+        hle_arena_retire(a, done);
         uint32_t off = hle_arena_alloc(a, len, align, hle_fe_last_value() + 1);
         if (off != HLE_ARENA_FULL) {
             return off;

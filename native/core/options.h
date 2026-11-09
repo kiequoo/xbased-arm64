@@ -37,7 +37,7 @@
 #include <stdint.h>
 
 typedef struct NcOptions {
-    bool uncap, prebuild;
+    bool uncap, async_pipe, prebuild;
     int fps_cap;                /* uncapped: frames a second at most (0: none) */
     int64_t video;              /* -1: the core's default */
     int av_pack;                /* NC_AV_PACK_* */

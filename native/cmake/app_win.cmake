@@ -7,6 +7,7 @@ set(NC_APP_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/app/mod_fit.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/win_auto.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/win_aslr.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/app/win_frame.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/present.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/vsync.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/ui/ui.c"
@@ -19,6 +20,7 @@ set(NC_APP_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/app/ui/sound.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/ui/dash.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/ui/dash_settings.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/app/ui/cheat_text.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/ui/dash_memory.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/ui/dash_browse.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/ui/dash_find.c"
@@ -40,6 +42,17 @@ set_target_properties(hakux PROPERTIES OUTPUT_NAME xbased)
 target_link_libraries(hakux PRIVATE hakux_native hakux_hle SDL3::SDL3)
 target_include_directories(hakux PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../third_party/stb")  # public domain, vendored
 target_compile_options(hakux PRIVATE -Wall -Wno-unused-parameter -Wno-unused-function)
+# Cross-compile: win_frame.c needs X11 headers (type defs only; calls via dlopen).
+# A symlink from the build dir exposes only X11/ — no host glibc alongside it, so
+# Xlib.h's transitive includes (<sys/types.h> etc.) still resolve from the sysroot.
+if(CMAKE_CROSSCOMPILING AND EXISTS "/usr/include/X11/Xlib.h")
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/x11-host")
+    file(CREATE_LINK "/usr/include/X11" "${CMAKE_BINARY_DIR}/x11-host/X11" SYMBOLIC)
+    set_source_files_properties(
+        "${CMAKE_CURRENT_SOURCE_DIR}/app/win_frame.c"
+        PROPERTIES COMPILE_OPTIONS "-I${CMAKE_BINARY_DIR}/x11-host"
+    )
+endif()
 # the mods and cheats the game folders hold (mods/README.md), and the
 # dashboard's fonts, beside the executable
 add_custom_command(TARGET hakux POST_BUILD

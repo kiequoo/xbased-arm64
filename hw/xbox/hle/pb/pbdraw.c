@@ -3718,6 +3718,7 @@ static void draw(void)
         return;
     }
     rt_first_land(false);
+    hle_draw_arena_hold(true);
     if (g_pd.nimm) {
         draw_imm();
     } else if (g_pd.ninl) {
@@ -3725,6 +3726,7 @@ static void draw(void)
     } else {
         draw_arrays();
     }
+    hle_draw_arena_hold(false);
 }
 
 /* An attribute's current value (immediate data); the position's last word

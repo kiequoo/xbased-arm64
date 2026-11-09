@@ -42,7 +42,18 @@ void im_copy_map(Config *to, const Config *from, int player);
 void im_device_name(const Config *c, int player, char *out, size_t n);
 void im_cycle_device(Config *c, int player, int delta);
 void im_hotkey_name(const Config *c, int h, char *out, size_t n);
-void im_set_hotkey(Config *c, int h, SDL_Keycode k);
+/* A shortcut's key with the modifiers held (SDL_KMOD_*: Ctrl, Alt and
+ * Shift kept), as "Ctrl+Alt+Shift+F5"; a modifier alone isn't one. */
+void im_set_hotkey(Config *c, int h, SDL_Keycode k, SDL_Keymod mod);
+
+/* A shortcut's controller combination: none, the Guide button alone (a tap),
+ * Guide with another button, the touchpad, or Share. Only buttons the Xbox
+ * controller hasn't: no game can mean them (hkpad.<shortcut>). */
+enum { IM_HKP_NONE, IM_HKP_GUIDE, IM_HKP_TOUCHPAD, IM_HKP_SHARE, IM_HKP_WITH };  /* IM_HKP_WITH + SDL button */
+int im_hkpad_count(void);                   /* the choices, for the settings' row */
+const char *im_hkpad_value(int i);          /* "none", "guide", "guide+a", ... */
+const char *im_hkpad_label(int i);          /* "Guide + A" */
+const char *im_hkpad_default(int h);
 
 /* the game: the mapping resolved (the game's file over the global one) */
 typedef struct ImMap {
@@ -50,6 +61,8 @@ typedef struct ImMap {
     int pad[4][IM_INPUTS];      /* 0 none; 1 + button; 1000 + axis * 2 + (negative) */
     int device[4];              /* -2 none, -1 keyboard only, 0 auto, k: the k-th gamepad */
     SDL_Keycode hotkey[IM_HOTKEYS];
+    uint8_t hk_mod[IM_HOTKEYS];     /* 1 Ctrl, 2 Alt, 4 Shift: held with the key */
+    int hk_pad[IM_HOTKEYS];         /* IM_HKP_* */
     float deadzone;
     float stick_antidz;         /* stick.antidz: the least a stick out of its dead zone gives, 0..1 */
     float stick_range;          /* stick.range: the output's scale, 1 = the stick's own */

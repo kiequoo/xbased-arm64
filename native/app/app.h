@@ -29,13 +29,17 @@ void nc_present_set_widescreen(bool on);
  * frame grown about its middle to do it; pct < 0 underscan, the frame
  * shrunk to leave that much border. Any shape (4:3, 16:9, ...). */
 void nc_present_set_overscan(int pct);
+/* The frame's borders cut off, h console pixels off each side and v off the
+ * top and bottom (of 640x480; 0 none): a game's black edges hidden, the
+ * rest filling the frame's place. */
+void nc_present_set_crop(int h, int v);
 /* FXAA over each frame before it's scaled to the window. */
 void nc_present_set_fxaa(bool on);
 /* The frame rate in the window's corner. */
 void nc_present_set_show_fps(bool on);
 /* A frame smaller than its place in the window: scaled up bilinearly, or by
  * AMD FidelityFX Super Resolution 1 (a larger one is always averaged down). */
-enum { NC_UPSCALE_BILINEAR, NC_UPSCALE_FSR };    /* swapchain.h HLE_UPSCALE_*'s */
+enum { NC_UPSCALE_BILINEAR, NC_UPSCALE_FSR, NC_UPSCALE_NEAREST };    /* swapchain.h HLE_UPSCALE_*'s */
 void nc_present_set_upscale(int mode);
 /* An "upscale=" value: "fsr", and "sgsr" (Snapdragon GSR, which FSR
  * replaced) as FSR; anything else bilinear. */

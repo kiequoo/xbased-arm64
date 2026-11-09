@@ -20,6 +20,7 @@
 static int g_aspect = NC_ASPECT_AUTO;
 static bool g_widescreen;
 static int g_overscan;          /* percent: > 0 the edges cut off, < 0 a border */
+static int g_crop_h, g_crop_v;  /* console pixels off each side, off the top and bottom */
 static bool g_fxaa;
 static int g_upscale = NC_UPSCALE_BILINEAR;
 static bool g_shown;
@@ -45,14 +46,16 @@ void nc_present_set_show_fps(bool on)
 
 int nc_upscale_from_name(const char *v)
 {
-    return v && (!strcmp(v, "fsr") || !strcmp(v, "sgsr")) ? NC_UPSCALE_FSR : NC_UPSCALE_BILINEAR;
+    return v && (!strcmp(v, "fsr") || !strcmp(v, "sgsr")) ? NC_UPSCALE_FSR
+           : v && !strcmp(v, "nearest")                     ? NC_UPSCALE_NEAREST
+                                                            : NC_UPSCALE_BILINEAR;
 }
 
 bool nc_present_init(void)
 {
     hle_disp_gamma_by_consumer(true); /* before the core starts: frames come without it */
     nc_log("hakuX-app", "present: Vulkan; FXAA %s, upscaling %s", g_fxaa ? "on" : "off",
-           g_upscale == NC_UPSCALE_FSR ? "FSR" : "bilinear");
+           g_upscale == NC_UPSCALE_FSR ? "FSR" : g_upscale == NC_UPSCALE_NEAREST ? "nearest" : "bilinear");
     return true;
 }
 
@@ -74,6 +77,21 @@ void nc_present_set_aspect(int mode)
 void nc_present_set_widescreen(bool on)
 {
     g_widescreen = on;
+}
+
+void nc_present_set_crop(int h, int v)
+{
+    g_crop_h = h < 0 ? 0 : h > 96 ? 96 : h;
+    g_crop_v = v < 0 ? 0 : v > 72 ? 72 : v;
+}
+
+/* How much overscan and the crop grow the frame, each axis: what's past
+ * the frame's place is cut off (hle_present_set_clip) */
+static void growth(float *kx, float *ky)
+{
+    const float k = g_overscan > 0 ? 100.0f / (100.0f - (float)g_overscan) : 1.0f + (float)g_overscan / 100.0f;
+    *kx = k * 640.0f / (640.0f - 2.0f * (float)g_crop_h);
+    *ky = k * 480.0f / (480.0f - 2.0f * (float)g_crop_v);
 }
 
 void nc_present_set_overscan(int pct)
@@ -143,7 +161,10 @@ static void debug_poll(void)
     char v[PROP_VALUE_MAX] = "";
     hle_prop_get("debug.hakux.present", v);
     g_dbg.fxaa = strstr(v, "nofxaa") ? 0 : strstr(v, "fxaa") ? 1 : -1;
-    g_dbg.upscale = strstr(v, "fsr") ? NC_UPSCALE_FSR : strstr(v, "bilinear") ? NC_UPSCALE_BILINEAR : -1;
+    g_dbg.upscale = strstr(v, "fsr")        ? NC_UPSCALE_FSR
+                    : strstr(v, "nearest")  ? NC_UPSCALE_NEAREST
+                    : strstr(v, "bilinear") ? NC_UPSCALE_BILINEAR
+                                            : -1;
     g_dbg.average = !strstr(v, "noaverage");
 }
 
@@ -181,9 +202,10 @@ static void place(uint32_t fw, uint32_t fh, uint32_t ww, uint32_t wh, float *sx,
     /* overscan as a TV's: that much of the frame hidden past its place's
      * edges (the frame grown: 10% hidden, 90% shown), or underscan, that
      * much border; the same shape */
-    const float k = g_overscan > 0 ? 100.0f / (100.0f - (float)g_overscan) : 1.0f + (float)g_overscan / 100.0f;
-    *sx *= k;
-    *sy *= k;
+    float kx, ky;
+    growth(&kx, &ky);
+    *sx *= kx;
+    *sy *= ky;
 }
 
 /* A change of the shape chosen (Settings, the in-game menu's over the
@@ -195,7 +217,7 @@ static int g_shape = -1;
 
 static void tween(float *sx, float *sy)
 {
-    const int shape = g_aspect | (int)g_widescreen << 4 | (g_overscan + 64) << 8;
+    const int shape = g_aspect | (int)g_widescreen << 4 | (g_overscan + 64) << 8 | g_crop_h << 16 | g_crop_v << 24;
     const uint64_t now = now_ns();
     if (g_cur_sx < 0.0f) {
         g_shape = shape;
@@ -269,7 +291,8 @@ bool nc_present_frame(struct ANativeWindow *win)
     /* what places and filters the frame, beside it and the window */
     const uint64_t key = (uint64_t)fxaa | (uint64_t)upscale << 1 | (uint64_t)g_dbg.average << 4 |
                          (uint64_t)g_widescreen << 5 | (uint64_t)(uint32_t)g_aspect << 8 |
-                         (uint64_t)(uint32_t)(g_overscan + 64) << 16;
+                         (uint64_t)(uint32_t)(g_overscan + 64) << 16 | (uint64_t)(uint32_t)g_crop_h << 24 |
+                         (uint64_t)(uint32_t)g_crop_v << 32;
 #ifdef NC_DESKTOP
     const bool as_they_come = !nc_dev_nv2a_vblank_locked();
 #else
@@ -295,6 +318,12 @@ bool nc_present_frame(struct ANativeWindow *win)
     if (hle_present_frame(&fw, &fh)) {
         place(fw, fh, ww, wh, &sx, &sy);
         tween(&sx, &sy);
+        /* grown (overscan, the crop): what's past the frame's place is cut
+         * off there, as a TV's frame does, not shown over the bars beside
+         * it (a 4:3 game's edges in a wide window stayed in sight) */
+        float kx, ky;
+        growth(&kx, &ky);
+        hle_present_set_clip(kx > 1.0f ? sx / kx : 1.0f, ky > 1.0f ? sy / ky : 1.0f);
         __atomic_store_n(&g_shown, true, __ATOMIC_RELAXED);
     }
     hle_present_set_osd(g_show_fps ? (g_fps > 0 ? g_fps : 0.01f) : 0);

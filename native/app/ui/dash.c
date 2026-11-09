@@ -1,5 +1,5 @@
 /*
- * hakuX front end ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the dashboard (dash.h): its loop, input, lists, and
+ * hakuX front end — the dashboard (dash.h): its loop, input, lists, and
  * the main, games and game screens. Settings, controls, memory and online
  * are in dash_settings.c, dash_memory.c.
  */
@@ -22,11 +22,24 @@
 #endif
 
 #ifndef XBASED_VERSION
-#define XBASED_VERSION "1.0.75"
+#define XBASED_VERSION "1.0.89"
 #endif
 
 Dash D;
 static SDL_Window *g_win;
+static void (*g_fs_hook)(void);
+
+void dash_set_fullscreen_hook(void (*toggle)(void))
+{
+    g_fs_hook = toggle;
+}
+
+static bool (*g_ptr_hook)(float *x, float *y);
+
+void dash_set_pointer_hook(bool (*where)(float *x, float *y))
+{
+    g_ptr_hook = where;
+}
 static UiTex *g_layer, *g_prev;   /* this screen's foreground, the last one's */
 static float g_trans = 1;               /* the transition's progress, 0-1 */
 static int g_trans_dir = 1;
@@ -292,6 +305,7 @@ static void poll_input(void)
             in->pad = false;
             cursor(false);
             in->key = e.key.key;
+            in->mod = e.key.mod;
             in->repeat |= e.key.repeat;
             in->any = true;
             const SDL_Keycode k = e.key.key;
@@ -328,7 +342,11 @@ static void poll_input(void)
             } else if (k == SDLK_Y || k == SDLK_TAB) {
                 in->y = true;
             } else if (k == SDLK_F11 || (k == SDLK_RETURN && (e.key.mod & SDL_KMOD_ALT))) {
-                SDL_SetWindowFullscreen(g_win, !(SDL_GetWindowFlags(g_win) & SDL_WINDOW_FULLSCREEN));
+                if (g_fs_hook) {
+                    g_fs_hook();
+                } else {
+                    SDL_SetWindowFullscreen(g_win, !(SDL_GetWindowFlags(g_win) & SDL_WINDOW_FULLSCREEN));
+                }
             }
             break;
         }
@@ -340,14 +358,21 @@ static void poll_input(void)
         case SDL_EVENT_TEXT_INPUT:
             in->text = e.text.text;
             break;
-        case SDL_EVENT_MOUSE_MOTION:
-            /* a real move, not the window appearing under the pointer */
-            if (fabsf(e.motion.xrel) + fabsf(e.motion.yrel) >= 2) {
+        case SDL_EVENT_MOUSE_MOTION: {
+            /* a real move, not the window appearing under the pointer: 2 pixels
+             * in all, events added up (a mouse that reports often sends 1-pixel
+             * steps, and judged one at a time a slow move never counted: the
+             * highlight stayed on the key it had left, #147) */
+            static float s_moved;
+            s_moved += fabsf(e.motion.xrel) + fabsf(e.motion.yrel);
+            if (s_moved >= 2) {
+                s_moved = 0;
                 in->moved = true;
                 in->pad = false;
                 cursor(true);
             }
             break;
+        }
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
             in->pad = false;
             cursor(true);
@@ -455,9 +480,12 @@ static void poll_input(void)
     if (g_cursor_at > 0 && ui_time() - g_cursor_at > 3) {
         cursor(false);
     }
-    float mx, my;
-    SDL_GetMouseState(&mx, &my);
-    float dpi = SDL_GetWindowPixelDensity(g_win);
+    float mx = 0, my = 0;
+    float dpi = 1.0f;
+    if (!g_ptr_hook || !g_ptr_hook(&mx, &my)) {
+        SDL_GetMouseState(&mx, &my);
+        dpi = SDL_GetWindowPixelDensity(g_win);
+    }
     in->mx = g_cursor_at > 0 ? mx * dpi / ui_scale() : -1;
     in->my = g_cursor_at > 0 ? my * dpi / ui_scale() : -1;
     if (g_cursor_at <= 0) {
@@ -688,6 +716,71 @@ float draw_hints(const char *a, const char *b, const char *x, const char *y)
     return px;
 }
 
+/* The day as the console's corner says it, under the time, in the
+ * interface's language: the weekday, the day and the month (the month's
+ * genitive in Russian and Polish) */
+static void date_text(const struct tm *t, char *out, size_t n)
+{
+    static const char *const k_wd[L_COUNT][7] = {
+        {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"},
+        {"domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"},
+        {"dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"},
+        {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"},
+        {"domenica", "lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato"},
+        {"domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"},
+        {"воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"},
+        {"niedziela", "poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota"},
+        {"日", "月", "火", "水", "木", "金", "土"},
+        {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"},
+        {"일", "월", "화", "수", "목", "금", "토"},
+    };
+    static const char *const k_mon[L_COUNT][12] = {
+        {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+         "November", "December"},
+        {"enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre",
+         "noviembre", "diciembre"},
+        {"janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre",
+         "novembre", "décembre"},
+        {"Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober",
+         "November", "Dezember"},
+        {"gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre",
+         "novembre", "dicembre"},
+        {"janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro",
+         "novembro", "dezembro"},
+        {"января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
+         "ноября", "декабря"},
+        {"stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca", "sierpnia", "września",
+         "października", "listopada", "grudnia"},
+        {"", "", "", "", "", "", "", "", "", "", "", ""},
+        {"", "", "", "", "", "", "", "", "", "", "", ""},
+        {"", "", "", "", "", "", "", "", "", "", "", ""},
+    };
+    const int l = (int)i18n_lang(), wd = t->tm_wday % 7, mo = t->tm_mon % 12, d = t->tm_mday;
+    const char *w = k_wd[l][wd], *m = k_mon[l][mo];
+    switch (l) {
+    case L_EN: snprintf(out, n, "%s, %s %d", w, m, d); break;
+    case L_ES: case L_PT: snprintf(out, n, "%s, %d de %s", w, d, m); break;
+    case L_FR: case L_IT: snprintf(out, n, "%s %d %s", w, d, m); break;
+    case L_DE: snprintf(out, n, "%s, %d. %s", w, d, m); break;
+    case L_RU: case L_PL: snprintf(out, n, "%s, %d %s", w, d, m); break;
+    case L_JA: snprintf(out, n, "%d月%d日 (%s)", mo + 1, d, w); break;
+    case L_ZH: snprintf(out, n, "%d月%d日 %s", mo + 1, d, w); break;
+    default: snprintf(out, n, "%d월 %d일 (%s)", mo + 1, d, w); break;
+    }
+    /* the weekday first, a capital letter (Latin-1's and Cyrillic's too) */
+    unsigned char *u = (unsigned char *)out;
+    if (u[0] >= 'a' && u[0] <= 'z') {
+        u[0] = (unsigned char)(u[0] - 32);
+    } else if (u[0] == 0xC5 && u[1] == 0x9B) {
+        u[1] = 0x9A;                            /* ś: Ś */
+    } else if (u[0] == 0xD0 && u[1] >= 0xB0 && u[1] <= 0xBF) {
+        u[1] = (unsigned char)(u[1] - 0x20);
+    } else if (u[0] == 0xD1 && u[1] >= 0x80 && u[1] <= 0x8F) {
+        u[0] = 0xD0;
+        u[1] = (unsigned char)(u[1] + 0x20);
+    }
+}
+
 void draw_header(const char *title, const char *sub)
 {
     const float W = ui_w();
@@ -706,7 +799,25 @@ void draw_header(const char *title, const char *sub)
 #else
     localtime_r(&now, &tmv);
 #endif
-    ui_text(W - 60, 40, dash_hm(tmv.tm_hour, tmv.tm_min), 30, UI_FONT_BOLD, UI_GREEN, UI_ALIGN_RIGHT);
+    /* the time, its colon breathing with the seconds, the day under it */
+    char hm[16];
+    snprintf(hm, sizeof(hm), "%s", dash_hm(tmv.tm_hour, tmv.tm_min));
+    char *colon = strchr(hm, ':');
+    if (colon) {
+        *colon = 0;
+        const char *right = colon + 1;
+        const float rw = ui_text_width(right, 30, UI_FONT_BOLD), cw = ui_text_width(":", 30, UI_FONT_BOLD);
+        const double frac = fmod(ui_time(), 1.0);
+        const float a = 0.45f + 0.55f * (float)(0.5 + 0.5 * cos(frac * 6.2831853));
+        ui_text(W - 60, 26, right, 30, UI_FONT_BOLD, UI_GREEN_HI, UI_ALIGN_RIGHT);
+        ui_text(W - 60 - rw - cw, 24, ":", 30, UI_FONT_BOLD, ui_alpha(UI_GREEN_HI, a), UI_ALIGN_LEFT);
+        ui_text(W - 60 - rw - cw - 1, 26, hm, 30, UI_FONT_BOLD, UI_GREEN_HI, UI_ALIGN_RIGHT);
+    } else {
+        ui_text(W - 60, 26, hm, 30, UI_FONT_BOLD, UI_GREEN_HI, UI_ALIGN_RIGHT);
+    }
+    char day[96];
+    date_text(&tmv, day, sizeof(day));
+    ui_text(W - 60, 66, day, 19, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_RIGHT);
 }
 
 const char *dash_hm(int hour, int minute)
@@ -809,6 +920,31 @@ bool list_row(List *l, const char *label, const char *value, int *delta)
     return row_chosen(l, i);
 }
 
+void list_heading(List *l, const char *title)
+{
+    const int i = l->count++;
+    if (l->nhead < 8) {
+        l->head[l->nhead++] = i;
+    }
+    if (i < *l->scroll || i >= *l->scroll + l->visible) {
+        return;
+    }
+    /* the section's name small and green over a line, its rows under it */
+    const float ry = l->y + (i - *l->scroll) * l->row_h, ty = ry + l->row_h - 34;
+    const float tw = ui_text(l->x + 12, ty, title, 20, UI_FONT_BOLD, UI_GREEN_HI, UI_ALIGN_LEFT);
+    ui_rect_hgrad(l->x + 26 + tw, ty + 11, l->w - 38 - tw, 2, ui_alpha(UI_GREEN, 0.55f), ui_alpha(UI_GREEN, 0.0f));
+}
+
+static bool is_heading(const List *l, int i)
+{
+    for (int k = 0; k < l->nhead; k++) {
+        if (l->head[k] == i) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool list_row_icon(List *l, UiTex *icon, const char *label, const char *sub, const char *value, int *delta)
 {
     float ry;
@@ -859,7 +995,14 @@ void list_end(List *l)
     if (*l->sel >= l->count) {
         *l->sel = l->count - 1;
     }
+    /* never on a heading: on past it, the way the selection went */
+    for (int guard = 0; l->nhead && guard < l->count && is_heading(l, *l->sel); guard++) {
+        *l->sel = (*l->sel + (D.in.up ? l->count - 1 : 1)) % l->count;
+    }
     if (D.in.up || D.in.down || !D.in.wheel) {
+        if (*l->sel > 0 && is_heading(l, *l->sel - 1) && *l->sel - 1 < *l->scroll) {
+            *l->scroll = *l->sel - 1;   /* a section's first row: its heading in sight */
+        }
         if (*l->sel < *l->scroll) {
             *l->scroll = *l->sel;
         }
@@ -952,6 +1095,14 @@ void opt_choice(List *l, enum UiStr label, const char *key, const char *const *v
         cfg_unset(c, key);
     } else {
         cfg_set(c, key, vals[D.editing_game ? pos - 1 : pos]);
+        const char *now_v = vals[D.editing_game ? pos - 1 : pos];
+        if (!strcmp(key, "devtime") && !strcmp(now_v, "0")) {
+            dash_toast(T(S_DISC_WARN));     /* a few titles need the drive's time (native/kernel/io.c) */
+        } else if (!strcmp(key, "ram") && !strcmp(now_v, "128")) {
+            dash_toast(T(S_RAM_WARN));      /* retail titles meet a debug kit's memory map */
+        } else if (!strcmp(key, "fsrate") && !strcmp(now_v, "60")) {
+            dash_toast(T(S_FSRATE_TIP));    /* what it does, and the switch's black moment */
+        }
     }
 }
 
@@ -993,6 +1144,9 @@ void opt_bool(List *l, enum UiStr label, const char *key, bool def, bool flag_st
         cfg_set(c, key, on ? "0" : "1");
     } else {
         cfg_set(c, key, on ? "0" : "1");
+    }
+    if (!on && !strcmp(key, "asyncpipe")) {
+        dash_toast(T(S_ASYNC_WARN));    /* draws wait for no shader: they are skipped */
     }
 }
 
@@ -1086,6 +1240,8 @@ static struct {
     char path[1024], extra[1300];
     bool has_extra;
     UiTex *pic;
+    char game[1024];        /* the game's disc (the library's path), its time played counted as it ends */
+    uint64_t t_start;       /* when its process started (SDL_GetTicks), 0: none */
 } g_go;
 
 #ifdef _WIN32
@@ -1134,9 +1290,11 @@ static void go_spawn(void)
         quote_arg(cmd, n, sizeof(cmd), g_go.extra);
     }
     PROCESS_INFORMATION pi;
+    AllowSetForegroundWindow(ASFW_ANY);     /* the game's window, and its frame's process, may take it */
     if (xb_spawn(D.exe, cmd, NULL, &pi)) {
         CloseHandle(pi.hThread);
         g_follow = pi.hProcess;
+        g_go.t_start = SDL_GetTicks();
     } else {
         char e[96];
         snprintf(e, sizeof(e), "The game couldn't start (error %lu)", GetLastError());
@@ -1144,7 +1302,9 @@ static void go_spawn(void)
 #else
     const char *args[4] = {D.exe, g_go.path, g_go.has_extra ? g_go.extra : NULL, NULL};
     g_child = SDL_CreateProcess(args, false);
-    if (!g_child) {
+    if (g_child) {
+        g_go.t_start = SDL_GetTicks();
+    } else {
         dash_toast(SDL_GetError());
 #endif
         g_go.back = ui_time();      /* the screen back */
@@ -1179,6 +1339,7 @@ void dash_open_xbox_dashboard(void)
     }
     dash_save_cfg();
     snprintf(g_go.path, sizeof(g_go.path), "none");
+    g_go.game[0] = 0;       /* no game's time */
     g_go.has_extra = true;
     snprintf(g_go.extra, sizeof(g_go.extra), "dash");
     snd_play(SND_LAUNCH);
@@ -1200,6 +1361,7 @@ void launch_game(LibGame *g, const char *extra)
     dash_save_cfg();
     lib_set_played(g);      /* the last played first, when the Games screen wants it */
     snprintf(g_go.path, sizeof(g_go.path), "%s", g->g.path);
+    snprintf(g_go.game, sizeof(g_go.game), "%s", g->g.path);
     g_go.has_extra = extra != NULL;
     snprintf(g_go.extra, sizeof(g_go.extra), "%s", extra ? extra : "");
     snd_play(SND_LAUNCH);
@@ -1266,6 +1428,19 @@ static void wait_child(void)
     } else {
         return;
     }
+    if (g_go.t_start && g_go.game[0]) {
+        /* the session's over (its restarts and loaded states the same one):
+         * the game's time played grows by it (#188) */
+        const int n = lib_count();
+        for (int i = 0; i < n; i++) {
+            LibGame *g = lib_get(i);
+            if (g && !strcmp(g->g.path, g_go.game)) {
+                lib_add_playtime(g, (int64_t)((SDL_GetTicks() - g_go.t_start) / 1000));
+                break;
+            }
+        }
+    }
+    g_go.t_start = 0;
     g_hide_at = 0;
     g_go.back = cfg_bool(&D.global, "ui.fx", true) ? ui_time() : 0;   /* the screen rushes back in */
     SDL_ShowWindow(g_win);
@@ -1279,6 +1454,13 @@ static void wait_child(void)
     cfg_load(&D.global, D.global.path);     /* the game may have changed settings */
     upscale_migrate(&D.global);
     cfg_shaders_migrate(&D.global);
+    if (D.cur && D.game.path[0]) {
+        /* and its own (the in-game menu's Game settings): the ones read
+         * before it ran went back over them as it was played again (#210) */
+        cfg_load(&D.game, D.game.path);
+        upscale_migrate(&D.game);
+        cfg_shaders_migrate(&D.game);
+    }
     cc_sync(&D.global);                     /* ... or its EEPROM (a title's own options) */
     g_auto_off = -1;    /* the scripted commands meanwhile were the game's */
 }
@@ -1387,6 +1569,73 @@ static void draw_card(LibGame *g, float x, float y, float w, float h, bool sel, 
     ui_round_outline(x, y, w, h, 10, sel ? 3 : 1, ui_alpha(sel ? UI_GREEN_HI : UI_GREEN_DIM, alpha));
 }
 
+/* when the game played last was played: that game's card is marked (a
+ * frame round it, a tag), the Games screen's each frame */
+static int64_t g_last_played;
+
+static bool is_last_played(const LibGame *g)
+{
+    return g_last_played > 0 && g->played == g_last_played;
+}
+
+/* the last played game's mark, round its card (or tile) at x, y: a thin
+ * frame a little out from it and a tag on its bottom edge */
+static void draw_last_mark(float x, float y, float w, float h, float r, float alpha)
+{
+    const float o = w > h ? 4 : 5;
+    ui_round_outline(x - o, y - o, w + o * 2, h + o * 2, r + o, 1.5f, ui_alpha(UI_GREEN, 0.75f * alpha));
+    const char *tag = T(S_LAST_PLAYED_TAG);
+    const float fs = w > h ? 11 : fminf(12, fmaxf(8, w * 0.075f));
+    /* the small covers' tag a little wider than its card, its words whole */
+    const float tw = fminf(ui_text_width(tag, fs, UI_FONT_BOLD) + fs * 1.4f, w > h ? w - 8 : w + 26), th = fs + 8;
+    const float tx = w > h ? x + w - tw - 8 : x + (w - tw) / 2, ty = y + h - th / 2 + (w > h ? 0 : 1);
+    ui_round(tx, ty, tw, th, th / 2, ui_alpha((UiColor){0x0A, 0x1E, 0x05, 0xFF}, alpha));
+    ui_round_outline(tx, ty, tw, th, th / 2, 1.2f, ui_alpha(UI_GREEN, alpha));
+    ui_text_fit(tx + tw / 2, ty + 3, tag, fs, UI_FONT_BOLD, ui_alpha(UI_GREEN_HI, alpha), UI_ALIGN_CENTER,
+                tw - fs * 0.8f);
+}
+
+/* g's time played and when it was last played, as the Games screen says
+ * them ("" when never played) */
+static void played_text(const LibGame *g, char *out, size_t n)
+{
+    out[0] = 0;
+    char tp[64] = "", lp[96] = "";
+    if (g->playtime >= 60) {
+        const int m = (int)(g->playtime / 60);
+        if (m >= 60) {
+            snprintf(tp, sizeof(tp), T(S_HOURS_MINS), m / 60, m % 60);
+        } else {
+            snprintf(tp, sizeof(tp), T(S_MINS), m);
+        }
+    } else if (g->playtime > 0) {
+        snprintf(tp, sizeof(tp), "< %s", "1 min");
+    }
+    if (g->played > 0) {
+        const time_t now = time(NULL), then = (time_t)g->played;
+        struct tm a = *localtime(&now), b = *localtime(&then);
+        a.tm_hour = b.tm_hour = 12;     /* calendar days apart, not 24 hours */
+        a.tm_min = b.tm_min = a.tm_sec = b.tm_sec = 0;
+        const int days = (int)((mktime(&a) - mktime(&b) + 43200) / 86400);
+        if (days <= 0) {
+            snprintf(lp, sizeof(lp), "%s", T(S_TODAY));
+        } else if (days == 1) {
+            snprintf(lp, sizeof(lp), "%s", T(S_YESTERDAY));
+        } else if (days < 30) {
+            snprintf(lp, sizeof(lp), T(S_DAYS_AGO), days);
+        } else {
+            strftime(lp, sizeof(lp), "%Y-%m-%d", localtime(&then));
+        }
+    }
+    if (tp[0] && lp[0]) {
+        snprintf(out, n, "%s %s  ·  %s %s", T(S_TIME_PLAYED), tp, T(S_LAST_PLAYED_ON), lp);
+    } else if (lp[0]) {
+        snprintf(out, n, "%s %s", T(S_LAST_PLAYED_ON), lp);
+    } else if (tp[0]) {
+        snprintf(out, n, "%s %s", T(S_TIME_PLAYED), tp);
+    }
+}
+
 /* the last card of the grid: the file browser, games added */
 static void draw_add_card(float x, float y, float w, float h, bool sel, float alpha)
 {
@@ -1437,6 +1686,55 @@ static void draw_star(float cx, float cy, float r, float alpha)
     }
 }
 
+/* The regions a disc's certificate allows, as the console's names */
+static const char *region_text(uint32_t regions)
+{
+    static const char *const k_reg[8] = {"-", "NTSC-U", "NTSC-J", "NTSC-U/J", "PAL", "NTSC-U/PAL",
+                                         "NTSC-J/PAL", "World"};
+    return k_reg[regions & 7];
+}
+
+/* Another game in the library has g's name (two releases, two versions):
+ * its tile tells them apart by region and version (1), or by the file's
+ * name when those are the same too (2: a modified disc beside the game) */
+static int title_repeats(const LibGame *g)
+{
+    const int n = lib_count();
+    int r = 0;
+    for (int i = 0; i < n; i++) {
+        const LibGame *o = lib_get(i);
+        if (o && o != g && !o->hidden && !SDL_strcasecmp(o->g.title, g->g.title)) {
+            if (o->g.regions == g->g.regions && o->g.version == g->g.version) {
+                return 2;
+            }
+            r = 1;
+        }
+    }
+    return r;
+}
+
+/* g's file's name, whole (a modded copy's name is often in brackets),
+ * without the folder or the extension: what tells apart two discs of the
+ * same name, region and version (title_repeats 2) */
+static void file_label(const LibGame *g, char *info, size_t n)
+{
+    const char *b = g->g.path;
+    for (const char *q = b; *q; q++) {
+        if (*q == '/' || *q == '\\') {
+            b = q + 1;
+        }
+    }
+    snprintf(info, n, "%s", b);
+    char *dot = strrchr(info, '.');
+    if (dot && dot != info) {
+        *dot = 0;
+        char *x = strrchr(info, '.');
+        if (x && x != info && !SDL_strcasecmp(x, ".xiso")) {
+            *x = 0;         /* name.xiso.iso */
+        }
+    }
+}
+
 /* the icons view's tile: the disc's icon, the title, the publisher and year under */
 static void draw_tile(LibGame *g, float x, float y, float w, float h, bool sel, float alpha)
 {
@@ -1461,8 +1759,15 @@ static void draw_tile(LibGame *g, float x, float y, float w, float h, bool sel, 
                 UI_ALIGN_LEFT, tw);
     char info[120];
     const char *pub = lib_publisher(g);
-    if (g->g.year) {
-        snprintf(info, sizeof(info), "%s%s%d", pub, *pub ? " Ã‚Â· " : "", g->g.year);
+    const int rep = title_repeats(g);
+    if (rep == 2) {
+        file_label(g, info, sizeof(info));
+    } else if (rep) {
+        /* the same name twice: what tells them apart, region and version */
+        snprintf(info, sizeof(info), "%s · v%u%s%.0d", region_text(g->g.regions), g->g.version,
+                 g->g.year ? " · " : "", g->g.year);
+    } else if (g->g.year) {
+        snprintf(info, sizeof(info), "%s%s%d", pub, *pub ? " · " : "", g->g.year);
     } else {
         snprintf(info, sizeof(info), "%s", pub);
     }
@@ -1496,6 +1801,7 @@ static void scr_games(void)
     lib_show_hidden(cfg_bool(&D.global, "ui.showhidden", false));
     static LibGame *vis[MAX_SHOWN];
     const int total = lib_count(), n = dash_find_list(vis, MAX_SHOWN);
+    g_last_played = lib_last_played_time();
     const char *desc = dash_find_desc();
     const bool filtered = desc[0] != 0;
     char sub[300];
@@ -1689,10 +1995,16 @@ static void scr_games(void)
             LibGame *g = vis[i];
             if (view == 2) {
                 draw_tile(g, x, y, cw, ch, s, a);
+                if (is_last_played(g)) {
+                    draw_last_mark(x, y, cw, ch, 8, a);
+                }
             } else {
                 draw_card(g, x, y, cw * k, ch * k, s, a);
                 if (g->fav) {
                     draw_star(x + cw * k - (view ? 11 : 18), y + (view ? 11 : 18), view ? 6 : 10, a);
+                }
+                if (is_last_played(g)) {
+                    draw_last_mark(x, y, cw * k, ch * k, 10, a);
                 }
             }
             if (over && D.in.click) {
@@ -1732,9 +2044,19 @@ static void scr_games(void)
         if (g->g.year) {
             snprintf(year, sizeof(year), "%d  ", g->g.year);
         }
-        snprintf(info, sizeof(info), "%s%s%s%08X  v%u  %.1f GB", pub, *pub ? "  " : "", year, g->g.title_id,
-                 g->g.version, g->g.size / 1073741824.0);
+        char file[160] = "";
+        if (title_repeats(g) == 2) {
+            file_label(g, file, sizeof(file) - 2);
+            strcat(file, "  ");
+        }
+        snprintf(info, sizeof(info), "%s%s%s%s%s  v%u  %.1f GB", file, pub, *pub ? "  " : "", year,
+                 region_text(g->g.regions), g->g.version, g->g.size / 1073741824.0);
         ui_text_fit(W - 60, H - 120, info, 20, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_RIGHT, 480);
+        char played[256];
+        played_text(g, played, sizeof(played));
+        if (played[0]) {
+            ui_text_fit(W - 60, H - 94, played, 18, UI_FONT_REGULAR, UI_GREEN, UI_ALIGN_RIGHT, 560);
+        }
         if (D.in.ok) {
             open_game(g);
         }
@@ -1825,17 +2147,27 @@ static void scr_game(void)
     const float ch = H - 300, cw = ch * 0.7f;
     draw_card(g, 70, 150, cw, ch, false, ease(D.anim * 4));
     /* the facts under the cover */
-    char info[200];
-    static const char *const k_reg[8] = {"-", "NTSC-U", "NTSC-J", "NTSC-U/J", "PAL", "NTSC-U/PAL", "NTSC-J/PAL",
-                                         "World"};
+    /* the facts under the cover, a line each, as wide as its column (one
+     * line under the whole screen ran under the menu beside it) */
+    char info[3][160];
     const char *pub = lib_publisher(g);
+    snprintf(info[0], sizeof(info[0]), "%s %08X   v%u", T(S_TITLE_ID), g->g.title_id, g->g.version);
+    snprintf(info[1], sizeof(info[1]), "%s %s", T(S_REGION), region_text(g->g.regions));
     char year[16] = "";
     if (g->g.year) {
-        snprintf(year, sizeof(year), "   %d", g->g.year);
+        snprintf(year, sizeof(year), "%s%d", *pub ? "   " : "", g->g.year);
     }
-    snprintf(info, sizeof(info), "%s %08X   v%u   %s %s%s%s%s", T(S_TITLE_ID), g->g.title_id, g->g.version,
-             T(S_REGION), k_reg[g->g.regions & 7], *pub ? "   " : "", pub, year);
-    ui_text_fit(70, 160 + ch, info, 18, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_LEFT, W - 140);
+    snprintf(info[2], sizeof(info[2]), "%s%s   %.1f GB", pub, year, g->g.size / 1073741824.0);
+    for (int i = 0; i < 3; i++) {
+        ui_text_fit(70, 160 + ch + 26 * i, info[i], 18, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_LEFT, cw + 20);
+    }
+    {   /* its time played, when last played (#188), under the actions */
+        char played[256];
+        played_text(g, played, sizeof(played));
+        if (played[0]) {
+            ui_text_fit(110 + cw, 160 + ch + 26, played, 18, UI_FONT_REGULAR, UI_GREEN, UI_ALIGN_LEFT, W - 180 - cw);
+        }
+    }
     List l;
     list_begin(&l, 110 + cw, 150, W - 180 - cw, ch, 60);
     if (list_row(&l, T(S_PLAY), NULL, NULL)) {
@@ -2111,7 +2443,11 @@ int dash_run(SDL_Window *win, const char *exe)
                 if (e.type == SDL_EVENT_QUIT) {
                     D.quit = true;
                 } else if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST && g_hide_at > 0) {
-                    g_hide_at = ui_time();
+                    /* the game's window in front: this one behind it a moment
+                     * more, until the screen has it (gone at once, the desktop
+                     * showed for a picture before the game's) */
+                    const double soon = ui_time() + 0.3;
+                    g_hide_at = soon < g_hide_at ? soon : g_hide_at;
                 }
             }
             if (g_hide_at > 0 && ui_time() >= g_hide_at) {

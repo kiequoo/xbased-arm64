@@ -22,6 +22,7 @@ typedef struct In {
     bool any;               /* something was pressed (screensaver, hints) */
     bool pad;               /* the last input came from a gamepad (the hints' glyphs) */
     SDL_Keycode key;        /* the key pressed (remapping), 0 none */
+    SDL_Keymod mod;         /* the modifiers held with it */
     int pad_button;         /* the gamepad button pressed, -1 none */
     int pad_axis;           /* an axis pushed past half: 1 + axis, negated for negative; 0 none */
     const char *text;       /* text typed (text fields) */
@@ -91,11 +92,14 @@ typedef struct List {
     int *sel, *scroll;
     int visible;
     bool focused;
+    int head[8], nhead;     /* the rows that are headings (list_heading): not selectable */
 } List;
 void list_begin(List *l, float x, float y, float w, float h, float row_h);
 /* A row: its label and value; true when chosen (A, Enter, a click). delta:
  * left/right on it (-1, +1), may be NULL. */
 bool list_row(List *l, const char *label, const char *value, int *delta);
+/* a section's title over the rows after it, a row the selection steps over */
+void list_heading(List *l, const char *title);
 bool list_row_icon(List *l, UiTex *icon, const char *label, const char *sub, const char *value, int *delta);
 void list_end(List *l);
 bool list_selected(const List *l);   /* the last row is the selected one */

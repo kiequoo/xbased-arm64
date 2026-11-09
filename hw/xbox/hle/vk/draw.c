@@ -1087,6 +1087,23 @@ static uint32_t surf_slot(HleVkSurf *s, uint32_t ord)
         if (g_dr.sslot[i].id == s->id && g_dr.sslot[i].ord == ord) {
             if (g_dr.sslot[i].view != view || g_dr.sslot[i].cube != cube ||
                 g_dr.sslot[i].gen != gen) {
+                /* Other views: a slot of their own. The bindless set is read
+                 * as the GPU runs the draws (update after bind), so the old
+                 * slot rewritten in place changed what draws recorded before
+                 * sample, the ones still in the open recording or not yet run
+                 * by the GPU: they read the new image (a target made again,
+                 * its contents not yet drawn). The old slot goes once the
+                 * recordings that may sample it complete. */
+                uint32_t ns = take_slot();
+                if (ns) {
+                    if (g_nretire == TEX_RETIRE_MAX) {
+                        hle_tl_wait(hle_tl_submitted());
+                        hle_draw_tex_reap(hle_tl_completed());
+                    }
+                    g_retire[g_nretire++] = (typeof(g_retire[0])){
+                        .slot = g_dr.sslot[i].slot, .after = HLE_SURF_PARKED };
+                    g_dr.sslot[i].slot = ns;
+                }
                 g_dr.sslot[i].view = view;
                 g_dr.sslot[i].cube = cube;
                 g_dr.sslot[i].gen = gen;

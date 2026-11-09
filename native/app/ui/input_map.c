@@ -259,11 +259,87 @@ void im_hotkey_name(const Config *c, int h, char *out, size_t n)
     snprintf(out, n, "%s", v && *v ? v : SDL_GetKeyName(k_hk_def[h]));
 }
 
-void im_set_hotkey(Config *c, int h, SDL_Keycode key)
+void im_set_hotkey(Config *c, int h, SDL_Keycode key, SDL_Keymod mod)
 {
-    char k[24];
+    char k[24], v[96];
     snprintf(k, sizeof(k), "hk.%s", k_hk_name[h]);
-    cfg_set(c, k, SDL_GetKeyName(key));
+    snprintf(v, sizeof(v), "%s%s%s%s", (mod & SDL_KMOD_CTRL) ? "Ctrl+" : "", (mod & SDL_KMOD_ALT) ? "Alt+" : "",
+             (mod & SDL_KMOD_SHIFT) ? "Shift+" : "", SDL_GetKeyName(key));
+    cfg_set(c, k, v);
+}
+
+/* "Ctrl+Alt+Shift+F5": the key, and the modifiers (1 Ctrl, 2 Alt, 4 Shift) */
+static SDL_Keycode hotkey_parse(const char *v, uint8_t *mod)
+{
+    static const struct { const char *p; uint8_t bit; } k_mods[] = {{"Ctrl+", 1}, {"Alt+", 2}, {"Shift+", 4}};
+    *mod = 0;
+    for (bool more = true; more;) {
+        more = false;
+        for (unsigned i = 0; i < 3; i++) {
+            const size_t n = strlen(k_mods[i].p);
+            if (!SDL_strncasecmp(v, k_mods[i].p, n) && v[n]) {
+                *mod |= k_mods[i].bit;
+                v += n;
+                more = true;
+            }
+        }
+    }
+    return SDL_GetKeyFromName(v);
+}
+
+/* the controller's choices for a shortcut */
+static const struct { const char *v, *label; int code; } k_hkp[] = {
+    {"none", NULL, IM_HKP_NONE},
+    {"guide", "Guide", IM_HKP_GUIDE},
+    {"touchpad", "Touchpad", IM_HKP_TOUCHPAD},
+    {"share", "Share", IM_HKP_SHARE},
+    {"guide+a", "Guide + A", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_SOUTH},
+    {"guide+b", "Guide + B", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_EAST},
+    {"guide+x", "Guide + X", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_WEST},
+    {"guide+y", "Guide + Y", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_NORTH},
+    {"guide+lb", "Guide + LB", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
+    {"guide+rb", "Guide + RB", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+    {"guide+back", "Guide + Back", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_BACK},
+    {"guide+start", "Guide + Start", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_START},
+    {"guide+ls", "Guide + LS", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_LEFT_STICK},
+    {"guide+rs", "Guide + RS", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_RIGHT_STICK},
+    {"guide+up", "Guide + D-pad up", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_DPAD_UP},
+    {"guide+down", "Guide + D-pad down", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_DPAD_DOWN},
+    {"guide+left", "Guide + D-pad left", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_DPAD_LEFT},
+    {"guide+right", "Guide + D-pad right", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
+};
+/* the menu keeps the Guide button's tap (it always opened it), a
+ * screenshot the Share button's; the rest none until set */
+static const char *const k_hkp_def[IM_HOTKEYS] = {"guide", "none", "none", "none", "none", "share", "none"};
+
+int im_hkpad_count(void)
+{
+    return (int)(sizeof(k_hkp) / sizeof(k_hkp[0]));
+}
+
+const char *im_hkpad_value(int i)
+{
+    return k_hkp[i].v;
+}
+
+const char *im_hkpad_label(int i)
+{
+    return k_hkp[i].label ? k_hkp[i].label : T(S_NONE);
+}
+
+const char *im_hkpad_default(int h)
+{
+    return k_hkp_def[h];
+}
+
+static int hkpad_code(const char *v)
+{
+    for (int i = 0; v && i < im_hkpad_count(); i++) {
+        if (!SDL_strcasecmp(v, k_hkp[i].v)) {
+            return k_hkp[i].code;
+        }
+    }
+    return IM_HKP_NONE;
 }
 
 void im_resolve(ImMap *m, const Config *global, const Config *game)
@@ -280,7 +356,11 @@ void im_resolve(ImMap *m, const Config *global, const Config *game)
         char k[24];
         snprintf(k, sizeof(k), "hk.%s", k_hk_name[h]);
         const char *v = cfg_get(global, k);
-        m->hotkey[h] = v && *v ? SDL_GetKeyFromName(v) : k_hk_def[h];
+        m->hk_mod[h] = 0;
+        m->hotkey[h] = v && *v ? hotkey_parse(v, &m->hk_mod[h]) : k_hk_def[h];
+        snprintf(k, sizeof(k), "hkpad.%s", k_hk_name[h]);
+        const char *pv = cfg_get(global, k);
+        m->hk_pad[h] = hkpad_code(pv ? pv : k_hkp_def[h]);
     }
     const Config *dz = game && cfg_get(game, "deadzone") ? game : global;
     m->deadzone = cfg_int(dz, "deadzone", 10) / 100.0f;
