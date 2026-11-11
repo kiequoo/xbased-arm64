@@ -9,6 +9,7 @@
  *   u8 attributes, u8 name length, name
  */
 #include "native/core/xdvdfs.h"
+#include "native/core/fold_image.h"
 #include "native/core/chd_image.h"
 
 #include <ctype.h>
@@ -50,6 +51,9 @@ static bool image_read(int fd, void *buf, size_t len, uint64_t off)
     if (nc_chd_is(fd)) {
         return nc_chd_read(fd, buf, len, off);     /* a CHD: the image it holds */
     }
+    if (nc_fold_is(fd)) {
+        return nc_fold_read(fd, buf, len, off);    /* a game folder: the image it makes */
+    }
     uint8_t *p = buf;
     for (unsigned tries = 0; len;) {
         const ssize_t n = pread(fd, p, len, (off_t)off);
@@ -85,12 +89,16 @@ bool nc_disc_open(NcDisc *d, int fd)
 {
     memset(d, 0, sizeof(*d));
     d->fd = fd;
-    nc_chd_attach(fd);      /* a CHD image: read through it from here on */
+    /* a CHD image, or a game folder's default.xbe: read through it from here on */
+    if (!nc_chd_attach(fd)) {
+        nc_fold_attach(fd);
+    }
     for (size_t i = 0; i < sizeof(k_part_offsets) / sizeof(k_part_offsets[0]); i++) {
         uint8_t vd[NC_XDVDFS_SECTOR];
         uint64_t off = k_part_offsets[i];
-        if (!(nc_chd_is(fd) ? nc_chd_read(fd, vd, sizeof(vd), off + 32ull * NC_XDVDFS_SECTOR)
-                            : pread_all(fd, vd, sizeof(vd), off + 32ull * NC_XDVDFS_SECTOR))) {
+        if (!(nc_chd_is(fd)    ? nc_chd_read(fd, vd, sizeof(vd), off + 32ull * NC_XDVDFS_SECTOR)
+              : nc_fold_is(fd) ? nc_fold_read(fd, vd, sizeof(vd), off + 32ull * NC_XDVDFS_SECTOR)
+                               : pread_all(fd, vd, sizeof(vd), off + 32ull * NC_XDVDFS_SECTOR))) {
             continue;
         }
         if (memcmp(vd, k_magic, 20) == 0 && memcmp(vd + 0x7EC, k_magic, 20) == 0) {
@@ -104,6 +112,7 @@ bool nc_disc_open(NcDisc *d, int fd)
     }
     nc_log("hakuX-native", "disc: no XDVDFS volume found");
     nc_chd_detach(fd);      /* its caller closes the descriptor */
+    nc_fold_detach(fd);
     return false;
 }
 
@@ -111,6 +120,7 @@ void nc_disc_close(NcDisc *d)
 {
     if (d->fd >= 0) {
         nc_chd_detach(d->fd);
+        nc_fold_detach(d->fd);
         close(d->fd);
     }
     d->fd = -1;
@@ -146,7 +156,11 @@ static bool entry_ok(const uint8_t *dir, uint32_t size, uint32_t off)
  * reach. The tree's depth is bounded by the entries the table can hold, not a
  * fixed count (an image tool may leave the tree a list: Conker: Live &
  * Reloaded's Audio, 78 entries 77 deep), with no recursion; a loop in a
- * damaged table ends where it meets an entry already seen. The pass reads the
+ * damaged table ends where it meets an entry already seen. The walk's stack
+ * holds an entry per 4 bytes of the table, the most there can be: links may
+ * name entries that overlap (a crafted image's: nothing checks that they
+ * don't), one every 4 bytes, and sized for whole entries (14 bytes and a
+ * name) the stack was written past its end by such a chain. The pass reads the
  * entries as they are laid out, each sector's from its start until its
  * padding, so a table whose links an image tool got wrong still shows every
  * file: a file the search missed was the title's disc error. Stops when fn
@@ -158,7 +172,7 @@ bool nc_disc_dir_each(const uint8_t *dir, uint32_t size, bool (*fn)(void *ctx, c
     }
     const uint32_t slots = size / 4 + 1;
     uint8_t *seen = calloc((slots + 7) / 8, 1);
-    uint32_t *stack = malloc(sizeof(*stack) * (size / 14 + 2));
+    uint32_t *stack = malloc(sizeof(*stack) * ((size_t)size / 4 + 2));
     bool hit = false;
     if (!seen || !stack) {
         free(seen);
@@ -241,7 +255,7 @@ static bool disc_find(const NcDisc *d, const char *path, NcDiscFile *out)
         while (*end && *end != '\\' && *end != '/') {
             end++;
         }
-        if (!(cur.attr & 0x10) || !cur.size) {
+        if (!(cur.attr & 0x10) || !cur.size || cur.size > NC_DISC_DIR_MAX) {
             return false;
         }
         uint8_t *dir = malloc(cur.size);
@@ -522,13 +536,13 @@ bool nc_disc_find_orig(const NcDisc *d, const char *path, NcDiscFile *out)
 
 bool nc_disc_read_orig(const NcDisc *d, const NcDiscFile *f, uint64_t off, void *buf, size_t len)
 {
-    return f->sector < NC_DISC_OVERLAY && off + len <= f->size &&
+    return f->sector < NC_DISC_OVERLAY && off <= f->size && len <= f->size - off &&
            image_read(d->fd, buf, len, d->part_off + (uint64_t)f->sector * NC_XDVDFS_SECTOR + off);
 }
 
 bool nc_disc_read_file(const NcDisc *d, const NcDiscFile *f, uint64_t off, void *buf, size_t len)
 {
-    if (off + len > f->size) {
+    if (off > f->size || len > f->size - off) {     /* not off + len: it wraps */
         return false;
     }
     return f->sector >= NC_DISC_OVERLAY

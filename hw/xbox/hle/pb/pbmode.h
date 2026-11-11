@@ -28,6 +28,9 @@ void hle_pb_boundary_request(uint64_t value);
 /* The guest wrote DMA_PUT (its vCPU thread): a kick, and the thread known to
  * the stutter / hang monitor (hitch.h) */
 void hle_pb_put(void);
+/* pbdraw.c: a frame swapped went to the display (its flip), for the frame
+ * latency (pbmode.c fl_hold). Any thread. */
+void hle_pb_frame_flipped(void);
 /* The guest is writing DMA_PUT = put (its vCPU thread), before the register
  * holds it: the report scout reads what it pushed (mem/barrier.h
  * hle_barrier_report_pushed) before the decoder can. */

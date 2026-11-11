@@ -439,6 +439,10 @@ static bool copy_blob(const char *src, int kind, uint64_t size, const char *dst)
         }
         ok = write_all(out, buf, (size_t)r);
         n += (uint64_t)r;
+        if (n > size) {
+            ok = false;                 /* more than the file it is said to be: not written out to its end */
+            break;
+        }
     }
     if (gz) {
         ok = gzclose(gz) == Z_OK && ok;
@@ -730,6 +734,34 @@ static bool restore_drive(int p, const NcCacheDir *dirs, unsigned ndirs, const N
     return ok;
 }
 
+/* A folder or file the state names in a cache drive: a path inside the
+ * partition's folder, its parts as the drives hold names (never empty, "."
+ * or "..", nor ending in a dot or a space: io.c's name_to_host encodes
+ * those; no ':' either, a drive or a stream on Windows). A state is a file
+ * that may come from anywhere, and what it lists is created and written
+ * with content from the store beside it: a path with ".." in it wrote a
+ * file of the state's choosing anywhere the player can. */
+static bool path_inside(const char *p)
+{
+    if (!p[0]) {
+        return false;
+    }
+    for (const char *c = p;;) {
+        const char *e = c;
+        while (*e && *e != '/' && *e != '\\') {
+            e++;
+        }
+        const size_t n = (size_t)(e - c);
+        if (!n || c[n - 1] == '.' || c[n - 1] == ' ' || memchr(c, ':', n)) {
+            return false;
+        }
+        if (!*e) {
+            return true;
+        }
+        c = e + 1;
+    }
+}
+
 bool nc_cache_state_load(NcRd *r, unsigned v)
 {
     const uint64_t t0 = mono_ns();
@@ -745,9 +777,13 @@ bool nc_cache_state_load(NcRd *r, unsigned v)
         NcCachePart cp = {0};
         nc_rec_get(r, &nc_rec_NcCachePart, &cp, v);
         const void *raw = nc_rd_ptr(r, cp.raw_len);
-        NcCacheDir *dirs = calloc(cp.ndirs ? cp.ndirs : 1, sizeof(*dirs));
-        NcCacheFile *fl = calloc(cp.nfiles ? cp.nfiles : 1, sizeof(*fl));
-        ok = !r->fail && cp.part <= 5 && cp.raw_len <= RAW_MAX && dirs && fl;
+        /* no more of them than the section has left to hold */
+        const bool held = !r->fail && (uint64_t)cp.ndirs * sizeof(NcCacheDir) +
+                                              (uint64_t)cp.nfiles * (sizeof(((NcCacheFile *)0)->path) + 32) <=
+                                          r->len - r->pos;
+        NcCacheDir *dirs = held ? calloc(cp.ndirs ? cp.ndirs : 1, sizeof(*dirs)) : NULL;
+        NcCacheFile *fl = held ? calloc(cp.nfiles ? cp.nfiles : 1, sizeof(*fl)) : NULL;
+        ok = held && cp.part <= 5 && cp.raw_len <= RAW_MAX && dirs && fl;
         if (ok) {
             nc_recs_get(r, &nc_rec_NcCacheDir, dirs, sizeof(*dirs), cp.ndirs, v);
             nc_recs_get(r, &nc_rec_NcCacheFile, fl, sizeof(*fl), cp.nfiles, v);
@@ -758,6 +794,16 @@ bool nc_cache_state_load(NcRd *r, unsigned v)
                 fl[k].path[sizeof(fl[k].path) - 1] = 0;
             }
             ok = !r->fail;
+            for (unsigned k = 0; ok && k < cp.ndirs; k++) {
+                ok = path_inside(dirs[k].path);
+            }
+            for (unsigned k = 0; ok && k < cp.nfiles; k++) {
+                ok = path_inside(fl[k].path);
+            }
+            if (!r->fail && !ok) {
+                nc_log("hakuX-native-state", "cache: the state names a path outside drive %u's folder", cp.part);
+                nc_state_fail("the state names a file outside the game's cache drive");
+            }
         }
         if (ok) {
             /* the partition's head (the FATX superblock, the cache table) */

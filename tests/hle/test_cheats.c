@@ -81,6 +81,36 @@ static void test_parse(void)
     HT_CHECK(!line("w8 [[[[[0x10000]]]]] 1"));  /* five pointers */
 }
 
+/* A line that is refused changes nothing: an "end" with text after it closed an if that stayed
+ * open in the code, and the run then nested one level past its stack for each. */
+static void test_refused_end(void)
+{
+    char err[64];
+    unsigned taken = 0;
+    nc_cheats_reset();
+    memset(g_mem, 0, sizeof(g_mem));
+    nc_cheat_add("d", true, false);
+    for (unsigned i = 0; i < 64; i++) {
+        taken += nc_cheat_line("if8 0x10000 == 0", err, sizeof(err));
+        HT_CHECK(!nc_cheat_line("end x", err, sizeof(err)));
+    }
+    HT_EQ_U32(taken, 8);                       /* as deep as ifs nest */
+    HT_CHECK(line("w8 0x10010 7"));
+    nc_cheats_run(&k_mem);
+    HT_EQ_U32(g_mem[0x10], 7);
+    /* ... and an if that is refused opens none */
+    nc_cheats_reset();
+    nc_cheat_add("e", true, false);
+    for (unsigned i = 0; i < 64; i++) {
+        HT_CHECK(!nc_cheat_line("if8 0x10000 == 0 x", err, sizeof(err)));
+    }
+    taken = 0;
+    for (unsigned i = 0; i < 16; i++) {
+        taken += nc_cheat_line("if8 0x10000 == 0", err, sizeof(err));
+    }
+    HT_EQ_U32(taken, 8);
+}
+
 static void test_writes(void)
 {
     nc_cheats_reset();
@@ -226,6 +256,7 @@ static void test_toggles_and_once(void)
 int main(void)
 {
     test_parse();
+    test_refused_end();
     test_writes();
     test_ifs();
     test_pointers();

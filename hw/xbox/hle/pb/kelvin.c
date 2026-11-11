@@ -34,13 +34,17 @@ enum {
     RS_FOGDENSITY = 96, RS_SPECULARENABLE = 103, RS_POINTSPRITEENABLE = 118,
     RS_FOGCOLOR = 138, RS_ZENABLE = 143, RS_STENCILENABLE = 144, RS_STENCILFAIL = 145,
     RS_FRONTFACE = 146, RS_CULLMODE = 147, RS_SHADOWFUNC = 156,
+    /* not D3D's: the NV2A's polygon modes and line width as pushed (vk/draw.c) */
+    RS_NV_FRONTMODE = 160, RS_NV_BACKMODE = 161, RS_NV_LINEWIDTH = 162, RS_NV_TWOSIDE = 163,
+    RS_NV_LIGHTCTL = 164,
+    RS_NV_EYEVEC = 82,                  /* .. 84: SET_EYE_VECTOR (DOT_RFLCT_SPEC_CONST) */
 };
 enum {
     TSS_ADDRESSU = 0, TSS_ADDRESSV, TSS_ADDRESSW, TSS_MAGFILTER, TSS_MINFILTER,
     TSS_MIPFILTER, TSS_MIPMAPLODBIAS, TSS_MAXMIPLEVEL, TSS_MAXANISOTROPY,
     TSS_COLORKEYOP, TSS_COLORSIGN, TSS_ALPHAKILL,
     TSS_BUMPENVMAT00 = 22,              /* .. 11, then LSCALE, LOFFSET */
-    TSS_BORDERCOLOR = 29,
+    TSS_BORDERCOLOR = 29, TSS_COLORKEYCOLOR = 30,
 };
 
 static struct {
@@ -137,6 +141,11 @@ void hle_kelvin_method(uint32_t m, uint32_t v)
     g_kv.w[i >> 5] |= 1u << (i & 31);
 }
 
+uint32_t hle_kelvin_reg(uint32_t m)
+{
+    return m < 4 * KV_REGS ? g_kv.r[m >> 2] : 0;
+}
+
 uint32_t hle_kelvin_state_gen(void)
 {
     return g_kv.sgen;
@@ -168,6 +177,7 @@ static void tss(uint32_t *t, unsigned s)
     t[TSS_ALPHAKILL] = (ctl0 >> 2) & 1;
     t[TSS_COLORSIGN] = filt & 0xF0000000u;
     t[TSS_BORDERCOLOR] = R(b + 0x24);
+    t[TSS_COLORKEYCOLOR] = R(0x0AE0 + 4 * s);           /* SET_COLOR_KEY_COLOR */
     /* SET_TEXTURE_SET_BUMP_ENV_MAT 00 01 11 10 (the NV2A's order, as LLE
      * takes it), SCALE, OFFSET, where written; the stage keeps 00 01 10 11.
      * Read as 00 01 10 11, D3D's 0.5 x identity was (0.5, 0, 0.5, 0): every
@@ -193,6 +203,9 @@ static const struct { uint16_t m, rs; } k_rs_map[] = {
     { 0x0374, RS_STENCILZFAIL }, { 0x0378, RS_STENCILPASS }, { 0x0330, RS_POINTOFFSETENABLE },
     { 0x0334, RS_WIREFRAMEOFFSETENABLE }, { 0x0338, RS_SOLIDOFFSETENABLE },
     { 0x0384, RS_ZSLOPESCALE }, { 0x0388, RS_ZOFFSET }, { 0x02A4, RS_FOGENABLE },
+    { 0x038C, RS_NV_FRONTMODE }, { 0x0390, RS_NV_BACKMODE }, { 0x0380, RS_NV_LINEWIDTH },
+    { 0x17C4, RS_NV_TWOSIDE }, { 0x0294, RS_NV_LIGHTCTL },
+    { 0x181C, RS_NV_EYEVEC }, { 0x1820, RS_NV_EYEVEC + 1 }, { 0x1824, RS_NV_EYEVEC + 2 },
     { 0x03B8, RS_SPECULARENABLE },
     /* SET_SHADOW_COMPARE_FUNC (D3DCMP_*: NEVER put Fable's whole world in
      * shadow), SET_POINT_SMOOTH_ENABLE (point sprites) */
@@ -211,17 +224,20 @@ void hle_kelvin_state(HleCmdState *st)
         rs[RS_ZENABLE] = R(0x030C) ? ((R(0x0290) & 0x10000u) ? 2 : 1) : 0;
     }
     if (W(0x0308) || W(0x039C) || W(0x03A0)) {
-        /* CULLMODE is the winding culled: the front one for GL_FRONT */
+        /* CULLMODE is the winding culled: the front one for GL_FRONT. The
+         * front face is clockwise until one is set (a value that is neither
+         * winding never reaches the register: kvfmt.h) */
         uint32_t ff = W(0x03A0) && R(0x03A0) ? R(0x03A0) : 0x900;
         rs[RS_FRONTFACE] = ff;
-        rs[RS_CULLMODE] = !R(0x0308) ? 0 : R(0x039C) == 0x404 ? ff : (ff ^ 1);
+        rs[RS_CULLMODE] = !R(0x0308) ? 0 : R(0x039C) == 0x404 ? ff :
+                          R(0x039C) == 0x408 ? 0x408 : (ff ^ 1);   /* 0x408: both (FRONT_AND_BACK) */
     }
     if (W(0x029C)) {                    /* 0x100: an _ABS mode (0x802 .. 0x804) */
         uint32_t m = R(0x029C);
         rs[RS_FOGTABLEMODE] = (m == 0x2601 || m == 0x804 ? 3 : m == 0x801 || m == 0x803 ? 2 : 1) |
                               (m >= 0x802 && m <= 0x804 ? 0x100 : 0);
     }
-    if (W(0x09C0) || W(0x09C4)) {
+    if (W(0x09C0) || W(0x09C4) || W(0x029C)) {
         /* SET_FOG_PARAMS as pushed (Conker's meshes: their own fog): the
          * NV2A's linear factor is p0 - 1 + p1 d, exp / exp2 take the density
          * from p1 (D3D's encoding, as LLE decodes it). The back end's fog
@@ -244,6 +260,10 @@ void hle_kelvin_state(HleCmdState *st)
             dens = -p1 * 2.0f *
                    ((rs[RS_FOGTABLEMODE] & 3) == 2 ? sqrtf(logf(256.0f)) : logf(256.0f));
             memcpy(&rs[RS_FOGDENSITY], &dens, 4);
+            /* and p0's part: the factor is p0 - 1.5 + 2^(16 p1 d) (xemu's;
+             * D3D's p0 is 1.5: none), in the start's place (vk/draw.c pc.fog.x) */
+            st = p0 - 1.5f;
+            memcpy(&rs[RS_FOGSTART], &st, 4);
         }
     }
     if (W(0x02A8)) {                    /* ABGR -> D3DCOLOR */
@@ -275,6 +295,8 @@ void hle_kelvin_state(HleCmdState *st)
     for (unsigned s = 0; s < HLE_TSS_STAGES; s++) {
         if (W(0x1B0C + 64 * s)) {
             tss(st->tss[s], s);
+        } else if (W(0x0AE0 + 4 * s)) {
+            st->tss[s][TSS_COLORKEYCOLOR] = R(0x0AE0 + 4 * s);
         }
     }
     if (W(0x03B8)) {

@@ -171,7 +171,7 @@ else()
   target_link_libraries(hakux_native PUBLIC ${NC_CPU_LIB} hakux_hle hakux_apu nc_slirp ${NC_SYS_LIBS})
 endif()
 target_compile_options(hakux_native PRIVATE -Wall -Wno-unused-parameter)
-target_sources(hakux_native PRIVATE core/chd_image.c)
+target_sources(hakux_native PRIVATE core/chd_image.c core/fold_image.c)
 
 # libchdr (NC_DEPS/libchdr, BSD-3, unmodified): CHD disc images
 # (core/chd_image.c), with its own LZMA, Zstandard and FLAC decoders and the
@@ -240,6 +240,37 @@ if(WIN32 OR NC_LINUX_X64 OR NC_LINUX_ARM64)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/app_win.cmake")
 else()
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/app.cmake")
+endif()
+
+# Host tests of the PC's own code (not part of the default build):
+#   cputest: the translator (cpu/cpu_x86.cpp) against the host processor,
+#   32-bit code run in compatibility mode and translated, results compared
+#   (tests/native/cpu/cputest.cpp)
+if(WIN32)
+  add_executable(cputest EXCLUDE_FROM_ALL "${NC_REPO}/tests/native/cpu/cputest.cpp" cpu/cpu_x86.cpp)
+  target_include_directories(cputest PRIVATE "${NC_REPO}")
+  target_link_libraries(cputest PRIVATE nc_zydis)
+  target_compile_options(cputest PRIVATE -Wall -Wno-unused-parameter)
+  target_compile_definitions(cputest PRIVATE NC_CPU_DIAG=1)
+  nc_win_compat(cputest)
+endif()
+# The translator's diagnostics in the app itself (NC_SMC_CHECK): off, and
+# never in a release; -DHAKUX_CPU_DIAG=ON for a build to investigate a title.
+option(HAKUX_CPU_DIAG "the translator's diagnostics in the app (not for releases)" OFF)
+if(HAKUX_CPU_DIAG)
+  target_compile_definitions(hakux_native PRIVATE NC_CPU_DIAG=1)
+endif()
+# The statistics a run keeps and logs as it goes (the kernel's and the
+# decoder's counts and their lines every few seconds, the stutter monitor,
+# the GPU event trace, the debug properties' polls): off, and never in a
+# release; -DHAKUX_DIAG=ON for a build to investigate a title. What a
+# report needs stays in every build: the log, a fault's last kernel calls
+# and threads, the frame rate's line.
+option(HAKUX_DIAG "the run's statistics and traces (not for releases)" OFF)
+if(HAKUX_DIAG)
+  add_compile_definitions(HAKUX_DIAG=1)
+else()
+  add_compile_definitions(HAKUX_DIAG=0)
 endif()
 
 if(WIN32)

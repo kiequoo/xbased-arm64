@@ -74,6 +74,16 @@ static bool is_image_name(const char *name)
                    !SDL_strcasecmp(dot, ".chd"));
 }
 
+/* An extracted game's folder: a default.xbe in it (#214) */
+static bool is_game_folder(const char *dir)
+{
+    char p[1200];
+    SDL_PathInfo pi;
+    const size_t n = strlen(dir);
+    snprintf(p, sizeof(p), "%s%sdefault.xbe", dir, n && (dir[n - 1] == '/' || dir[n - 1] == '\\') ? "" : "/");
+    return SDL_GetPathInfo(p, &pi) && pi.type == SDL_PATHTYPE_FILE;
+}
+
 static void icon_path(const XdGame *g, char *out, size_t n)
 {
     char d[1100];
@@ -688,7 +698,9 @@ static void scan_dir(const char *dir, int depth)
         if (!SDL_GetPathInfo(p, &pi)) {
             continue;
         }
-        if (pi.type == SDL_PATHTYPE_DIRECTORY) {
+        if (pi.type == SDL_PATHTYPE_DIRECTORY && is_game_folder(p) && strlen(p) < sizeof(((XdGame *)0)->path) - 1) {
+            add_game(p, &pi);       /* an extracted game: the folder is the disc */
+        } else if (pi.type == SDL_PATHTYPE_DIRECTORY) {
             scan_dir(p, depth + 1);
         } else if (pi.type == SDL_PATHTYPE_FILE && is_image_name(names[i]) && pi.size > 1 << 20 &&
                    strlen(p) < sizeof(((XdGame *)0)->path) - 1) {
@@ -718,8 +730,9 @@ static int scan_thread(void *arg)
         SDL_UnlockMutex(L.mu);
         for (int i = 0; i < a->n && !scan_stopped(); i++) {
             SDL_PathInfo pi;
-            if (SDL_GetPathInfo(a->dirs[i], &pi) && pi.type == SDL_PATHTYPE_FILE) {
-                add_game(a->dirs[i], &pi);  /* any name: it was chosen */
+            if (SDL_GetPathInfo(a->dirs[i], &pi) &&
+                (pi.type == SDL_PATHTYPE_FILE || is_game_folder(a->dirs[i]))) {
+                add_game(a->dirs[i], &pi);  /* any name: it was chosen (a game's folder, too) */
             } else {
                 scan_dir(a->dirs[i], 0);
             }

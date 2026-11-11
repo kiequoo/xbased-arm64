@@ -269,7 +269,7 @@ static void port_write(Ohci *o, unsigned i, uint32_t val)
             o->port[i] = (o->port[i] & ~PORT_PSS) | PORT_PSSC;
         }
     }
-    if (port_set_if_connected(o, i, val & PORT_PRS)) {
+    if (port_set_if_connected(o, i, val & PORT_PRS) && o->dev[i]) {
         nc_usb_reset(o->dev[i]);
         o->port[i] &= ~PORT_PRS;
         o->port[i] |= PORT_PES | PORT_PRSC;
@@ -816,6 +816,23 @@ bool nc_usb_state_save(NcBuf *b)
     return true;
 }
 
+/* A state's device: the endpoint 0 transfer it was in the middle of has to
+ * fit its buffer. A state is a file that may come from anywhere, and the
+ * transfer's length and position are where its next packets are copied from
+ * and to (usb.c): outside the buffer, what the title sent landed in the
+ * emulator's own memory. */
+static bool dev_fits(NcUsbDev *d)
+{
+    if (d->len >= 0 && d->len <= (int)sizeof(d->buf) && d->pos >= 0 && d->pos <= d->len && d->pending_addr >= -1 &&
+        d->pending_addr <= 127) {
+        return true;
+    }
+    d->len = d->pos = 0;
+    d->data_stage = false;
+    d->pending_addr = -1;
+    return false;
+}
+
 bool nc_usb_state_load(NcRd *r, unsigned v)
 {
     Ohci *o = &g_ohci;
@@ -840,7 +857,7 @@ bool nc_usb_state_load(NcRd *r, unsigned v)
         NcUsbHubState hs = {0};
         nc_rec_get(r, &nc_rec_NcUsbDev, hub ? hub : &scratch, v);
         nc_rec_get(r, &nc_rec_NcUsbHubState, &hs, v);
-        if (hs.nports > 4) {
+        if (hs.nports > 4 || !dev_fits(hub ? hub : &scratch)) {
             pthread_mutex_unlock(&o->lock);
             return false;
         }
@@ -856,11 +873,23 @@ bool nc_usb_state_load(NcRd *r, unsigned v)
             const bool had = nc_rd_u8(r);
             if (had) {
                 nc_rec_get(r, &nc_rec_NcUsbDev, c ? c : &scratch, v);
+                if (!dev_fits(c ? c : &scratch)) {
+                    pthread_mutex_unlock(&o->lock);
+                    return false;
+                }
             }
             if (hub && had != (c != NULL)) {
                 nc_usb_hub_port_changed(hub, p);    /* plugged in or out since */
                 changes++;
             }
+        }
+    }
+    for (unsigned i = 0; i < ROOT_PORTS; i++) {
+        if (!o->dev[i]) {
+            /* nothing on the port in this run, whatever the state's register
+             * says: a port told connected with no device behind it was reset
+             * through a null device */
+            o->port[i] &= ~(PORT_CCS | PORT_PES | PORT_PSS | PORT_PRS | PORT_LSDA);
         }
     }
     if (changes) {

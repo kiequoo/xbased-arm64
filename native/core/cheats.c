@@ -215,12 +215,13 @@ bool nc_cheat_line(const char *line, char *err, size_t errlen)
     }
     Op op;
     memset(&op, 0, sizeof(op));
+    int depth = c->depth;                       /* the cheat's once this line is taken */
     if (!strcmp(word, "else") || !strcmp(word, "end")) {
-        if (!c->depth) {
+        if (!depth) {
             return fail(err, errlen, "no if to close");
         }
         op.kind = word[1] == 'l' ? OP_ELSE : OP_END;
-        c->depth -= op.kind == OP_END;
+        depth -= op.kind == OP_END;
     } else {
         const bool is_if = !strncmp(word, "if", 2);
         const char *t = word + (is_if ? 2 : 1);
@@ -249,18 +250,21 @@ bool nc_cheat_line(const char *line, char *err, size_t errlen)
             return fail(err, errlen, "bad value");
         }
         if (is_if) {
-            if (c->depth >= DEPTH_MAX) {
+            if (depth >= DEPTH_MAX) {
                 return fail(err, errlen, "ifs nested too deep");
             }
-            c->depth++;
+            depth++;
         }
     }
     p = skip_ws(p);
     if (*p && *p != '#') {
         return fail(err, errlen, "extra text");
     }
+    /* a line refused leaves the count as it was: an "end" with text after it closed an if that
+     * the run then found open, one level past its stack for each */
     g_ops[g_nops++] = op;
     c->n++;
+    c->depth = depth;
     return true;
 }
 
@@ -361,6 +365,9 @@ static unsigned run_one(Cheat *c, const NcCheatMem *m)
             bool taken = false;
             uint32_t va;
             uint8_t b[4];
+            if (sp == DEPTH_MAX) {
+                return wrote;                   /* deeper than a line could make it */
+            }
             if (active) {
                 if (resolve(m, &op->a, &va) && m->read(m->opaque, va, b, op->width)) {
                     taken = compare(op, load(b, op->width));

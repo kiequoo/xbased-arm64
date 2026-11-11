@@ -51,24 +51,49 @@ uint32_t hle_tex_sign_xor(uint32_t xfmt, unsigned signs, unsigned *eff)
         byte[0] = 0; byte[1] = 3; byte[2] = 2; byte[3] = 1; break;
     case 0x28: case 0x17:                           /* G8B8 (V8U8): B G, R reads B, A G */
         byte[0] = 1; byte[1] = 0; byte[2] = 1; byte[3] = 0; break;
+    case 0x27: case 0x37:                           /* R6G5B5: as the A8R8G8B8 it is expanded
+                                                     * to (hle_tex_expand_r6g5b5), no alpha */
+        byte[0] = -1; byte[1] = 2; byte[2] = 1; byte[3] = 0; break;
     default:
         *eff = 0;
         return 0;
     }
     uint32_t x = 0;
     for (unsigned c = 0; c < 4; c++) {
-        if ((signs >> c) & 1) {
+        if (((signs >> c) & 1) && byte[c] >= 0) {
             x |= 0x80u << (8 * byte[c]);
         }
     }
     unsigned e = 0;                     /* a byte shared by two channels: both */
     for (unsigned c = 0; c < 4; c++) {
-        if ((x >> (8 * byte[c])) & 0x80) {
+        if (byte[c] >= 0 && ((x >> (8 * byte[c])) & 0x80)) {
             e |= 1u << c;
         }
     }
     *eff = e;
     return x;
+}
+
+/* A field of `bits` bits: widened to a byte, or (flip) as a signed one centred on 0x80 */
+static uint32_t r655_byte(uint32_t v, unsigned bits, bool flip)
+{
+    if (!flip) {
+        return (v << (8 - bits) | v >> (2 * bits - 8)) & 0xFF;
+    }
+    const int max = (1 << (bits - 1)) - 1;
+    const int sv = (int)v >= max + 1 ? (int)v - (1 << bits) : (int)v;     /* two's complement */
+    const int b = 128 + (sv * 127 * 2 + (sv < 0 ? -max : max)) / (2 * max);   /* rounded */
+    return (uint32_t)(b < 0 ? 0 : b > 255 ? 255 : b);
+}
+
+void hle_tex_expand_r6g5b5(const uint16_t *s, size_t n, uint32_t sign_xor, uint32_t *out)
+{
+    const bool fr = sign_xor & 0x00800000u, fg = sign_xor & 0x00008000u, fb = sign_xor & 0x00000080u;
+    for (size_t i = 0; i < n; i++) {
+        const uint32_t c = s[i];
+        out[i] = 0xFF000000u | r655_byte(c >> 10, 6, fr) << 16 | r655_byte((c >> 5) & 0x1F, 5, fg) << 8 |
+                 r655_byte(c & 0x1F, 5, fb);
+    }
 }
 
 static int log2_exact(uint32_t v)
@@ -94,13 +119,18 @@ static uint32_t max_u32(uint32_t a, uint32_t b)
     return a > b ? a : b;
 }
 
-static uint32_t level_bytes(const HleFmtInfo *fi, uint32_t w, uint32_t h, uint32_t d)
+/* A level's bytes: in 64 bits, a volume's texels by its format's bytes pass 4 GiB (4096 x 4096 x
+ * 512 is the largest the header's fields can say) */
+static uint64_t level_bytes(const HleFmtInfo *fi, uint32_t w, uint32_t h, uint32_t d)
 {
     if (fi->flags & HLE_FI_DXT) {
-        return ((w + 3) / 4) * ((h + 3) / 4) * fi->bpp * 2 * d;
+        return (uint64_t)((w + 3) / 4) * ((h + 3) / 4) * fi->bpp * 2 * d;
     }
-    return w * h * d * fi->bpp / 8;
+    return (uint64_t)w * h * d * fi->bpp / 8;
 }
+
+/* The most a texture's data can be: the memory of the largest console (a debug kit's 128 MiB) */
+#define RES_BYTES_MAX (128u << 20)
 
 static uint32_t level_pitch(const HleFmtInfo *fi, uint32_t w)
 {
@@ -229,14 +259,21 @@ bool hle_res_info(const HleResDesc *d, HleResInfo *o)
     }
     uint32_t maxl = max_u32(max_u32((uint32_t)lw, (uint32_t)lh), (uint32_t)ld) + 1;
     uint32_t levels = surf ? 1 : (d->levels && d->levels < maxl ? d->levels : maxl);
-    uint32_t chain = 0, sw, sh, ofs;
+    uint64_t chain = 0;
+    uint32_t sw, sh, ofs;
     for (uint32_t l = 0; l < levels; l++) {
         hle_res_level(d, l, &sw, &sh, &ofs);
         chain += level_bytes(fi, sw, sh, max_u32(depth >> l, 1));
     }
+    /* more than any memory holds: none (counted in 32 bits, a large volume's bytes wrapped to
+     * few or none, and its texels were then read and written past what that count had checked
+     * and set aside) */
+    if (chain * (cube ? 6 : 1) > RES_BYTES_MAX) {
+        return false;
+    }
     hle_res_level(d, 0, &sw, &sh, &ofs);
     o->levels = levels;
-    o->bytes = cube ? 6 * align_up(chain, 128) : chain;
+    o->bytes = cube ? 6 * align_up((uint32_t)chain, 128) : (uint32_t)chain;
     o->pitch = level_pitch(fi, sw);
     o->format = base | (cube ? HLE_FMT_CUBEMAP : 0) |
                 ((vol ? 3u : 2u) << HLE_FMT_DIM_SHIFT) |
@@ -264,7 +301,7 @@ uint32_t hle_res_subresource(const HleResDesc *d, uint32_t face, uint32_t level,
     uint32_t off = 0, chain = 0, sw, sh, ofs;
     for (uint32_t l = 0; l < ri.levels; l++) {
         hle_res_level(d, l, &sw, &sh, &ofs);
-        uint32_t b = level_bytes(fi, sw, sh, max_u32(depth >> l, 1));
+        uint32_t b = (uint32_t)level_bytes(fi, sw, sh, max_u32(depth >> l, 1));    /* (hle_res_info: fits) */
         if (l < level) {
             off += b;
         }

@@ -8,6 +8,13 @@
 #ifndef HW_XBOX_HLE_HOST_H
 #define HW_XBOX_HLE_HOST_H
 
+/* HAKUX_DIAG: 1 in a build made to investigate (the run's statistics, traces
+ * and monitor compiled in), 0 in every other (the build system's
+ * definition; 0 where there is none). */
+#ifndef HAKUX_DIAG
+#define HAKUX_DIAG 0
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -91,6 +98,22 @@ void hle_host_mem_noaccess(uint32_t pa, uint32_t len, bool on);
 
 uint64_t hle_host_vblank_count(void);
 int64_t hle_host_vblank_period_ns(void);
+/* The time the last vblank was due (CLOCK_MONOTONIC, ns): the timer's own
+ * instant, a period after the one before, not when its interrupt was taken. */
+uint64_t hle_host_vblank_ns(void);
+/* Frame latency (pb/pbmode.c): the guest thread that pushed a finished
+ * frame waits, from its next instruction, until the next flip (the guest's
+ * vCPU thread, in its DMA_PUT); and a flip came (any thread). */
+void hle_host_frame_wait(void);
+void hle_host_frame_flipped(void);
+/* The display's vsyncs as the window's presenter has them from the driver
+ * (the last one's instant, CLOCK_MONOTONIC ns, and the refresh period), and
+ * the lead its presents keep after a frame's vblank (0: they are not timed).
+ * With a display whose refreshes a frame is a whole number of, the vblank
+ * keeps to them, placed so a frame's present falls midway between two. */
+void hle_host_display_sync(uint64_t vsync_ns, uint64_t period_ns, uint64_t lead_ns);
+/* True while the vblank keeps to them so. */
+bool hle_host_vblank_timed(void);
 
 /* ---- the GPU's registers (push-buffer mode) ------------------------------- */
 
@@ -127,12 +150,30 @@ enum {
     HLE_GTR_IRQL,           /* a thread set the IRQL (value: new | old << 8 | thread << 16 |
                                1 KfRaiseIrql, 2 KfLowerIrql, 3 KeRaiseIrqlToDpcLevel << 24) */
 };
+#if HAKUX_DIAG
 void hle_host_gpu_trace(unsigned kind, uint32_t value);
 /* The trace's position now (for a dump around it later). */
 uint32_t hle_host_gpu_trace_mark(void);
 /* The events from 150 before mark (a hle_host_gpu_trace_mark) to 6000 after,
  * or to now. */
 void hle_host_gpu_trace_dump(const char *why, uint32_t mark);
+#else
+/* (the trace is a build's made to investigate, HAKUX_DIAG: nothing kept) */
+static inline void hle_host_gpu_trace(unsigned kind, uint32_t value)
+{
+    (void)kind;
+    (void)value;
+}
+static inline uint32_t hle_host_gpu_trace_mark(void)
+{
+    return 0;
+}
+static inline void hle_host_gpu_trace_dump(const char *why, uint32_t mark)
+{
+    (void)why;
+    (void)mark;
+}
+#endif
 /* Push-buffer mode: channel 0's DMA_PUT writes kick the HLE (hle_pb_kick),
  * and the FIFO's status follows the GET it reports. */
 void hle_host_pb_mode(bool on);

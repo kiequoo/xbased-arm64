@@ -99,6 +99,10 @@ typedef struct NcWait {
     uint64_t deadline_ns;    /* host monotonic; 0: no timeout */
     uint32_t cs;             /* RTL_CRITICAL_SECTION the thread takes when woken, or 0 */
     bool alertable;          /* an APC ends it (STATUS_USER_APC) */
+    /* a frame latency hold (nc_ke_frame_take): not a kernel call's wait, so
+     * it ends without a status in EAX; a flip past flip_seq ends it */
+    bool hold;
+    uint32_t flip_seq;
 } NcWait;
 
 /* A queued APC (apc.c): a KAPC, or a bare normal routine with its arguments. */
@@ -179,6 +183,7 @@ typedef struct NcThread {
      * ends, a step a quantum. no_boost: KeSetDisableBoostThread's. */
     int boost;
     bool no_boost;
+    int8_t saturation;              /* KeSetBasePriorityThread's +-16: +1, -1, else 0 */
     NcCpuContext ctx;
 } NcThread;
 
@@ -365,6 +370,14 @@ void nc_ob_unname(NcKernel *k, uint32_t object);
 bool nc_ob_create_named(NcKernel *k, uint32_t attrs, const char *name, enum NcObType type, uint32_t handle_out,
                         uint32_t *status);
 
+/* Frame latency (hle_host_frame_wait): the vCPU thread asks for the
+ * running thread to wait until the next flip, taken at the next interrupt
+ * system op (nc_ke_frame_take); a flip (nc_ke_frame_flipped, any thread)
+ * ends the wait at the next look at the waits. */
+void nc_ke_frame_wait_request(NcKernel *k);
+void nc_ke_frame_take(NcKernel *k);
+void nc_ke_frame_flipped(void);
+
 void nc_ps_register(NcKernel *k);
 NcThread *nc_ps_thread_of(NcKernel *k, uint32_t ethread);
 /* Saves the running thread and loads the next ready one into the frame. */
@@ -459,6 +472,16 @@ void nc_kernel_apu_spin(NcKernel *k, NcFrame *f);
 /* seh.c: RtlRaiseException and RtlUnwind, and their stubs. */
 void nc_seh_register(NcKernel *k);
 void nc_seh_stub(NcKernel *k, NcFrame *f, unsigned ordinal);
+/* An exception the processor raises in the title's code, to the thread's
+ * handlers (seh.c); false when there is none to take it. */
+bool nc_seh_fault(NcKernel *k, NcFrame *f, uint32_t code, uint32_t next_eip, unsigned nparams, uint32_t p0,
+                  uint32_t p1);
+#define NC_STATUS_ACCESS_VIOLATION        0xC0000005u
+#define NC_STATUS_ILLEGAL_INSTRUCTION     0xC000001Du
+#define NC_STATUS_ARRAY_BOUNDS_EXCEEDED   0xC000008Cu
+#define NC_STATUS_INTEGER_DIVIDE_BY_ZERO  0xC0000094u
+#define NC_STATUS_INTEGER_OVERFLOW        0xC0000095u
+#define NC_STATUS_BREAKPOINT              0x80000003u
 /* After the XBE is loaded: what the kernel exposes about the title. xbe_fd:
  * the XBE's host file when it isn't on the disc (else -1). */
 void nc_kernel_title_loaded(NcKernel *k, const struct NcDisc *disc, const struct NcDiscFile *xbe, int xbe_fd,
@@ -696,6 +719,9 @@ void nc_kernel_dump_threads(NcKernel *k, int fd);
  * title's in the IDT (Fable's pager), #PF goes to it as the CPU raises it
  * and true returns; otherwise the fault is the guest's crash. */
 bool nc_kernel_page_fault(NcKernel *k, NcFrame *f, uint32_t va, bool write);
+/* An exception (no error code) or software interrupt through an IDT gate the
+ * title hooked; false when the gate is the kernel's. */
+bool nc_kernel_trap(NcKernel *k, NcFrame *f, unsigned vector, uint32_t ret_eip);
 /* In a kernel call, before the kernel reads (or, write, fills) the guest
  * buffer [va, va+len) with host I/O, which fails rather than faults on a
  * page the guest doesn't have: such a page is paged in as for the kernel's

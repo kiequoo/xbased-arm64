@@ -19,6 +19,16 @@ typedef void (*PFN_vkGetAndroidHardwareBufferPropertiesANDROID)(void);
  * per-slot resources (batch.c's indices, gamma.c, zread.c) hold one each. */
 #define HLE_FRAMES 3
 
+#ifndef VK_KHR_fragment_shader_barycentric
+#define VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME "VK_KHR_fragment_shader_barycentric"
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR ((VkStructureType)1000203000)
+typedef struct VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR {
+    VkStructureType sType;
+    void *pNext;
+    VkBool32 fragmentShaderBarycentric;
+} VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR;
+#endif
+
 /* VK_KHR_dynamic_rendering_local_read (Vulkan 1.4) for headers older than it
  * (the NDK's): what HleCaps.fbfetch uses */
 #ifndef VK_KHR_dynamic_rendering_local_read
@@ -49,6 +59,8 @@ typedef struct HleCaps {
                                    A8R8G8B8 on the way into the arena (pb/pbres.c) */
     bool vids;                  /* VK_EXT_vertex_input_dynamic_state, else the vertex
                                    layout is in the pipeline (vk/draw.c PipeKey.vi) */
+    bool legacy_vattr;          /* VK_EXT_legacy_vertex_attributes: an attribute may lie at an
+                                   address its component size does not divide */
     bool push;                  /* the push block (HleFfPush) fits the push constants,
                                    else it is a storage buffer (vk/draw.c, set 3) */
     bool push_desc;             /* VK_KHR_push_descriptor for fbfetch's set 2, else sets
@@ -91,10 +103,17 @@ typedef struct HleCaps {
                                    combiner stages that sample the bound colour target
                                    read it as an input attachment (vk/draw.c
                                    hle_draw_fb_stages) */
+    bool bary;                  /* VK_KHR_fragment_shader_barycentric: a W-buffered
+                                   polygon's offset slope at its first pixel (ff.h
+                                   HLE_WBUF_CALC_BARY_GLSL) */
     bool exec_props, aniso;
     bool host_query_reset, occl_precise;        /* visibility tests */
-    bool wide_lines;            /* enabled when present: every pipeline draws 1.0-wide
-                                   lines (Turnip on the Adreno 650 has none) */
+    bool wide_lines;            /* enabled when present: lines as wide as the NV2A's
+                                   SET_LINE_WIDTH (Turnip on the Adreno 650 has none) */
+    bool fill_lines;            /* fillModeNonSolid: SET_FRONT / BACK_POLYGON_MODE's
+                                   lines and points */
+    bool discard;               /* VK_EXT_discard_rectangles, 8 of them: the NV2A's window
+                                   clip (vk/draw.c, HleCmdViewport.wmode) */
     bool cache_control;         /* pipelineCreationCacheControl: a pipeline asked of the
                                    cache only (vk/draw.c, asynchronous builds) */
     bool swapchain;             /* the Android surface and VK_KHR_swapchain: the window's

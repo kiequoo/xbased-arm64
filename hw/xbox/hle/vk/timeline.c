@@ -9,7 +9,9 @@
 #include "hw/xbox/hle/mem/barrier.h"
 #include "hw/xbox/hle/mem/guestmem.h"
 #include "hw/xbox/hle/tex/xg_swizzle.h"
+#include "hw/xbox/hle/tex/zpack.h"
 #include "hw/xbox/hle/vk/back_int.h"
+#include "hw/xbox/hle/mem/pageuse.h"
 #include "hw/xbox/hle/vk/guest_ram.h"
 #include "hw/xbox/hle/vk/quirks.h"
 
@@ -40,16 +42,20 @@ static struct {
  * copy: the image held nothing newer, guest memory stays), a target's
  * texels swizzled into its memory (hle_tl_land_swz), a copy between guest
  * memory (hle_tl_land_copy, a 2D blit's), or a note (hle_tl_land_note) */
-enum { LAND_ROWS, LAND_SWZ, LAND_COPY, LAND_NOTE };
+enum { LAND_ROWS, LAND_SWZ, LAND_COPY, LAND_NOTE, LAND_DEPTH };
 #define LAND_MAX 256
 typedef struct LandEnt {
     uint64_t value;
     uint8_t kind;
     bool copied;                        /* ROWS, SWZ: the back end recorded the GPU's copy */
+    bool freed;                         /* its memory was freed since (hle_tl_land_freed) */
     uint32_t off, pa, len;              /* from off (the landing buffer; COPY: guest RAM) to pa */
     uint32_t pitch, row, rows;          /* ROWS: as the GPU wrote them; COPY: the source's pitch */
     uint32_t w, h, bpp;                 /* SWZ */
     uint32_t dpitch;                    /* COPY */
+    uint32_t soff1;                     /* DEPTH: the stencil's bytes in the landing buffer + 1 */
+    uint8_t zsrc;                       /* DEPTH: what the depth aspect copied as (tex/zpack.h) */
+    float zf;                           /* DEPTH: a float buffer's scale (hle_zpack), 0 fixed */
     HleLandDone done;
     uint32_t token;
 } LandEnt;
@@ -119,6 +125,29 @@ bool hle_tl_land_copy(uint64_t value, uint32_t spa, uint32_t spitch, uint32_t dp
     return land_add(&e);
 }
 
+bool hle_tl_land_depth(uint64_t value, uint32_t off, uint32_t pa, uint32_t w, uint32_t h,
+                       uint32_t pitch, uint32_t gbpp, float zf)
+{
+    const LandEnt e = { .value = value, .kind = LAND_DEPTH, .off = off, .pa = pa,
+                        .len = pitch ? pitch * (h - 1) + w * gbpp : w * h * gbpp,
+                        .w = w, .h = h, .bpp = gbpp, .pitch = pitch, .zf = zf };
+    return w && h && land_add(&e);
+}
+
+void hle_tl_land_depth_copied(uint32_t off, int zsrc, uint32_t stencil_off1)
+{
+    hle_mutex_lock(&g_land.lock);
+    for (unsigned i = 0; i < g_land.n; i++) {
+        LandEnt *e = &g_land.q[i];
+        if (e->kind == LAND_DEPTH && e->off == off && !e->copied) {
+            e->zsrc = (uint8_t)zsrc;
+            e->soff1 = stencil_off1;
+            e->copied = true;
+        }
+    }
+    hle_mutex_unlock(&g_land.lock);
+}
+
 bool hle_tl_land_note(uint64_t value, HleLandDone done, uint32_t token)
 {
     const LandEnt e = { .value = value, .kind = LAND_NOTE, .done = done, .token = token };
@@ -143,6 +172,39 @@ void hle_tl_land_copied(uint32_t arena_off, uint32_t pitch, uint32_t row, uint32
     hle_mutex_unlock(&g_land.lock);
 }
 
+/* Guest memory [pa, pa + len) was freed: what is queued to land in it lands
+ * nowhere (its done hears "not landed"). A landing waits for the host GPU,
+ * well behind the title's view of the NV2A: a small target's writeback at
+ * its unbind goes with the next submission, and a title that frees the
+ * target meanwhile has other things in those pages by the time it lands
+ * (its heap's: the old image over them was a heap that fell apart some
+ * allocations later). */
+void hle_tl_land_freed(uint32_t pa, uint32_t len)
+{
+    if (!len || !hle_atomic_read(&g_land.n)) {
+        return;
+    }
+    unsigned n = 0;
+    hle_mutex_lock(&g_land.lock);
+    for (unsigned i = 0; i < g_land.n; i++) {
+        LandEnt *e = &g_land.q[i];
+        const uint64_t span = e->kind == LAND_NOTE ? 0 :
+                              e->kind != LAND_COPY ? e->len :
+                              e->rows ? (uint64_t)e->dpitch * (e->rows - 1) + e->row : 0;
+        if (!e->freed && hle_ranges_overlap(e->pa, span, pa, len)) {
+            e->freed = true;
+            n++;
+        }
+    }
+    hle_mutex_unlock(&g_land.lock);
+    static unsigned s_logged;
+    if (n && s_logged < 8) {
+        s_logged++;
+        hle_log("hakuX-hle-back", "memory %08x+%x freed: %u landing(s) into it dropped (first 8 logged)",
+                pa, len, n);
+    }
+}
+
 /* The landing buffer's bytes [off, off + len) as the GPU wrote them */
 static const uint8_t *land_src(uint32_t off, uint32_t len)
 {
@@ -161,7 +223,9 @@ static const uint8_t *land_src(uint32_t off, uint32_t len)
 static void land_one(const LandEnt *e)
 {
     bool landed = e->kind == LAND_NOTE;
-    if (e->kind == LAND_ROWS || e->kind == LAND_SWZ) {
+    if (e->freed) {
+        /* nothing into memory the title gave back */
+    } else if (e->kind == LAND_ROWS || e->kind == LAND_SWZ) {
         uint8_t *dst = e->copied ? hle_pa_ptr(e->pa, e->len) : NULL;
         const uint8_t *src = dst ? land_src(e->off, e->len) : NULL;
         if (dst && e->kind == LAND_ROWS) {
@@ -174,6 +238,32 @@ static void land_one(const LandEnt *e)
             hle_mem_mark_landed(e->pa, e->len);
         }
         landed = dst != NULL;
+    } else if (e->kind == LAND_DEPTH) {
+        const uint32_t zb = hle_zsrc_bytes(e->zsrc), n = e->w * e->h;
+        uint8_t *dst = e->copied && zb ? hle_pa_ptr(e->pa, e->len) : NULL;
+        if (dst) {
+            const uint8_t *d = land_src(e->off, n * zb);
+            const uint8_t *s = e->soff1 ? land_src(e->soff1 - 1, n) : NULL;
+            if (e->pitch) {
+                for (uint32_t y = 0; y < e->h; y++) {
+                    hle_zpack(d + (size_t)y * e->w * zb, s ? s + (size_t)y * e->w : NULL, e->zsrc,
+                              e->w, e->bpp, dst + (size_t)y * e->pitch, e->zf);
+                }
+                landed = true;
+            } else {
+                uint8_t *rows = malloc((size_t)n * e->bpp);
+                if (rows) {
+                    const HleXgRect r = { 0, 0, e->w, e->h };
+                    hle_zpack(d, s, e->zsrc, n, e->bpp, rows, e->zf);
+                    hle_xg_swizzle_rect(rows, e->w * e->bpp, &r, dst, e->w, e->h, 0, 0, e->bpp);
+                    free(rows);
+                    landed = true;
+                }
+            }
+            if (landed) {
+                hle_mem_mark_landed(e->pa, e->len);
+            }
+        }
     } else if (e->kind == LAND_COPY) {
         for (uint32_t y = 0; y < e->rows; y++) {
             const uint8_t *s = hle_pa_ptr(e->off + y * e->pitch, e->row);

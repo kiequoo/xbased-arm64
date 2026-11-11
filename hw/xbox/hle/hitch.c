@@ -504,8 +504,8 @@ static bool start(void)
     }
     const char *e = getenv("HAKUX_HLE_HITCH");
     g_h.started = true;
-    if (e && atoi(e) == 0) {
-        return false;
+    if (!HAKUX_DIAG || (e && atoi(e) == 0)) {
+        return false;                       /* (a build made to investigate only) */
     }
     init_once();
     hle_thread_create(&g_h.th, "hle.hitch", wd_thread, NULL, HLE_THREAD_DETACHED);

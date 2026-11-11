@@ -152,6 +152,7 @@ X(S_HK_TURBO, "Fast forward (hold)", "Avance rápido (mantener)", "Avance rapide
 X(S_HK_PAUSE, "Pause", "Pausa", "Pause", "Pause", "Pausa", "Pausar", "Пауза", "Pauza", "ポーズ", "暂停", "일시 정지")
 X(S_HK_SHOT, "Screenshot", "Captura de pantalla", "Capture d'écran", "Bildschirmfoto", "Screenshot", "Captura de tela", "Снимок экрана", "Zrzut ekranu", "スクリーンショット", "截图", "스크린샷")
 X(S_HK_FULL, "Toggle fullscreen", "Pantalla completa", "Plein écran", "Vollbild umschalten", "Schermo intero", "Alternar tela cheia", "Полный экран", "Pełny ekran", "フルスクリーン切替", "切换全屏", "전체 화면 전환")
+X(S_HK_QUIT, "Quit", "Salir", "Quitter", "Beenden", "Esci", "Sair", "Выход", "Wyjdź", "終了", "退出", "종료")
 X(S_HK_PAD, "controller", "mando", "manette", "Controller", "controller", "controle", "геймпад", "pad", "コントローラー", "手柄", "컨트롤러")
 /* memory */
 X(S_SAVED_GAMES, "Saved games", "Partidas guardadas", "Parties sauvegardées", "Spielstände", "Partite salvate", "Jogos salvos", "Сохранённые игры", "Zapisane gry", "セーブデータ", "游戏存档", "저장된 게임")
@@ -268,6 +269,8 @@ X(S_BR_DOWNLOADS, "Downloads", "Descargas", "Téléchargements", "Downloads", "D
 X(S_BR_ROOT, "File system", "Sistema de archivos", "Système de fichiers", "Dateisystem", "File system", "Sistema de arquivos", "Файловая система", "System plików", "ファイルシステム", "文件系统", "파일 시스템")
 X(S_BR_LOCAL_DISK, "Local disk", "Disco local", "Disque local", "Lokaler Datenträger", "Disco locale", "Disco local", "Локальный диск", "Dysk lokalny", "ローカル ディスク", "本地磁盘", "로컬 디스크")
 X(S_BR_REMOVABLE, "Removable drive", "Unidad extraíble", "Lecteur amovible", "Wechseldatenträger", "Unità rimovibile", "Unidade removível", "Съёмный диск", "Dysk wymienny", "リムーバブル ドライブ", "可移动磁盘", "이동식 드라이브")
+X(S_BR_SYSTEM, "Other location…", "Otra ubicación…", "Autre emplacement…", "Anderer Ort…", "Altra posizione…", "Outro local…", "Другое расположение…", "Inna lokalizacja…", "その他の場所…", "其他位置…", "다른 위치…")
+X(S_BR_SYSTEM_SUB, "The system's picker, network paths too", "El selector del sistema, también rutas de red", "Le sélecteur du système, chemins réseau compris", "Die Auswahl des Systems, auch Netzwerkpfade", "Il selettore del sistema, anche percorsi di rete", "O seletor do sistema, inclusive caminhos de rede", "Системный выбор, включая сетевые пути", "Okno wyboru systemu, także ścieżki sieciowe", "システムの選択画面（ネットワークパスも可）", "系统选择器，也可用网络路径", "시스템 선택기, 네트워크 경로도 가능")
 X(S_BR_NETWORK, "Network drive", "Unidad de red", "Lecteur réseau", "Netzlaufwerk", "Unità di rete", "Unidade de rede", "Сетевой диск", "Dysk sieciowy", "ネットワーク ドライブ", "网络驱动器", "네트워크 드라이브")
 X(S_BR_OPTICAL, "Disc drive", "Unidad óptica", "Lecteur optique", "Optisches Laufwerk", "Unità ottica", "Unidade óptica", "Оптический привод", "Napęd optyczny", "光学ドライブ", "光驱", "광학 드라이브")
 X(S_BR_NOT_READY, "Not ready", "No disponible", "Non prêt", "Nicht bereit", "Non pronta", "Não está pronta", "Не готов", "Niegotowy", "準備ができていません", "未就绪", "준비되지 않음")

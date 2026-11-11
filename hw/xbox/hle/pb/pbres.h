@@ -28,6 +28,11 @@ uint32_t hle_draw_overlay_upload(const uint32_t h5[5], uint32_t *w, uint32_t *h)
 /* NV2A / Xbox D3D primitive types (1 points .. 10 polygon): the Vulkan
  * topology they are drawn with, the index count after conversion, and the
  * converted indices (in NULL: 0..n-1; rebased by -base). */
+/* SET_BEGIN_END's primitives (1 points .. 10 polygon), and 11 / 12: a quad
+ * list's / strip's sides as lines (SET_FRONT_POLYGON_MODE GL_LINE: the NV2A
+ * draws a quad's outline, not the triangles' diagonals) */
+#define HLE_PT_QUADLIST_EDGES  11u
+#define HLE_PT_QUADSTRIP_EDGES 12u
 uint32_t hle_draw_prim_topology(uint32_t pt);
 uint32_t hle_draw_prim_count(uint32_t pt, uint32_t n);
 void hle_draw_prim_indices(uint32_t pt, const uint16_t *in, uint32_t n, uint32_t base,

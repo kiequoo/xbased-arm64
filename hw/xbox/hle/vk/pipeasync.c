@@ -33,8 +33,8 @@
 #define REC_MAGIC 0x43525048u       /* "HPRC" */
 /* Up with every change of the pipeline key's layout (PipeKey, vk/draw.c), as
  * a record of the old one would build other pipelines: 2, the pixel keys'
- * signed blend (sblend) */
-#define REC_VERSION 2
+ * signed blend (sblend); 3, their colour keys (ckey) */
+#define REC_VERSION 3
 #define REC_KEEP 8192               /* pipelines kept in the record, the newest */
 enum { REC_PROG = 1, REC_PIPE = 2, REC_TOUCH = 3 };
 

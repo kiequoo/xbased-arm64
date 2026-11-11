@@ -21,6 +21,7 @@ typedef struct HleDispSlot {
     bool held;
     uint32_t swap_id;
     uint64_t value;
+    uint64_t due_ns;            /* when it is due on screen (hle_disp_present_at; 0: as it comes) */
 } HleDispSlot;
 
 static struct {
@@ -33,6 +34,7 @@ static struct {
     HleDispStats st;
     bool present_late;          /* hle_disp_present_late */
     uint32_t want;              /* ... the latest swap presented before it was written */
+    uint64_t want_due;          /* ... and when it is due */
     uint32_t fronts;            /* frames made front so far (hle_disp_wait_front) */
 } g_disp;
 
@@ -243,8 +245,10 @@ int hle_disp_begin_write(uint32_t swap_id, uint64_t value)
         s->swap_id = swap_id;
         hle_hitch_frame(swap_id, HLE_FR_WRITE);
         s->value = value;
+        s->due_ns = 0;
         g_disp.st.written++;
         if (g_disp.present_late && swap_id <= g_disp.want) {
+            s->due_ns = swap_id == g_disp.want ? g_disp.want_due : 0;
             to_front(pick, swap_id);      /* presented already */
         }
     } else if (s_none++ < 8) {
@@ -280,6 +284,11 @@ void hle_disp_present_late(bool on)
 
 bool hle_disp_present(uint32_t swap_id)
 {
+    return hle_disp_present_at(swap_id, 0);
+}
+
+bool hle_disp_present_at(uint32_t swap_id, uint64_t due_ns)
+{
     bool found = false;
     if (!g_disp.inited) {
         return false;
@@ -288,6 +297,7 @@ bool hle_disp_present(uint32_t swap_id)
     for (int i = 0; i < HLE_DISP_SLOTS; i++) {
         HleDispSlot *s = &g_disp.s[i];
         if (s->state != SLOT_FREE && s->swap_id == swap_id) {
+            s->due_ns = due_ns;
             to_front(i, swap_id);
             found = true;
             break;
@@ -295,6 +305,7 @@ bool hle_disp_present(uint32_t swap_id)
     }
     if (!found && g_disp.present_late && swap_id > g_disp.want) {
         g_disp.want = swap_id;            /* applies when the frame is written */
+        g_disp.want_due = due_ns;
     }
     hle_cond_broadcast(&g_disp.cond);
     hle_mutex_unlock(&g_disp.lock);
@@ -318,7 +329,8 @@ bool hle_disp_acquire(HleDispFrame *f)
                 shown = s_last_shown;
             }
             s->held = true;
-            *f = (HleDispFrame){ i, g_disp.gen, s->swap_id, g_disp.w, g_disp.h, s->value, s->img, s->view };
+            *f = (HleDispFrame){ i, g_disp.gen, s->swap_id, g_disp.w, g_disp.h, s->value, s->img, s->view,
+                                 s->due_ns };
             found = true;
             break;
         }

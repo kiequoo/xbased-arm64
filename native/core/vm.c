@@ -79,6 +79,21 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
     }
     vm->reservation = r;
     vm->base = NULL;
+    /* The 4 GiB above the guest's stay empty too, if they are free. Host
+     * code reaches guest memory as address + length, both the guest's (a
+     * kernel call's buffer and its size): at most 4 GiB past the guest's
+     * last byte. Nothing of the process may be there to be read or written
+     * that way: reserved, such an access faults and is reported as the
+     * title's. */
+    void *const above = (void *)(1ull << 32);
+    void *g = mmap(above, 1ull << 32, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE,
+                   -1, 0);
+    if (g != above) {
+        if (g != MAP_FAILED) {
+            munmap(g, 1ull << 32);
+        }
+        nc_log("hakuX-native", "vm: the 4 GiB above the guest's aren't free to keep empty");
+    }
 #else
     /* 4 GiB of guest address space with PROT_NONE guards on both sides. */
     vm->reservation_len = (1ull << 32) + 2 * NC_GUARD;
@@ -332,6 +347,12 @@ void nc_vm_protect_page(NcVm *vm, uint32_t pa, bool ro)
 
 bool nc_vm_unmap(NcVm *vm, uint32_t va, uint32_t len)
 {
+    if ((uint64_t)va + len > (1ull << 32)) {
+        /* past the guest's end: host memory, which the mapping below would
+         * replace (a range from a damaged state) */
+        nc_log("hakuX-native", "vm: bad unmap va=%08x len=%x", va, len);
+        return false;
+    }
 #ifdef _WIN32
     if (!nc_vmos_unmap(vm, va, len)) {
         return false;
@@ -374,6 +395,12 @@ static void check_unmapped(const NcVm *vm, uint32_t p, uint32_t pages, void *ra)
 uint32_t nc_vm_alloc_phys_ex(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, uint32_t align,
                              bool top_down)
 {
+    if (len > vm->ram_size) {
+        /* more than there is; and past 0xFFFFF000 the rounding up to pages
+         * wrapped to none, which every window "held": a title asking for
+         * 4 GiB (a size of -1) was given an address */
+        return UINT32_MAX;
+    }
     const uint32_t pages = nc_align_up(len ? len : 1, NC_PAGE) / NC_PAGE;
     const uint32_t step = (align > NC_PAGE ? align : NC_PAGE) / NC_PAGE;
     const uint32_t first = nc_align_up(lo, step * NC_PAGE) / NC_PAGE;
@@ -512,6 +539,9 @@ static bool relocate(NcVm *vm, uint32_t q, uint32_t to)
 uint32_t nc_vm_alloc_phys_compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, uint32_t align, uint32_t *moved)
 {
     *moved = 0;
+    if (len > vm->ram_size) {
+        return UINT32_MAX;
+    }
     const uint32_t pages = nc_align_up(len ? len : 1, NC_PAGE) / NC_PAGE;
     const uint32_t step = (align > NC_PAGE ? align : NC_PAGE) / NC_PAGE;
     const uint32_t first = nc_align_up(lo, step * NC_PAGE) / NC_PAGE;
@@ -575,6 +605,9 @@ uint32_t nc_vm_alloc_phys_compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t 
 uint32_t nc_vm_alloc_phys_top(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, uint32_t align, uint32_t *moved)
 {
     *moved = 0;
+    if (len > vm->ram_size) {
+        return UINT32_MAX;
+    }
     const uint32_t pages = nc_align_up(len ? len : 1, NC_PAGE) / NC_PAGE;
     const uint32_t step = (align > NC_PAGE ? align : NC_PAGE) / NC_PAGE;
     const uint32_t first = nc_align_up(lo, step * NC_PAGE) / NC_PAGE;
@@ -690,6 +723,9 @@ static uint32_t smallest_run(const NcVm *vm, uint32_t first, uint32_t last, uint
  * the kernel, kernel.c POOL_BASE). */
 uint32_t nc_vm_alloc_phys(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi)
 {
+    if (len > vm->ram_size) {
+        return UINT32_MAX;              /* as nc_vm_alloc_phys_ex: more than there is */
+    }
     const uint32_t pages = nc_align_up(len ? len : 1, NC_PAGE) / NC_PAGE;
     const uint32_t first = lo / NC_PAGE, last = (hi < vm->ram_size ? hi : vm->ram_size) / NC_PAGE;
     uint32_t run;
@@ -766,6 +802,9 @@ void nc_vm_free_runs(const NcVm *vm, char *buf, size_t len)
  * image, heap and stacks have their pages. */
 bool nc_vm_alloc_at(NcVm *vm, uint32_t va, uint32_t len, uint32_t *pa_out)
 {
+    if (len > vm->ram_size) {
+        return false;                   /* more than there is (and the rounding below wrapped to none) */
+    }
     len = nc_align_up(len, NC_PAGE);
     const uint32_t ram_pages = vm->ram_size / NC_PAGE;
     for (uint32_t done = 0; done < len;) {

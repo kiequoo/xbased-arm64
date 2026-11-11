@@ -209,6 +209,9 @@ bool nc_cpu_in_code(NcCpu *cpu, uintptr_t pc);
 NcCpu *nc_cpu_current(void);
 /* The profile (HAKUX_PROF) from now, for secs seconds. */
 void nc_cpu_prof_start(unsigned secs);
+/* Builds made with NC_CPU_DIAG (the tests' cputest; never a release): the
+ * translation buffer's size, to reach its flush with a small program. */
+void nc_cpu_set_code_limit(NcCpu *cpu, size_t bytes);
 #endif
 
 #ifdef __cplusplus

@@ -30,6 +30,16 @@ const HleFmtInfo *hle_fmt_info(uint32_t code);
  * another format, kept as it is. */
 uint32_t hle_tex_sign_xor(uint32_t xfmt, unsigned signs, unsigned *eff);
 
+/* R6G5B5 texels (D3D's L6V5U5: 6 bits from bit 10, 5 from bit 5, 5 from bit
+ * 0) as A8R8G8B8 words, alpha 0xFF: no host format holds them. A channel is
+ * widened to its byte by repeating its top bits (0x3F and 0x1F to 0xFF), as
+ * the NV2A shows the format (xemu's test on a console). sign_xor: the
+ * format's hle_tex_sign_xor, the channels the texture unit gives signed (a
+ * bump map's V and U); those are two's-complement fields, -1..1 over their
+ * positive range (the 5-bit ones over 15, the 6-bit one over 31), and go in
+ * as the flipped byte the word says (centred on 0x80). */
+void hle_tex_expand_r6g5b5(const uint16_t *s, size_t n, uint32_t sign_xor, uint32_t *out);
+
 enum HleResKind {
     HLE_RK_VB = 1, HLE_RK_IB, HLE_RK_PUSHBUF, HLE_RK_FIXUP, HLE_RK_PALETTE,
     HLE_RK_TEXTURE, HLE_RK_CUBE, HLE_RK_VOLUME, HLE_RK_SURFACE,

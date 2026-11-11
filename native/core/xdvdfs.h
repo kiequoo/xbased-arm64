@@ -15,6 +15,11 @@ extern "C" {
 
 #define NC_XDVDFS_SECTOR 2048u
 
+/* A directory table's size at most: far above any disc's (a folder of ten
+ * thousand files is well under 1 MiB), below what a damaged or crafted size
+ * field would have a reader allocate and fill (up to 4 GiB). */
+#define NC_DISC_DIR_MAX (64u << 20)
+
 /* Mods (native/core/mods.c): host files over the disc's and byte patches of
  * its files. An overlay file or folder's sector is NC_DISC_OVERLAY plus its
  * index in the overlay, sorted by path (the same whatever the mods' order). */

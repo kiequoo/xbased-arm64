@@ -274,6 +274,53 @@ static bool get(NcRd *r, const ApuDesc *desc, void *base, const char *path)
     return ok && !r->fail;
 }
 
+/* A state is a file that may come from anywhere, and some of what it holds
+ * are the device's own cursors into host memory, which no register of the
+ * title's sets: where a voice's HRTF filter writes its next sample in its
+ * history and how far back its taps read, where the resampler reads its
+ * block, which of a voice's two stream lists is current. Each is kept inside
+ * what it indexes; out of it, the voice starts that part afresh. (Registers
+ * and the DSPs' memories are the title's to set as they run, and are checked
+ * where they are used.) */
+static void bool_byte(bool *b)
+{
+    uint8_t *raw = (uint8_t *)b;
+    *raw = *raw != 0;
+}
+
+static void state_fit(MCPXAPUState *d)
+{
+    for (unsigned v = 0; v < MCPX_HW_MAX_VOICES; v++) {
+        MCPXAPUVoiceFilter *vf = &d->vp.filters[v];
+        if (vf->resample_buf_pos < 0 || vf->resample_buf_pos > NUM_SAMPLES_PER_FRAME) {
+            vf->resample_buf_pos = NUM_SAMPLES_PER_FRAME;       /* the block read: the next one decoded */
+        }
+        HrtfFilter *h = &vf->hrtf;
+        if (h->buf_pos < 0 || h->buf_pos >= HRTF_BUFLEN) {
+            h->buf_pos = 0;
+        }
+        if (!(h->itd_cur >= -HRTF_MAX_DELAY_SAMPLES && h->itd_cur <= HRTF_MAX_DELAY_SAMPLES)) {
+            h->itd_cur = 0.0f;                                  /* a NaN too */
+        }
+        if (!(h->itd_tar >= -HRTF_MAX_DELAY_SAMPLES && h->itd_tar <= HRTF_MAX_DELAY_SAMPLES)) {
+            h->itd_tar = 0.0f;
+        }
+        bool_byte(&h->params_set);
+        bool_byte(&vf->gains);
+        bool_byte(&vf->pitched);
+        bool_byte(&vf->dls2_set);
+        bool_byte(&vf->peq_set);
+        bool_byte(&vf->lfo_armed);
+        MCPXAPUVPSSLData *sl = &d->vp.ssl[v];
+        if (sl->ssl_index < 0 || sl->ssl_index >= MCPX_HW_SSLS_PER_VOICE) {
+            sl->ssl_index = 0;
+        }
+        if (sl->ssl_seg < 0) {
+            sl->ssl_seg = 0;
+        }
+    }
+}
+
 /* The frame thread is held off (d->lock) while the device's state is read
  * or written. */
 bool nc_apu_state_save(NcBuf *b)
@@ -301,6 +348,7 @@ bool nc_apu_state_load(NcRd *r, unsigned v)
     mcpx_apu_reset(d);
     pthread_mutex_lock(&d->lock);
     const bool ok = get(r, &k_apu, d, k_apu.name);
+    state_fit(d);
     mcpx_apu_post_load(d);
     pthread_cond_signal(&d->cond);
     pthread_mutex_unlock(&d->lock);

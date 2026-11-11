@@ -490,22 +490,24 @@ static const char *k_cmp[8] = {
 size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
 {
     Buf b = { buf, cap, 0, false };
-    const char *interp = k->flat ? "flat " : "";
-    put(&b, "#version 450\n#extension GL_EXT_nonuniform_qualifier : require\n%s", hle_push_glsl());
+    const char *interp = k->flat ? "flat " : k->tex_affine ? "noperspective " : "";
+    put(&b, "#version 450\n#extension GL_EXT_nonuniform_qualifier : require\n%s%s",
+        k->wbuf == 2 ? HLE_WBUF_BARY_EXT_GLSL : "", hle_push_glsl());
     put(&b, "layout(set = 0, binding = 0) uniform texture2D uTex2D[];\n"
             "layout(set = 0, binding = 1) uniform sampler uSmp[];\n");
     put(&b, "layout(location = 0) %sin vec4 vDiffuse;\n", interp);
     put(&b, "layout(location = 1) %sin vec4 vSpecular;\n", interp);
     for (unsigned s = 0; s < k->nstages; s++) {
         if (k->st[s].texture) {
-            put(&b, "layout(location = %u) in vec4 vTex%u;\n", 2 + s, s);
+            put(&b, "layout(location = %u) %sin vec4 vTex%u;\n", 2 + s,
+                k->tex_affine ? "noperspective " : "", s);
         }
     }
     if (k->fog) {
         put(&b, "layout(location = 6) in float vFog;\n");
     }
     if (k->wbuf) {
-        put(&b, HLE_WBUF_IN_GLSL);
+        put(&b, k->wbuf == 2 ? HLE_WBUF_IN_BARY_GLSL : HLE_WBUF_IN_GLSL);
     }
     put(&b, "layout(location = 0) out vec4 oColor;\n" HLE_NVPROJ_GLSL);
     if (k->sblend || (k->fbfetch & ~HLE_FB_ZEQ)) {
@@ -517,7 +519,7 @@ size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
     }
     put(&b, "void main() {\n  vec4 cur = vDiffuse, tmp = vec4(0.0), r;\n");
     if (k->wbuf) {
-        put(&b, HLE_WBUF_CALC_GLSL);
+        put(&b, k->wbuf == 2 ? HLE_WBUF_CALC_BARY_GLSL : HLE_WBUF_CALC_GLSL);
     }
     for (unsigned s = 0; s < k->nstages; s++) {
         const HleFfStage *st = &k->st[s];
@@ -538,6 +540,14 @@ size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
                         "uTex2D[nonuniformEXT(pc.tex[%u] & 0xFFFFu)], uSmp[0]), 0)) /\n"
                         "      ((pc.flags & %uu) != 0u ? float(pc.flags >> 24) : 1.0);\n",
                     s, s, 1u << s, s, s, 256u << s);
+                if (st->texture & 2) {
+                    /* its own border: the reported size's coordinates 4 texels
+                     * into the bordered image (pbdraw.c tex_border_fmt) */
+                    put(&b, "  { uint bw = floatBitsToUint(pc.scr[%u]);\n"
+                            "    uv%u = (uv%u * vec2(uvec2(1u) << uvec2((bw >> 4) & 15u, (bw >> 8) & 15u)) + 4.0) /\n"
+                            "        vec2(textureSize(sampler2D(uTex2D[nonuniformEXT(pc.tex[%u] & 0xFFFFu)], uSmp[0]), 0)); }\n",
+                        s, s, s, s);
+                }
             }
             put(&b, "  vec4 t%u = texture(sampler2D(uTex2D[nonuniformEXT(pc.tex[%u] & 0xFFFFu)], "
                     "uSmp[nonuniformEXT(pc.tex[%u] >> 16)]), uv%u);\n",
@@ -576,24 +586,39 @@ size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
     /* a NaN factor is 1, unfogged; the distance signed, as D3D's fog modes
      * (psh.c) */
     case 1:  put(&b, "  float fogf = isnan(vFog) ? 1.0 : clamp(vFog, 0.0, 1.0);\n"); break;
-    case 2:  put(&b, "  float fogf = clamp(exp(-vFog * pc.fog.z), 0.0, 1.0);\n"); break;
+    /* the table modes: an infinite coordinate or a factor that is no number
+     * is 1 in LINEAR and EXP, 0 in EXP2 (psh.c) */
+    case 2:  put(&b, "  float fogf = pc.fog.x + exp(-vFog * pc.fog.z);\n"
+                     "  fogf = isinf(vFog) || isnan(fogf) ? 1.0 : clamp(fogf, 0.0, 1.0);\n"); break;
     case 3:  put(&b, "  float fd = vFog * pc.fog.z;\n"
-                     "  float fogf = clamp(exp(-fd * fd), 0.0, 1.0);\n"); break;
-    default: put(&b, "  float fogf = clamp((pc.fog.y - vFog) / "
-                     "(pc.fog.y - pc.fog.x), 0.0, 1.0);\n"); break;
+                     "  float fogf = pc.fog.x + exp(-fd * fd);\n"
+                     "  fogf = isinf(vFog) || isnan(fogf) ? 0.0 : clamp(fogf, 0.0, 1.0);\n"); break;
+    default: put(&b, "  float fogf = (pc.fog.y - vFog) / (pc.fog.y - pc.fog.x);\n"
+                     "  fogf = isinf(vFog) || isnan(fogf) ? 1.0 : clamp(fogf, 0.0, 1.0);\n"); break;
     }
     if (k->fog) {
-        put(&b, "  cur.rgb = mix(unpackUnorm4x8(pc.fog_color).zyx, cur.rgb, fogf);\n");
+        put(&b, "%s  cur.rgb = mix(unpackUnorm4x8(pc.fog_color).zyx, cur.rgb, fogf);\n",   /* (psh.c) */
+            k->fog == 1 || k->fog == 4 ?
+            "  if ((pc.flags & 8192u) != 0u) fogf = floor(fogf * 255.0 + 1.0 / 1024.0) / 255.0;\n" : "");
     }
     if (k->alpha_test && k->alpha_func < 8) {
-        put(&b, "  { float a = cur.a, r = pc.alpha_ref; if (!(%s)) discard; }\n",
+        /* in eight bits, as the pixel shaders' (psh.c) */
+        put(&b, "  { float a = floor(clamp(cur.a, 0.0, 1.0) * 255.0 + 0.5), "
+                "r = floor(pc.alpha_ref * 255.0 + 0.5); if (!(%s)) discard; }\n",
             k_cmp[k->alpha_func]);
     }
     if (k->fbfetch & HLE_FB_ZEQ) {
         put(&b, "%s", HLE_ZEQ_TEST_GLSL(k->fbfetch));
     }
     put(&b, "  oColor = %s;\n", k->out_bgra ? "cur.bgra" : "cur");
-    if (k->sblend) {
+    if (k->sblend >= 3) {
+        /* a title without D3D's (draw.c signed_blend): the target's byte as it
+         * is, the output's two's complement, from 0 to 255 */
+        put(&b, "  { ivec4 sv = ivec4(floor(clamp(oColor, 0.0, 1.0) * 255.0 + 0.5));\n"
+        "    ivec4 dv = ivec4(floor(clamp(subpassLoad(uFb), 0.0, 1.0) * 255.0 + 0.5));\n"
+        "    sv -= 256 * (sv >> 7);\n"
+        "    oColor = vec4(clamp(dv %s sv, ivec4(0), ivec4(255))) / 255.0; }\n", k->sblend == 3 ? "+" : "-");
+    } else if (k->sblend) {
         put(&b, "  { ivec4 sv = ivec4(floor(clamp(%s, 0.0, 1.0) * 255.0 + 0.5));\n"
         "    ivec4 dv = ivec4(floor(clamp(subpassLoad(uFb), 0.0, 1.0) * 255.0 + 0.5));\n"
         "    sv -= 256 * (sv >> 7); dv -= 256 * (dv >> 7);\n"

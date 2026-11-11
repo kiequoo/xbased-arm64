@@ -4,6 +4,7 @@
  */
 #include "native/app/ui/xbox_data.h"
 #include "native/core/chd_image.h"
+#include "native/core/fold_image.h"
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -254,12 +255,26 @@ bool xd_read_game(const char *path, XdGame *g)
     memset(g, 0, sizeof(*g));
     snprintf(g->path, sizeof(g->path), "%s", path);
     xd_clean_name(path, g->title, sizeof(g->title));
-    Disc d = {NULL, 0, open(path, O_RDONLY | O_BINARY)};
+    /* an extracted game (its folder, or its default.xbe): the XBE read as
+     * it is, the folder's name its title until the certificate's */
+    char xbe[1024];
+    const bool folder = nc_fold_xbe_path(path, xbe, sizeof(xbe));
+    if (folder) {
+        char dir[1024];
+        snprintf(dir, sizeof(dir), "%s", xbe);
+        char *e = strrchr(dir, '/'), *e2 = strrchr(dir, '\\');
+        e = e2 > e ? e2 : e;
+        if (e) {
+            *e = 0;
+        }
+        xd_clean_name(dir, g->title, sizeof(g->title));
+    }
+    Disc d = {NULL, 0, folder ? -1 : open(path, O_RDONLY | O_BINARY)};
     if (d.chd >= 0 && !nc_chd_attach(d.chd)) {
         close(d.chd);       /* not a CHD: the file as it is */
         d.chd = -1;
     }
-    if (d.chd < 0 && !(d.f = fopen(path, "rb"))) {
+    if (d.chd < 0 && !(d.f = fopen(folder ? xbe : path, "rb"))) {
         return false;
     }
     if (d.chd >= 0) {
@@ -276,14 +291,15 @@ bool xd_read_game(const char *path, XdGame *g)
     static const int64_t k_bases[] = {0, 0x18300000, 0xFD90000, 0x2080000, 0x30600000};
     uint8_t vd[0x20];
     bool found = false;
-    for (size_t i = 0; i < sizeof(k_bases) / sizeof(k_bases[0]) && !found; i++) {
+    for (size_t i = 0; i < sizeof(k_bases) / sizeof(k_bases[0]) && !found && !folder; i++) {
         d.base = k_bases[i];
         found = rd_at(&d, 0x10000, vd, sizeof(vd)) && !memcmp(vd, "MICROSOFT*XBOX*MEDIA", 20);
     }
-    uint32_t sec, xsize;
+    uint32_t sec = 0, xsize = folder && g->size > 0 && g->size < 0xFFFFFFFF ? (uint32_t)g->size : 0;
     uint8_t *x = NULL;
     bool ok = false;
-    if (found && dir_find(&d, rd32(vd + 20), rd32(vd + 24), "default.xbe", &sec, &xsize) && xsize >= 0x200) {
+    if ((folder || (found && dir_find(&d, rd32(vd + 20), rd32(vd + 24), "default.xbe", &sec, &xsize))) &&
+        xsize >= 0x200) {
         /* the headers (the certificate and the section table are in them),
          * then the title image section alone: not the whole XBE, megabytes
          * a game, which made a big library on a hard disk take minutes */
@@ -297,7 +313,7 @@ bool xd_read_game(const char *path, XdGame *g)
         if (x && rd_at(&d, (int64_t)sec * 2048, x, size)) {
             /* this disc and not another made from it: the XBE's headers
              * (its sections' digests are in them) and the root directory */
-            uint32_t h = dir_sig(&d, rd32(vd + 20), rd32(vd + 24)) ^ xsize;
+            uint32_t h = (folder ? 0x9E3779B9u : dir_sig(&d, rd32(vd + 20), rd32(vd + 24))) ^ xsize;
             for (uint32_t i = 0; i < size; i++) {
                 h = (h ^ x[i]) * 16777619u;
             }

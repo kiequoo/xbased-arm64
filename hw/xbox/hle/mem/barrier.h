@@ -73,8 +73,12 @@ uint32_t hle_barrier_guard_drops(void);
 int hle_mem_stale_neighbour(uint32_t lo, uint32_t hi);
 void hle_barrier_guard_stats(uint64_t *neighbours, uint64_t *hot);
 /* Guest memory freed (native/core/vm.c): the guards over it dropped, its
- * pages hot no more */
+ * pages hot no more, the free counted. hle_barrier_frees: how often
+ * [pa, pa + len)'s pages were freed so far, a count that moves when the
+ * title gives any of them back (mem/pageuse.h: the memory is another
+ * owner's from then on). */
 void hle_barrier_freed(uint32_t pa, uint32_t len);
+uint32_t hle_barrier_frees(uint32_t pa, uint32_t len);
 /* The host, at a guest access to a page without access (hle_barrier_set_stale,
  * a guard; write: a store, or not known): the image in, the access back. */
 void hle_mem_stale_access(uint32_t pa);

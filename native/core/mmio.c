@@ -69,6 +69,40 @@ static void count(uint32_t addr, bool write, uint64_t value)
     g_other++;
 }
 
+/* An access to dev's window at off. A device is handed only what is inside
+ * its window: it indexes its registers with the offset. An access that
+ * reaches past an end of the window (a dword at its last two bytes, or one
+ * that begins below it) went to the device whole, and a register file was
+ * read and written past its end. Of such an access the bytes inside go to
+ * the device one at a time; the rest are no device's: they read as ones and
+ * writes to them go nowhere. So do sizes a device isn't asked for (3, 5-7). */
+static uint64_t dev_read(const NcMmioDev *dev, uint32_t off, unsigned bytes)
+{
+    if (off < dev->size && bytes <= dev->size - off && bytes <= 8 && !(bytes & (bytes - 1))) {
+        return dev->read(dev->opaque, off, bytes);
+    }
+    uint64_t v = 0;
+    for (unsigned i = 0; i < bytes && i < 8; i++) {
+        const uint32_t o = off + i;
+        v |= (o < dev->size ? dev->read(dev->opaque, o, 1) & 0xFF : 0xFFull) << (8 * i);
+    }
+    return v;
+}
+
+static void dev_write(const NcMmioDev *dev, uint32_t off, uint64_t v, unsigned bytes)
+{
+    if (off < dev->size && bytes <= dev->size - off && bytes <= 8 && !(bytes & (bytes - 1))) {
+        dev->write(dev->opaque, off, v, bytes);
+        return;
+    }
+    for (unsigned i = 0; i < bytes && i < 8; i++) {
+        const uint32_t o = off + i;
+        if (o < dev->size) {
+            dev->write(dev->opaque, o, (v >> (8 * i)) & 0xFF, 1);
+        }
+    }
+}
+
 #if !defined(__x86_64__) /* arm64: the faulting instruction decoded here */
 /* The transfer a load/store instruction makes: one or two elements (LDP/STP)
  * of `bytes` each (16 for a Q register), and the base register writeback of
@@ -240,11 +274,11 @@ bool nc_mmio_fault(const NcVm *vm, const siginfo_t *info, void *ucontext)
         if (a.bytes == 16) {
             if (a.store) {
                 const __uint128_t q = fp->vregs[rt];
-                dev->write(dev->opaque, off, (uint64_t)q, 8);
-                dev->write(dev->opaque, off + 8, (uint64_t)(q >> 64), 8);
+                dev_write(dev, off, (uint64_t)q, 8);
+                dev_write(dev, off + 8, (uint64_t)(q >> 64), 8);
                 v = (uint64_t)q;
             } else {
-                const uint64_t lo = dev->read(dev->opaque, off, 8), hi = dev->read(dev->opaque, off + 8, 8);
+                const uint64_t lo = dev_read(dev, off, 8), hi = dev_read(dev, off + 8, 8);
                 fp->vregs[rt] = (__uint128_t)lo | ((__uint128_t)hi << 64);
                 v = lo;
             }
@@ -253,9 +287,9 @@ bool nc_mmio_fault(const NcVm *vm, const siginfo_t *info, void *ucontext)
         const uint64_t mask = a.bytes < 8 ? (1ull << (8 * a.bytes)) - 1 : ~0ull;
         if (a.store) {
             v = (a.fp ? (uint64_t)fp->vregs[rt] : rt == 31 ? 0 : mc->regs[rt]) & mask;
-            dev->write(dev->opaque, off, v, a.bytes);
+            dev_write(dev, off, v, a.bytes);
         } else {
-            v = dev->read(dev->opaque, off, a.bytes) & mask;
+            v = dev_read(dev, off, a.bytes) & mask;
             if (a.fp) {
                 fp->vregs[rt] = (__uint128_t)v;
             } else if (rt != 31) {
@@ -448,29 +482,6 @@ bool nc_ram_emulate(NcVm *vm, const siginfo_t *info, void *ucontext,
 #include "native/cpu/x64emu.h"
 #include "native/cpu/cpu.h"
 
-static uint64_t dev_read(const NcMmioDev *dev, uint32_t off, unsigned bytes)
-{
-    if (bytes <= 8 && !(bytes & (bytes - 1))) {
-        return dev->read(dev->opaque, off, bytes);
-    }
-    uint64_t v = 0; /* 3, 5-7 bytes: byte by byte */
-    for (unsigned i = 0; i < bytes && i < 8; i++) {
-        v |= (dev->read(dev->opaque, off + i, 1) & 0xFF) << (8 * i);
-    }
-    return v;
-}
-
-static void dev_write(const NcMmioDev *dev, uint32_t off, uint64_t v, unsigned bytes)
-{
-    if (bytes <= 8 && !(bytes & (bytes - 1))) {
-        dev->write(dev->opaque, off, v, bytes);
-        return;
-    }
-    for (unsigned i = 0; i < bytes && i < 8; i++) {
-        dev->write(dev->opaque, off + i, (v >> (8 * i)) & 0xFF, 1);
-    }
-}
-
 /* A string instruction's elements: a device's registers where its window
  * is, ordinary memory elsewhere (a copy between RAM and a device). */
 static uint64_t str_rd(void *opaque, uint64_t addr, unsigned bytes)
@@ -643,10 +654,10 @@ bool nc_mmio_access(uint32_t addr, unsigned bytes, bool store, uint64_t *v)
     const uint64_t mask = bytes < 8 ? (1ull << (8 * bytes)) - 1 : ~0ull;
     if (store) {
         t_retry_ok = true;
-        dev->write(dev->opaque, addr - dev->base, *v & mask, bytes);
+        dev_write(dev, addr - dev->base, *v & mask, bytes);
         t_retry_ok = false;
     } else {
-        *v = dev->read(dev->opaque, addr - dev->base, bytes) & mask;
+        *v = dev_read(dev, addr - dev->base, bytes) & mask;
     }
     g_total++;
     count(addr, store, *v);

@@ -27,6 +27,11 @@ void hle_disp_size(uint32_t *w, uint32_t *h);
 void hle_disp_on_complete(uint64_t completed);
 /* DPC (vCPU): make the slot holding swap_id the front image. */
 bool hle_disp_present(uint32_t swap_id);
+/* ... due on screen at due_ns (CLOCK_MONOTONIC; 0: as it comes): the instant
+ * the console would show it, the vblank its flip took effect at. The
+ * presenter shows it a fixed lead after that instant rather than as it
+ * arrives, so the frames on screen are as far apart as the vblanks were. */
+bool hle_disp_present_at(uint32_t swap_id, uint64_t due_ns);
 /* A present before its frame is written applies when it is (else it is
  * lost): push-buffer mode, where the title's own flips can run ahead of the
  * render thread (uncapped). */

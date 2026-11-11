@@ -32,10 +32,10 @@ static const int k_pad_def[IM_INPUTS] = {
     AX(SDL_GAMEPAD_AXIS_LEFTY, 1), AX(SDL_GAMEPAD_AXIS_LEFTY, 0), AX(SDL_GAMEPAD_AXIS_LEFTX, 1),
     AX(SDL_GAMEPAD_AXIS_LEFTX, 0), AX(SDL_GAMEPAD_AXIS_RIGHTY, 1), AX(SDL_GAMEPAD_AXIS_RIGHTY, 0),
     AX(SDL_GAMEPAD_AXIS_RIGHTX, 1), AX(SDL_GAMEPAD_AXIS_RIGHTX, 0)};
-static const char *const k_hk_name[IM_HOTKEYS] = {"menu", "save", "load", "turbo", "pause", "shot", "full"};
-static const SDL_Keycode k_hk_def[IM_HOTKEYS] = {SDLK_F1, SDLK_F5, SDLK_F8, SDLK_TAB, SDLK_F2, SDLK_F12, SDLK_F11};
+static const char *const k_hk_name[IM_HOTKEYS] = {"menu", "save", "load", "turbo", "pause", "shot", "full", "quit"};
+static const SDL_Keycode k_hk_def[IM_HOTKEYS] = {SDLK_F1, SDLK_F5, SDLK_F8, SDLK_TAB, SDLK_F2, SDLK_F12, SDLK_F11, 0};
 static const enum UiStr k_hk_label[IM_HOTKEYS] = {S_HK_MENU, S_HK_SAVE, S_HK_LOAD, S_HK_TURBO,
-                                                  S_HK_PAUSE, S_HK_SHOT, S_HK_FULL};
+                                                  S_HK_PAUSE, S_HK_SHOT, S_HK_FULL, S_HK_QUIT};
 
 const char *im_input_label(int i)
 {
@@ -307,10 +307,31 @@ static const struct { const char *v, *label; int code; } k_hkp[] = {
     {"guide+down", "Guide + D-pad down", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_DPAD_DOWN},
     {"guide+left", "Guide + D-pad left", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_DPAD_LEFT},
     {"guide+right", "Guide + D-pad right", IM_HKP_WITH + SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
+    {"back+a", "Back + A", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_SOUTH},
+    {"back+b", "Back + B", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_EAST},
+    {"back+x", "Back + X", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_WEST},
+    {"back+y", "Back + Y", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_NORTH},
+    {"back+lb", "Back + LB", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
+    {"back+rb", "Back + RB", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+    {"back+ls", "Back + LS", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_LEFT_STICK},
+    {"back+rs", "Back + RS", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_RIGHT_STICK},
+    {"back+up", "Back + D-pad up", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_DPAD_UP},
+    {"back+down", "Back + D-pad down", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_DPAD_DOWN},
+    {"back+left", "Back + D-pad left", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_DPAD_LEFT},
+    {"back+right", "Back + D-pad right", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
 };
-/* the menu keeps the Guide button's tap (it always opened it), a
- * screenshot the Share button's; the rest none until set */
-static const char *const k_hkp_def[IM_HOTKEYS] = {"guide", "none", "none", "none", "none", "share", "none"};
+/* EmuDeck-style defaults: Back (Select) as the modifier for every action.
+ * Turbo uses a button (back+right) since triggers can't be BACK_WITH combos. */
+static const char *const k_hkp_def[IM_HOTKEYS] = {
+    "back+rs",    /* menu:  Select+R3 */
+    "back+rb",    /* save:  Select+R1 */
+    "back+lb",    /* load:  Select+L1 */
+    "back+right", /* turbo: Select+D-pad Right (R2 is a trigger; closest button) */
+    "back+ls",    /* pause: Select+L3 */
+    "back+y",     /* shot:  Select+Y  */
+    "none",       /* full:  no default pad combo */
+    "back+start", /* quit:  Select+Start */
+};
 
 int im_hkpad_count(void)
 {

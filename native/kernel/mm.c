@@ -269,6 +269,20 @@ static bool commit(NcKernel *k, uint32_t va, uint32_t size, bool zero)
     return ok;
 }
 
+/* Memory given back held code that ran, perhaps (a module a title loaded
+ * itself): its translations go with it, or the next code put at the same
+ * address ran as the old one. The PC's translator finds a range without
+ * code at a word per 64 pages; FEX's cost per call isn't known here, so
+ * Android keeps what it had. */
+static void code_gone(NcKernel *k, uint32_t va, uint32_t size)
+{
+#ifdef NC_DESKTOP
+    if (k->cpu && size) {
+        nc_cpu_invalidate(k->cpu, va, size);
+    }
+#endif
+}
+
 /* One unmap (a syscall) per run of committed pages, then their physical
  * pages: Riddick decommits ~20k pages in a second or two while it loads, and
  * a syscall a page made 80-180 ms frames. */
@@ -286,6 +300,7 @@ static void decommit(NcKernel *k, uint32_t va, uint32_t size)
             continue;
         }
         nc_vm_unmap(k->vm, p, n * NC_PAGE);
+        code_gone(k, p, n * NC_PAGE);
         for (unsigned i = 0; i < n; i++) {
             nc_vm_free_phys(k->vm, pas[i] & ~(NC_PAGE - 1), NC_PAGE);
         }
@@ -302,6 +317,11 @@ static uint64_t NtAllocateVirtualMemory(NcKernel *k, NcFrame *f, const uint32_t 
     const uint32_t type = a[3];
     if (!size || !(type & (MEM_COMMIT | MEM_RESERVE))) {
         return NC_STATUS_INVALID_PARAMETER;
+    }
+    if (size > USER_HI - USER_LO || (base && (uint64_t)base + size > USER_HI)) {
+        /* past the space there is: the sums below wrapped to a region of
+         * no pages and the call "succeeded" */
+        return base ? 0xC0000018u : NC_STATUS_NO_MEMORY;
     }
 
     /* A commit at no address reserves the range too (VirtualAlloc(NULL, n, MEM_COMMIT)). */
@@ -454,6 +474,14 @@ static uint64_t NtQueryVirtualMemory(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     const uint32_t va = a[0] & ~(NC_PAGE - 1);
     const uint32_t mbi = a[1];
+    if (va >= USER_HI) {
+        /* past the last address a region can start at: no answer, as the
+         * kernel gives none (STATUS_INVALID_PARAMETER). Each page up there
+         * was told free and the call succeeded: a walk of the address space
+         * by RegionSize, which ends at this failure on a console, went on
+         * to 4 GiB and round again. */
+        return NC_STATUS_INVALID_PARAMETER;
+    }
     Region *r = region_at(va);
     uint32_t info[7] = {va, 0, 0, 0, MEM_FREE, PAGE_NOACCESS, 0};
     if (!r) {
@@ -698,7 +726,9 @@ static void stale_restore(NcKernel *k)
 static uint32_t contig_alloc(NcKernel *k, uint32_t size, uint32_t lo, uint32_t hi, uint32_t align,
                              uint32_t protect, uint32_t ra)
 {
-    size = nc_align_up(size ? size : 1, NC_PAGE);
+    /* more than the console has: the failure the sizes below end in (and
+     * past 0xFFFFF000 the rounding wrapped to nothing, which "succeeded") */
+    size = size > k->vm->ram_size ? k->vm->ram_size + NC_PAGE : nc_align_up(size ? size : 1, NC_PAGE);
     /* The top of RAM, virtual pages moved out of the way (vm.c), then the
      * window needing the fewest moves; neither when there are fewer free
      * pages than asked for. */
@@ -784,6 +814,7 @@ static void contig_free(NcKernel *k, uint32_t va, uint32_t ra)
 {
     Contig *c = contig_at(va);
     if (c) {
+        code_gone(k, va, c->size + c->slack);
         nc_vm_free_phys(k->vm, va & ~NC_CONTIG_WINDOW, c->size + c->slack);
         *c = g_contig[--g_ncontig];
     } else if (va) {
@@ -1038,8 +1069,8 @@ uint32_t nc_mm_keep_restore(NcKernel *k)
         }
         const uint32_t va = rec[0], len = rec[1], pa = va & ~NC_CONTIG_WINDOW;
         const uint32_t size = nc_align_up(len ? len : 1, NC_PAGE);
-        const bool fits = (va & NC_CONTIG_WINDOW) && pa < k->vm->ram_size && size <= k->vm->ram_size - pa &&
-                          g_ncontig < MAX_CONTIG;
+        const bool fits = (va & NC_CONTIG_WINDOW) && pa < k->vm->ram_size && len <= k->vm->ram_size &&
+                          size <= k->vm->ram_size - pa && g_ncontig < MAX_CONTIG;
         if (!fits || !nc_vm_claim_phys(k->vm, pa, size) || fread(k->vm->ram + pa, 1, len, fp) != len) {
             nc_log("hakuX-native-mm", "kept memory %08x+%u: not restored", va, len);
             if (fits) {

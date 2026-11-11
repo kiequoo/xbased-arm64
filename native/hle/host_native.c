@@ -17,6 +17,7 @@
 
 HleCpu nc_hle_regs;
 
+static NcKernel *g_k;
 static NcVm *g_vm;
 static NcCpu *g_cpu;
 static bool g_flush;
@@ -24,6 +25,7 @@ static unsigned g_flushes;
 
 void nc_hle_host_init(NcKernel *k, NcVm *vm, NcCpu *cpu)
 {
+    g_k = k;
     g_vm = vm;
     g_cpu = cpu;
 }
@@ -69,6 +71,18 @@ void hle_host_guest_hold(bool on)
             nc_dev_apu_time_held(out);
         }
     }
+}
+
+void hle_host_frame_wait(void)
+{
+    if (g_k && nc_irq_cpu_thread()) {
+        nc_ke_frame_wait_request(g_k);
+    }
+}
+
+void hle_host_frame_flipped(void)
+{
+    nc_ke_frame_flipped();
 }
 
 void hle_host_code_changed(void)

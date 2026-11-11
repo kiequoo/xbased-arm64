@@ -294,7 +294,7 @@ bool nc_present_frame(struct ANativeWindow *win)
                          (uint64_t)(uint32_t)(g_overscan + 64) << 16 | (uint64_t)(uint32_t)g_crop_h << 24 |
                          (uint64_t)(uint32_t)g_crop_v << 32;
 #ifdef NC_DESKTOP
-    const bool as_they_come = !nc_dev_nv2a_vblank_locked();
+    const bool as_they_come = !nc_dev_nv2a_vblank_locked() || nc_dev_nv2a_vblank_timed();
 #else
     const bool as_they_come = false;
 #endif

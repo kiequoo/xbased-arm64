@@ -122,6 +122,55 @@ static void test_cube_and_volume(void)
     HT_EQ_U32(ri.format, 0x24450039);
 }
 
+/* A volume's bytes are counted whole. The largest the header's fields can say (4096 x 4096 x
+ * 512 at 32 bits a texel, 32 GiB) is no texture, nor any other past the memory a console has:
+ * counted in 32 bits these came to nothing or little, and passed as textures of that size. */
+static void test_volume_too_large(void)
+{
+    HleResInfo ri;
+    HleResDesc d;
+    const uint32_t fmt = HLE_FMT_DMA_A | HLE_FMT_BORDER_COLOR | (3u << HLE_FMT_DIM_SHIFT) |
+                         ((uint32_t)HLE_XFMT_A8R8G8B8 << HLE_FMT_FORMAT_SHIFT) |
+                         (1u << HLE_FMT_MIPMAP_SHIFT) | (12u << HLE_FMT_USIZE_SHIFT) |
+                         (12u << HLE_FMT_VSIZE_SHIFT) | (9u << HLE_FMT_PSIZE_SHIFT);
+    HT_CHECK(hle_res_from_header(HLE_COMMON_TYPE_TEXTURE, fmt, 0, &d));
+    HT_EQ_INT(d.kind, HLE_RK_VOLUME);
+    HT_EQ_U32(d.w, 4096);
+    HT_EQ_U32(d.h, 4096);
+    HT_EQ_U32(d.d, 512);
+    HT_CHECK(!hle_res_info(&d, &ri));
+    static const uint32_t dims[][3] = {
+        { 4096, 4096, 16 }, { 2048, 2048, 64 }, { 4096, 2048, 512 }, { 1024, 1024, 256 },
+        { 512, 512, 256 },                      /* 256 MiB: no wrap, more than memory */
+    };
+    for (unsigned i = 0; i < sizeof(dims) / sizeof(dims[0]); i++) {
+        for (uint32_t levels = 0; levels < 2; levels++) {
+            HleResDesc v = { .kind = HLE_RK_VOLUME, .fmt = HLE_XFMT_A8R8G8B8, .w = dims[i][0],
+                             .h = dims[i][1], .d = dims[i][2], .levels = levels };
+            HT_CHECK(!hle_res_info(&v, &ri));
+            uint32_t pitch = 1;
+            HT_EQ_U32(hle_res_subresource(&v, 0, 0, &pitch), 0);
+            HT_EQ_U32(pitch, 0);
+        }
+    }
+    /* the largest ones memory holds still are */
+    HleResDesc ok = { .kind = HLE_RK_VOLUME, .fmt = HLE_XFMT_A8R8G8B8, .w = 256, .h = 256,
+                      .d = 256, .levels = 1 };
+    HT_CHECK(hle_res_info(&ok, &ri));
+    HT_EQ_U32(ri.bytes, 64u << 20);
+    HleResDesc l8 = { .kind = HLE_RK_VOLUME, .fmt = HLE_XFMT_L8, .w = 512, .h = 512, .d = 512,
+                      .levels = 1 };
+    HT_CHECK(hle_res_info(&l8, &ri));
+    HT_EQ_U32(ri.bytes, 128u << 20);
+    /* a cube's six faces count */
+    HleResDesc cube = { .kind = HLE_RK_CUBE, .fmt = HLE_XFMT_A8R8G8B8, .w = 4096, .h = 4096,
+                        .d = 1, .levels = 1 };
+    HT_CHECK(!hle_res_info(&cube, &ri));        /* 6 x 64 MiB */
+    cube.w = cube.h = 2048;
+    HT_CHECK(hle_res_info(&cube, &ri));
+    HT_EQ_U32(ri.bytes, 6u * (16u << 20));
+}
+
 /* Stranger's Wrath's lighting cubes: XGSetCubeTextureHeader(8, 1, 0,
  * X8R8G8B8, ...) with BORDER_COLOR then cleared (0x1b2317), 0x1800 bytes
  * apart, each face filled as 16x16 swizzled with the image at (4, 4). */
@@ -187,6 +236,57 @@ static void test_format_helpers(void)
     HT_EQ_U32(hle_res_data_pa(0x80123000), 0x00123000);
 }
 
+/* R6G5B5 (L6V5U5) into A8R8G8B8 */
+static void test_r6g5b5(void)
+{
+    static const uint16_t in[] = { 0x0000, 0xFFFF, 0xFC00, 0x03E0, 0x001F, 0x8210, 0x0400, 0x0020, 0x0001 };
+    uint32_t out[9];
+    /* unsigned: each field widened by its top bits, alpha 0xFF */
+    hle_tex_expand_r6g5b5(in, 9, 0, out);
+    HT_EQ_U32(out[0], 0xFF000000u);
+    HT_EQ_U32(out[1], 0xFFFFFFFFu);
+    HT_EQ_U32(out[2], 0xFFFF0000u);
+    HT_EQ_U32(out[3], 0xFF00FF00u);
+    HT_EQ_U32(out[4], 0xFF0000FFu);
+    HT_EQ_U32(out[5], 0xFF828484u);     /* 32 of 63, 16 of 31, 16 of 31 */
+    HT_EQ_U32(out[6], 0xFF040000u);     /* 1 of 63 */
+    HT_EQ_U32(out[7], 0xFF000800u);     /* 1 of 31 */
+    HT_EQ_U32(out[8], 0xFF000008u);
+    /* the sign word of a bump map (V and U signed), as the A8R8G8B8 it becomes; alpha: none */
+    unsigned eff = 99;
+    const uint32_t sx = hle_tex_sign_xor(0x27, 4 | 8, &eff);
+    HT_EQ_U32(sx, 0x00008080u);
+    HT_EQ_U32(eff, 4 | 8);
+    HT_EQ_U32(hle_tex_sign_xor(0x37, 2, &eff), 0x00800000u);
+    HT_EQ_U32(hle_tex_sign_xor(0x27, 1, &eff), 0);
+    HT_EQ_U32(eff, 0);
+    HT_EQ_U32(hle_tex_sign_xor(0x27, 0, &eff), 0);
+    /* signed V and U: two's-complement fields over 15, centred on 0x80; L stays unsigned */
+    static const uint16_t sv[] = {
+        0x0000,                 /* 0, 0 */
+        0x01EF,                 /* +15, +15 */
+        0x0231,                 /* -15, -15 */
+        0x0210,                 /* -16, -16: no further than -1 */
+        0x03FF,                 /* -1, -1 */
+        0x0021,                 /* +1, +1 */
+        0xFC00,                 /* L alone */
+    };
+    hle_tex_expand_r6g5b5(sv, 7, sx, out);
+    HT_EQ_U32(out[0], 0xFF008080u);
+    HT_EQ_U32(out[1], 0xFF00FFFFu);
+    HT_EQ_U32(out[2], 0xFF000101u);
+    HT_EQ_U32(out[3], 0xFF000000u);
+    HT_EQ_U32(out[4], 0xFF007878u);     /* -1 of 15: 8 below the centre */
+    HT_EQ_U32(out[5], 0xFF008888u);
+    HT_EQ_U32(out[6], 0xFFFF8080u);
+    /* a signed L: over 31 */
+    static const uint16_t sl[] = { 0x7C00, 0x8400, 0x8000 };       /* +31, -31, -32 */
+    hle_tex_expand_r6g5b5(sl, 3, 0x00800000u, out);
+    HT_EQ_U32(out[0], 0xFFFF0000u);
+    HT_EQ_U32(out[1], 0xFF010000u);
+    HT_EQ_U32(out[2], 0xFF000000u);
+}
+
 int main(void)
 {
     HT_RUN(test_texture_full_chain);
@@ -194,8 +294,10 @@ int main(void)
     HT_RUN(test_linear_surface);
     HT_RUN(test_linear_custom_pitch);
     HT_RUN(test_cube_and_volume);
+    HT_RUN(test_volume_too_large);
     HT_RUN(test_border_texture);
     HT_RUN(test_buffers_and_rejects);
     HT_RUN(test_format_helpers);
+    HT_RUN(test_r6g5b5);
     HT_DONE();
 }

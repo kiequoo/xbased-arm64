@@ -24,6 +24,13 @@
 #ifndef HW_XBOX_HLE_HITCH_H
 #define HW_XBOX_HLE_HITCH_H
 
+/* HAKUX_DIAG: 1 in a build made to investigate (the run's statistics, traces
+ * and monitor compiled in), 0 in every other (the build system's
+ * definition; 0 where there is none). */
+#ifndef HAKUX_DIAG
+#define HAKUX_DIAG 0
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -70,7 +77,7 @@ static inline void hitch_set(HleHitchThr *h, uint32_t act)
 static inline uint32_t hle_hitch_enter(uint32_t act)
 {
     int t = t_hitch;
-    if (t < 0 || !g_hitch_on) {
+    if (!HAKUX_DIAG || t < 0 || !g_hitch_on) {  /* (the monitor: a build's made to investigate) */
         return HLE_ACT_N;
     }
     HleHitchThr *h = &g_hitch_thr[t];
@@ -86,7 +93,7 @@ static inline uint32_t hle_hitch_enter(uint32_t act)
 static inline void hle_hitch_leave(uint32_t prev)
 {
     int t = t_hitch;
-    if (prev < HLE_ACT_N && t >= 0) {
+    if (HAKUX_DIAG && prev < HLE_ACT_N && t >= 0) {
         hitch_set(&g_hitch_thr[t], prev);
     }
 }

@@ -208,8 +208,13 @@ static char g_hdd_root[256] = "/data/local/tmp/native/hdd";
  * config area, 1 the data drive (E:), 2 the system drive (C:), 3-5 the
  * title cache drives. Offset and length per partition. */
 #define HDD_BYTES 0x1DD156000ull
-/* Sectors per cluster a partition was last formatted with (its FATX superblock). */
-static uint32_t g_cluster_sectors[6];
+/* Sectors per cluster a partition was last formatted with (its FATX
+ * superblock): one for each number a path can name (device_of: Partition0
+ * to Partition9, the retail disk's six and a larger disk's F: and G:). With
+ * six, a superblock written to Partition6 and up stored its cluster size
+ * past the table. */
+#define PART_NUMBERS 10
+static uint32_t g_cluster_sectors[PART_NUMBERS];
 static const uint64_t k_partitions[6][2] = {
     {0x00000000ull, 0x00080000ull},  {0xABE80000ull, 0x1312D6000ull}, {0x8CA80000ull, 0x1F400000ull},
     {0x00080000ull, 0x2EE00000ull}, {0x2EE80000ull, 0x2EE00000ull},  {0x5DC80000ull, 0x2EE00000ull},
@@ -323,9 +328,9 @@ static bool canon(const char *in, char *out, size_t cap)
         snprintf(tmp, sizeof(tmp), "%s", joined);
     }
     /* Fold components. */
-    char *parts[64];
+    char *parts[64], *save = NULL;
     int n = 0;
-    for (char *tok = strtok(tmp, "\\"); tok; tok = strtok(NULL, "\\")) {
+    for (char *tok = strtok_r(tmp, "\\", &save); tok; tok = strtok_r(NULL, "\\", &save)) {
         if (!strcmp(tok, ".")) {
             continue;
         }
@@ -478,6 +483,9 @@ static void name_from_host(const char *h, char *g, size_t cap)
 static int host_path(int part, const char *rel, char *out, size_t cap)
 {
     size_t len = (size_t)snprintf(out, cap, "%s/Partition%d", g_hdd_root, part);
+    if (len >= cap) {
+        return -1;
+    }
     mkdirs(out);
     char tmp[512];
     snprintf(tmp, sizeof(tmp), "%s", rel);
@@ -496,10 +504,19 @@ static int host_path(int part, const char *rel, char *out, size_t cap)
             }
         }
         name_to_host(tok, enc, sizeof(enc));
-        len += (size_t)snprintf(out + len, cap - len, "/%s", match ? match : enc);
+        const size_t add = (size_t)snprintf(out + len, cap - len, "/%s", match ? match : enc);
         if (d) {
             closedir(d);
         }
+        if (add >= cap - len) {
+            /* longer than a host path is here: no such path. The length was
+             * added all the same, and past cap the next component's room
+             * (cap - len) wrapped: a path through folders deep enough on the
+             * host wrote its next name past out, on the caller's stack. */
+            out[len] = 0;
+            return -1;
+        }
+        len += add;
         if (!match) {
             return last ? 0 : -1;
         }
@@ -1689,9 +1706,22 @@ static uint32_t do_open(NcKernel *k, uint32_t access, uint32_t share, uint32_t a
     nf->can_write = (access & ACCESS_WRITES) != 0;
     nc_kernel_trace_trigger(path);
     *handle = file_handle(k, nf);
+    if (!*handle) {
+        /* no object or no handle left for it: it isn't open. Its slot stayed
+         * taken, with its descriptor and its share of the file. */
+        if (nf->fd >= 0) {
+            close(nf->fd);
+        }
+        if (nf->old_path[0]) {
+            rename(nf->old_path, nf->host);    /* the file as it was */
+        }
+        nf->used = false;
+        nc_log("hakuX-native-io", "open %s: no handle left for it", path);
+        return NC_STATUS_INSUFFICIENT_RESOURCES;
+    }
     nc_log("hakuX-native-io", "open %s -> %s%s", path, nf->is_dir ? "dir " : "",
            *info == 2 ? "(created)" : *info == 3 ? "(overwritten)" : *info == 0 ? "(superseded)" : "");
-    return *handle ? NC_STATUS_SUCCESS : NC_STATUS_INSUFFICIENT_RESOURCES;
+    return NC_STATUS_SUCCESS;
 }
 
 /* NtCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize,
@@ -2244,12 +2274,17 @@ static uint64_t write_data(NcKernel *k, const uint32_t *a, const uint8_t *src, u
      * slow drive (a USB hard disk, an SD card) held the whole console:
      * Project Gotham Racing 2's intro video stood still for minutes while
      * it copied its cars to its cache. An overlapped write only when it
-     * pends on the console too (io_finish): with an event or an APC, or past
-     * the cache (no_buffering). One with neither, through the cache, is done
-     * in the call there: pended, Hunter: The Reckoning - Redeemer took its
-     * settings' write as failed as its first level began ("a problem with
-     * the disc"), since 1.0.49. */
-    const bool pends = nf->async ? a[1] || a[2] || nf->no_buffering : can_block(k);
+     * pends on the console too (io_finish): past the cache (no_buffering).
+     * One through the cache is done in the caller's thread there, the
+     * cache's copy and the disk's write both, event or APC or neither, and
+     * completes in the call. Pended, Hunter: The Reckoning - Redeemer took
+     * its settings' write (neither) as failed as its first level began ("a
+     * problem with the disc"), since 1.0.49; and Breakdown, which copies a
+     * level's blocks to the cache drive in 16 KiB overlapped writes with an
+     * event, took WriteFile's ERROR_IO_PENDING as a failed copy, kept the
+     * first 16 KiB, and loaded the rest as zeros: the player fell through
+     * the floor of its first room. */
+    const bool pends = nf->async ? nf->no_buffering : can_block(k);
     if (later && len && va && pends) {
         const IoRun run = {va, len};
         if (disc_read_later(k, nf, a, &run, 1, off, len, !nf->async, 0, true)) {
@@ -2550,7 +2585,7 @@ static uint64_t NtSetInformationFile(NcKernel *k, NcFrame *f, const uint32_t *a)
         const char *rel;
         int dev, exists = -1;
         if (nf->kind != F_HOST || !resolve_name(k, nc_rd32(in + 4), name, sizeof(name)) ||
-            !canon(name, path, sizeof(path)) || (dev = device_of(path, &rel)) < 0 ||
+            !canon(name, path, sizeof(path)) || (dev = device_of(path, &rel)) < 1 ||
             (exists = host_path(dev, rel, host, sizeof(host))) < 0) {
             st = exists < 0 && nf->kind == F_HOST ? STATUS_OBJECT_PATH_NOT_FOUND : STATUS_ACCESS_DENIED;
         } else if (exists && !in[0]) {
@@ -2760,6 +2795,8 @@ typedef struct DirEntry {
     uint64_t size;
     bool dir;
 } DirEntry;
+/* a listing's entries at most (a folder with more shows its first ones) */
+#define LISTING_MAX 2048u
 
 /* A disc directory's entries (nc_disc_dir_each: its tree in order, then what
  * the tree doesn't reach) */
@@ -2814,7 +2851,7 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned 
 {
     unsigned n = 0;
     if (nf->kind != F_HOST) {
-        if (nf->disc.size && nf->disc.sector < NC_DISC_OVERLAY) {
+        if (nf->disc.size && nf->disc.size <= NC_DISC_DIR_MAX && nf->disc.sector < NC_DISC_OVERLAY) {
             uint8_t *dir = malloc(nf->disc.size);
             if (dir && nc_disc_read(k->disc, &nf->disc, 0, dir, nf->disc.size)) {
                 DiscList l = {out, &n, cap};
@@ -2882,10 +2919,10 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
     }
     if ((a[9] & 0xff) || strcmp(mask, nf->mask) != 0 || !nf->listing) {
         /* A new enumeration lists the directory once (NcFile.listing). */
-        static DirEntry scratch[2048];
+        static DirEntry scratch[LISTING_MAX];
         nf->dir_next = 0;
         snprintf(nf->mask, sizeof(nf->mask), "%s", mask);
-        const unsigned count = list_dir(k, nf, scratch, 2048);
+        const unsigned count = list_dir(k, nf, scratch, LISTING_MAX);
         free(nf->listing);
         nf->listing = malloc((count ? count : 1) * sizeof(DirEntry));
         nf->nlisting = nf->listing ? count : 0;
@@ -2961,9 +2998,9 @@ static uint64_t NtDeleteFile(NcKernel *k, NcFrame *f, const uint32_t *a)
     }
     const char *rel;
     int dev;
-    if (!canon(name, path, sizeof(path)) || (dev = device_of(path, &rel)) < 0) {
+    if (!canon(name, path, sizeof(path)) || (dev = device_of(path, &rel)) < 1) {
         nc_log("hakuX-native-io", "delete %s: no such drive", name);
-        return STATUS_ACCESS_DENIED;
+        return STATUS_ACCESS_DENIED;    /* the disc, the raw disk: no file system to delete in */
     }
     if (host_path(dev, rel, host, sizeof(host)) != 1) {
         return STATUS_OBJECT_NAME_NOT_FOUND;
@@ -3482,6 +3519,36 @@ static bool host_from_state(char *p, size_t cap)
     return true;
 }
 
+/* A state is a file that may come from anywhere, and the host paths of the
+ * files it has open are opened for reading and writing as it is loaded
+ * (and deleted at their close, if it says so) for code the same state
+ * brings: one made for it could reach any file of the user's. A path it
+ * names has to be inside this run's hdd folder, with no ".." on the way. */
+static bool host_inside_hdd(const char *p)
+{
+    if (!p[0]) {
+        return true;
+    }
+    const size_t n = strlen(g_hdd_root);
+    if (strncmp(p, g_hdd_root, n) || !is_sep(p[n])) {
+        return false;
+    }
+    for (const char *c = p + n; *c;) {
+        while (is_sep(*c)) {
+            c++;
+        }
+        const char *e = c;
+        while (*e && !is_sep(*e)) {
+            e++;
+        }
+        if (e - c == 2 && c[0] == '.' && c[1] == '.') {
+            return false;
+        }
+        c = e;
+    }
+    return true;
+}
+
 bool nc_file_state_save(NcBuf *b)
 {
     NcFileState st = {0};
@@ -3538,6 +3605,11 @@ bool nc_file_state_load(NcRd *r, unsigned v)
         nf->path[sizeof(nf->path) - 1] = nf->host[sizeof(nf->host) - 1] = 0;
         nf->mask[sizeof(nf->mask) - 1] = nf->old_path[sizeof(nf->old_path) - 1] = 0;
         nf->listing = NULL;
+        if (nf->nlisting > LISTING_MAX) {
+            nf->nlisting = 0;           /* longer than a listing gets: a damaged state */
+            ok = false;
+            break;
+        }
         if (nf->nlisting) {
             nf->listing = calloc(nf->nlisting, sizeof(DirEntry));
             if (!nf->listing) {
@@ -3549,6 +3621,12 @@ bool nc_file_state_load(NcRd *r, unsigned v)
         nf->fd = -1;
         if (!host_from_state(nf->host, sizeof(nf->host)) || !host_from_state(nf->old_path, sizeof(nf->old_path))) {
             nc_state_fail("the hdd folder's path is too long for %s", nf->path);
+            ok = false;
+            break;
+        }
+        if (!host_inside_hdd(nf->host) || !host_inside_hdd(nf->old_path)) {
+            nc_log("hakuX-native-state", "%s: its file %s is outside the hard disk folder", nf->path, nf->host);
+            nc_state_fail("the state names a file outside the hard disk folder (%s)", nf->path);
             ok = false;
             break;
         }

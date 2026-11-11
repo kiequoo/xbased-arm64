@@ -145,6 +145,10 @@ typedef struct HleCmdSetRt {
     uint32_t rt, ds;            /* object ids, 0 = none */
 } HleCmdSetRt;
 
+typedef struct HleRect {
+    int32_t x1, y1, x2, y2;
+} HleRect;
+
 typedef struct HleCmdViewport {
     uint32_t x, y, w, h;        /* render-target pixels */
     float minz, maxz;
@@ -155,11 +159,12 @@ typedef struct HleCmdViewport {
      * instead of the viewport (the NV2A surface clip); clip 0 = the viewport */
     uint32_t clip;
     int32_t cx1, cy1, cx2, cy2;
+    /* the window clip's eight rectangles as the NV2A has them (a title
+     * without D3D: pb/pbdraw.c), render-target pixels: wmode 1 draws inside
+     * any, 2 outside all (vk/draw.c, VK_EXT_discard_rectangles); 0 none */
+    uint32_t wmode;
+    HleRect wr[8];
 } HleCmdViewport;
-
-typedef struct HleRect {
-    int32_t x1, y1, x2, y2;
-} HleRect;
 
 typedef struct HleCmdClear {
     uint32_t flags;             /* D3DCLEAR_* */
@@ -231,6 +236,11 @@ typedef struct HleCmdReadback {
  * arena without one) at fb - 1, swizzled into guest memory at the value
  * (hle_tl_land_swz) */
 #define HLE_RB_PACKED 0xFFFFFFFEu
+/* arena_off: a depth target's image, w x h texels, an aspect at a time into
+ * the landing buffer at fb - 1 (fb_len bytes of room: its depth, then its
+ * stencil), put into guest memory as the NV2A's words at the value
+ * (hle_tl_land_depth); only an image at the guest's size */
+#define HLE_RB_DEPTH 0xFFFFFFFDu
 
 /* ---- P3 draws ------------------------------------------------------------- */
 
@@ -289,6 +299,14 @@ typedef struct HleCmdDraw {
                                    samples an A8R8G8B8 target of another (HLE_DRAW_ORD_*) */
     uint32_t tex_rect[HLE_TSS_STAGES];  /* a linear stage's own size, its IMAGE_RECT
                                            (width 28:16, height 12:0); 0 for the others */
+    uint32_t tex_affine;        /* 1: SET_CONTROL0's texture perspective (bit 20) off in a title
+                                   without D3D: texture coordinates interpolated across the screen */
+    uint32_t quads;             /* 1: a quad list, two triangles a quad ((0, 1, 2), (0, 2, 3),
+                                   pbres.c hle_draw_prim_indices, the NV2A's split) */
+    uint32_t tex_border[HLE_TSS_STAGES];    /* a swizzled stage whose border is its texture's
+                                               (SET_TEXTURE_FORMAT bit 3 clear): 1 | the
+                                               reported log2 sizes u << 4, v << 8, p << 12;
+                                               its image the bordered one (pbdraw.c) */
     /* vertex programs and declarations (P4, pulled forward) */
     uint64_t vsh;               /* program hash (HLE_OP_VSH); 0 = fixed function */
     uint32_t consts_off;        /* program draws: arena, 192 vec4 constants */
@@ -311,6 +329,8 @@ typedef struct HleCmdDraw {
                                    diffuse register's current value (float4), 0 = none */
     float wscale;               /* untransformed FF draws: 1 / the projection's W-buffer
                                    far w (W-buffering stores w / wfar); 0 = keep z */
+    uint32_t pt_size;           /* a program's point list without point parameters:
+                                   HLE_VSH_PT_FIXED | SET_POINT_SIZE (vsh.h); else 0 */
 } HleCmdDraw;
 
 #define HLE_DRAW_GUEST_FVF (1u << 31)

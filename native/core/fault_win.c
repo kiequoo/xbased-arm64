@@ -27,6 +27,7 @@ static LONG CALLBACK on_exception(PEXCEPTION_POINTERS ep)
     if (g_fault_core && (er->ExceptionCode == EXCEPTION_INT_DIVIDE_BY_ZERO || er->ExceptionCode == EXCEPTION_INT_OVERFLOW)) {
         /* a guest DIV/IDIV's #DE in translated code */
         info.si_signo = SIGFPE;
+        info.si_code = er->ExceptionCode == EXCEPTION_INT_OVERFLOW ? NC_FPE_OVERFLOW : 0;
         return nc_core_fault(g_fault_core, SIGFPE, &info, ep->ContextRecord) ? EXCEPTION_CONTINUE_EXECUTION
                                                                              : EXCEPTION_CONTINUE_SEARCH;
     }

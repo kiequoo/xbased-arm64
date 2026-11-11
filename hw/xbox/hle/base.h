@@ -7,6 +7,13 @@
 #ifndef HW_XBOX_HLE_BASE_H
 #define HW_XBOX_HLE_BASE_H
 
+/* HAKUX_DIAG: 1 in a build made to investigate (the run's statistics, traces
+ * and monitor compiled in), 0 in every other (the build system's
+ * definition; 0 where there is none). */
+#ifndef HAKUX_DIAG
+#define HAKUX_DIAG 0
+#endif
+
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>

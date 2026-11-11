@@ -29,6 +29,25 @@ static void nc_irq_set(unsigned line, bool level)
 {
     g_irq_level = level;
 }
+/* the emulation's pause (core/irq.h): never paused here, the frames are run by hand */
+bool nc_paused(void)
+{
+    return false;
+}
+void nc_pause_wait(void)
+{
+}
+void nc_pause_register(const char *name)
+{
+}
+void nc_pause_idle(bool on)
+{
+}
+/* the frames shown so far (a pad's report is taken once a frame): none */
+uint64_t hle_back_swap_count(void)
+{
+    return 0;
+}
 void nc_log(const char *tag, const char *fmt, ...)
 {
     va_list ap;

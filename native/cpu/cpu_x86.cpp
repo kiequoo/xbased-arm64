@@ -64,9 +64,13 @@ struct alignas(64) NcFrame {
     uint64_t cycle_offset;   /* host TSC ticks the guest's RDTSC leaves out */
     uint64_t tsc_ratio;      /* guest cycles per host tick, Q32 */
     uint32_t host_mxcsr;
-    uint32_t x87_load;       /* fx's x87 part goes to the hardware at the next restore */
+    uint32_t x87_load;       /* fx's x87 part goes to the hardware at the next restore (1: another
+                              * thread's or a fault's, the return predictions go too; 2: put aside
+                              * for an interrupt's host code, they stay) */
     NcCpu *cpu;
-    uint64_t pad1[2];
+    uint32_t shadow_reset;   /* the return predictions go at the next restore (the code they point into went) */
+    uint32_t vac;            /* the guest's AC flag (the host's would check alignment in ring 3) */
+    uint64_t pad1;
     alignas(16) uint8_t fx[512]; /* FXSAVE image: x87/MMX, MXCSR, XMM */
 };
 
@@ -104,6 +108,7 @@ static const SavedState &Saved(const NcCpuContext *c)
 /* The host's RFLAGS bits a guest value may set (IF is virtual; TF, AC, NT,
  * IOPL, RF and VM stay the host's). */
 #define GUEST_FLAGS 0x00200DD5u /* ID | OF DF | SF ZF AF PF CF */
+#define GUEST_AC    0x00040000u /* AC: kept in the frame (vac), never in the host's flags */
 
 /* ------------------------------------------------------ the translation */
 
@@ -111,6 +116,7 @@ struct InsnMap {
     uint32_t host_off;       /* from the block's code */
     uint32_t eip;
     uint8_t swap;            /* the low register R12 was exchanged with (1-7), 0 none */
+    uint8_t borrow;          /* 1 + the low register that holds an FS operand's address, its own value in R13 */
 };
 
 struct Exit {
@@ -124,6 +130,9 @@ struct Block {
     uint8_t *code, *code_end;
     bool bypass;             /* the hook at eip is skipped (nc_frame_bypass_hook) */
     bool dead;
+#ifdef NC_CPU_DIAG
+    std::vector<uint8_t> src; /* NC_SMC_CHECK: the guest bytes it was made from */
+#endif
     std::vector<InsnMap> map;
     std::vector<Exit> exits;
 };
@@ -159,6 +168,9 @@ struct NcCpu {
     std::unordered_map<uint32_t, Block *> blocks;      /* by guest eip (not bypass) */
     std::unordered_map<uint32_t, Block *> bypass;      /* the bypass translations */
     std::unordered_map<uint32_t, std::vector<Block *>> pages; /* guest page -> blocks on it */
+    /* a bit per guest page that has blocks: an invalidation of a range
+     * without any (memory freed, nearly always) looks at a word per 64 pages */
+    std::vector<uint64_t> page_bits = std::vector<uint64_t>(1u << 14);
     std::unordered_map<uint32_t, std::vector<std::pair<Block *, unsigned>>> incoming;
     std::vector<Block *> by_host;                       /* in code order */
     std::vector<Block *> graveyard;                     /* dead, freed at the next flush */
@@ -171,6 +183,18 @@ struct NcCpu {
 };
 
 static NcCpu *g_cpu;
+/* Diagnostics, in builds made with NC_CPU_DIAG only (the tests' cputest; the
+ * app with -DHAKUX_CPU_DIAG=ON): a release has none of it.
+ * NC_SMC_CHECK=1: no chaining and no dispatcher table, so every block is
+ * entered through the lookup, which compares the guest bytes it was made
+ * from with what is there now, logs a block whose code changed without an
+ * invalidation and makes it again. Slow (a title crawls), but it tells
+ * whether a title rewrites code it has run, which nothing else here does. */
+#ifdef NC_CPU_DIAG
+static bool g_smc_check;
+#else
+#define g_smc_check false
+#endif
 static volatile LONG64 g_poll_faults, g_poll_lost, g_int_requests, g_int_sysops;
 
 /* ------------------------------------------------------ host utilities */
@@ -214,6 +238,9 @@ static const ZydisRegister k_r32[8] = {ZYDIS_REGISTER_EAX, ZYDIS_REGISTER_ECX, Z
 static const ZydisRegister k_r64[8] = {ZYDIS_REGISTER_RAX, ZYDIS_REGISTER_RCX, ZYDIS_REGISTER_RDX,
                                        ZYDIS_REGISTER_RBX, ZYDIS_REGISTER_R12, ZYDIS_REGISTER_RBP,
                                        ZYDIS_REGISTER_RSI, ZYDIS_REGISTER_RDI};
+static const ZydisRegister k_r16[8] = {ZYDIS_REGISTER_AX, ZYDIS_REGISTER_CX, ZYDIS_REGISTER_DX,
+                                       ZYDIS_REGISTER_BX, ZYDIS_REGISTER_R12W, ZYDIS_REGISTER_BP,
+                                       ZYDIS_REGISTER_SI, ZYDIS_REGISTER_DI};
 
 #define FR(field) M(ZYDIS_REGISTER_R15, (int64_t)offsetof(NcFrame, field), 0)
 #define FR8(field, add) M(ZYDIS_REGISTER_R15, (int64_t)offsetof(NcFrame, field) + (add), 8)
@@ -313,10 +340,23 @@ static bool build_stubs(NcCpu *cpu)
         a.op(ZYDIS_MNEMONIC_CMP, {FR4(x87_load, 0), I(0)});
         uint8_t *skip = a.jcc(0x4, nullptr); /* jz */
         a.op(ZYDIS_MNEMONIC_FXRSTOR, {M(ZYDIS_REGISTER_R15, offsetof(NcFrame, fx), 512)});
-        a.op(ZYDIS_MNEMONIC_MOV, {FR4(x87_load, 0), I(0)});
+        a.op(ZYDIS_MNEMONIC_CMP, {FR4(x87_load, 0), I(2)});
+        a.op(ZYDIS_MNEMONIC_MOV, {FR4(x87_load, 0), I(0)}); /* the flags stay the comparison's */
+        uint8_t *same = a.jcc(0x4, nullptr); /* je: the same thread's, back from an interrupt */
         /* another thread's frame: the return predictions are the last one's */
         a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_RSP), FR8(host_rsp, 0)});
+        patch_rel32(same, a.p);
         patch_rel32(skip, a.p);
+    }
+    {
+        /* the translations went (flush_all): the predictions' host return
+         * addresses point into code that is no longer there, and a guest
+         * return that still matched one ran whatever was translated over it */
+        a.op(ZYDIS_MNEMONIC_CMP, {FR4(shadow_reset, 0), I(0)});
+        uint8_t *keep = a.jcc(0x4, nullptr); /* jz */
+        a.op(ZYDIS_MNEMONIC_MOV, {FR4(shadow_reset, 0), I(0)});
+        a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_RSP), FR8(host_rsp, 0)});
+        patch_rel32(keep, a.p);
     }
     {
         /* calls never returned from (call $+5; pop) pile up: 4 MB of them
@@ -461,6 +501,9 @@ static bool build_stubs(NcCpu *cpu)
 
 static void l1_set(NcCpu *cpu, uint32_t eip, uint8_t *code)
 {
+    if (g_smc_check) {
+        return;
+    }
     L1Entry &e = cpu->l1[eip & (L1_SIZE - 1)];
     e.neg_eip = (uint32_t)-eip;
     e.code = code;
@@ -487,18 +530,22 @@ static void l1_clear(NcCpu *cpu)
 
 /* A guest address the translator may read: committed memory. A page
  * without access (the HLE's) faults and is handled as the guest's read. */
+/* The last page found committed: good for one translation (translate
+ * forgets it as it starts), since the guest may unmap it afterwards. */
+static thread_local uint64_t g_ok_page = UINT64_MAX;
+
 static bool guest_readable(uint32_t va, uint32_t n)
 {
-    static uint32_t ok_page = 0xFFFFFFFFu;
-    for (uint32_t p = va & ~0xFFFu; p < va + n; p += 0x1000) {
-        if (p == ok_page) {
+    /* 64-bit: the last bytes under 4 GiB don't wrap to a range never checked */
+    for (uint64_t p = va & ~0xFFFu; p < (uint64_t)va + n; p += 0x1000) {
+        if (p == g_ok_page) {
             continue;
         }
         MEMORY_BASIC_INFORMATION mbi;
-        if (!VirtualQuery((void *)(uintptr_t)p, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT) {
+        if (p > 0xFFFFFFFFull || !VirtualQuery((void *)(uintptr_t)p, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT) {
             return false;
         }
-        ok_page = p;
+        g_ok_page = p;
     }
     return true;
 }
@@ -608,6 +655,16 @@ struct Translator {
         bool mem = false, uses_esp = false, high8 = false;
         for (unsigned i = 0; i < in.operand_count; i++) {
             const ZydisDecodedOperand &o = ops[i];
+            /* the stack used implicitly (an instruction the cases above
+             * don't take): encoded as it is, it would push or pop the
+             * host's RSP, the shadow stack the stubs and C calls run on */
+            if (o.visibility == ZYDIS_OPERAND_VISIBILITY_HIDDEN &&
+                ((o.type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                  (o.mem.base == ZYDIS_REGISTER_ESP || o.mem.base == ZYDIS_REGISTER_SP)) ||
+                 (o.type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                  (o.reg.value == ZYDIS_REGISTER_ESP || o.reg.value == ZYDIS_REGISTER_SP)))) {
+                return false;
+            }
             if (o.type == ZYDIS_OPERAND_TYPE_MEMORY) {
                 mem = true;
                 if (o.mem.segment == ZYDIS_REGISTER_FS && o.visibility != ZYDIS_OPERAND_VISIBILITY_EXPLICIT &&
@@ -635,6 +692,16 @@ struct Translator {
         if (uses_esp && high8) {
             return generic_swapped(in, ops, req);
         }
+        if (high8) {
+            for (unsigned i = 0; i < req.operand_count; i++) {
+                const ZydisDecodedOperand &o = ops[i];
+                if (o.type == ZYDIS_OPERAND_TYPE_MEMORY && o.mem.segment == ZYDIS_REGISTER_FS && cpu->fs_base &&
+                    in.mnemonic != ZYDIS_MNEMONIC_LEA &&
+                    (o.mem.base != ZYDIS_REGISTER_NONE || o.mem.index != ZYDIS_REGISTER_NONE)) {
+                    return generic_borrowed(in, ops, req);
+                }
+            }
+        }
         for (unsigned i = 0; i < req.operand_count; i++) {
             ZydisEncoderOperand &eo = req.operands[i];
             const ZydisDecodedOperand &o = ops[i];
@@ -657,6 +724,77 @@ struct Translator {
             }
         }
         return a.encode(req);
+    }
+
+    /* A low register (EBP, ESI, EDI, EBX, EDX, ECX, EAX: its number) that
+     * the instruction doesn't name, or -1. */
+    int unnamed_low(const ZydisDecodedInstruction &in, const ZydisDecodedOperand *ops)
+    {
+        static const int order[] = {5, 6, 7, 3, 2, 1, 0};
+        for (int c : order) {
+            bool used = false;
+            for (unsigned i = 0; i < in.operand_count && !used; i++) {
+                const ZydisDecodedOperand &o = ops[i];
+                auto names = [&](ZydisRegister r) {
+                    return r != ZYDIS_REGISTER_NONE &&
+                           ZydisRegisterGetLargestEnclosing(ZYDIS_MACHINE_MODE_LEGACY_32, r) ==
+                               (ZydisRegister)(ZYDIS_REGISTER_EAX + c);
+                };
+                used = (o.type == ZYDIS_OPERAND_TYPE_REGISTER && names(o.reg.value)) ||
+                       (o.type == ZYDIS_OPERAND_TYPE_MEMORY && (names(o.mem.base) || names(o.mem.index)));
+            }
+            if (!used) {
+                return c;
+            }
+        }
+        return -1;
+    }
+
+    /* AH-DH (no REX) with an FS operand that has registers: its address
+     * can't go through R13 (REX), so it borrows a low register the
+     * instruction doesn't name, whose own value waits in R13 meanwhile (the
+     * map's borrow, for a fault in between). It stopped the title before. */
+    bool generic_borrowed(const ZydisDecodedInstruction &in, const ZydisDecodedOperand *ops, ZydisEncoderRequest &req)
+    {
+        const int t = unnamed_low(in, ops);
+        if (t < 0) {
+            return false;
+        }
+        const ZydisRegister t32 = (ZydisRegister)(ZYDIS_REGISTER_EAX + t);
+        bool taken = false;
+        for (unsigned i = 0; i < req.operand_count; i++) {
+            ZydisEncoderOperand &eo = req.operands[i];
+            const ZydisDecodedOperand &o = ops[i];
+            if (eo.type != ZYDIS_OPERAND_TYPE_MEMORY) {
+                continue;
+            }
+            if (o.mem.segment != ZYDIS_REGISTER_FS || taken) {
+                return false; /* one memory operand, the FS one */
+            }
+            ZydisEncoderOperand ea;
+            memset(&ea, 0, sizeof(ea));
+            ea.type = ZYDIS_OPERAND_TYPE_MEMORY;
+            ea.mem.base = o.mem.base;
+            ea.mem.index = o.mem.index;
+            ea.mem.scale = o.mem.index == ZYDIS_REGISTER_NONE ? 0 : o.mem.scale;
+            ea.mem.displacement = o.mem.disp.has_displacement ? o.mem.disp.value : 0;
+            a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_R13), R(k_r64[t])});
+            if (!a.op(ZYDIS_MNEMONIC_LEA, {R(t32), ea}, true)) {
+                return false;
+            }
+            eo.mem.base = t32;
+            eo.mem.index = ZYDIS_REGISTER_NONE;
+            eo.mem.scale = 0;
+            eo.mem.displacement = (int32_t)cpu->fs_base;
+            taken = true;
+        }
+        if (!taken) {
+            return false;
+        }
+        b->map.back().borrow = (uint8_t)(t + 1);
+        const bool ok = a.encode(req);
+        a.op(ZYDIS_MNEMONIC_MOV, {R(k_r64[t]), R(ZYDIS_REGISTER_R13)});
+        return ok;
     }
 
     /* AH-DH (no REX) with ESP: ESP borrows a low register the instruction
@@ -739,7 +877,52 @@ struct Translator {
         a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_R11D), FR4(vif, 0)});
         a.op(ZYDIS_MNEMONIC_SHL, {R(ZYDIS_REGISTER_R11D), I(9)});
         a.op(ZYDIS_MNEMONIC_OR, {R(ZYDIS_REGISTER_R13D), R(ZYDIS_REGISTER_R11D)});
+        /* AC as the guest last set it: a Pentium III has it (what tells a
+         * 486 or later from a 386, the first step of CPU detection code) */
+        a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_R11D), FR4(vac, 0)});
+        a.op(ZYDIS_MNEMONIC_SHL, {R(ZYDIS_REGISTER_R11D), I(18)});
+        a.op(ZYDIS_MNEMONIC_OR, {R(ZYDIS_REGISTER_R13D), R(ZYDIS_REGISTER_R11D)});
         push_r(ZYDIS_REGISTER_R13D);
+        a.op(ZYDIS_MNEMONIC_POPFQ, {});
+        return true;
+    }
+
+    /* PUSHF and POPF with an operand-size prefix (66 9C, 66 9D): the low
+     * word of the flags. Passed to the host as they were, they pushed and
+     * popped 2 bytes of the host's RSP: America's Army - Rise of a Soldier
+     * runs a 66 9C after its intro, the shadow stack went 2 bytes off, and
+     * the next C call from the stubs crashed on its first aligned store. */
+    bool pushf16()
+    {
+        a.op(ZYDIS_MNEMONIC_PUSHFQ, {});
+        a.op(ZYDIS_MNEMONIC_POP, {R(ZYDIS_REGISTER_R10)});
+        a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_R13), R(ZYDIS_REGISTER_R10)});
+        a.op(ZYDIS_MNEMONIC_AND, {R(ZYDIS_REGISTER_R13D), I((int32_t)((GUEST_FLAGS | 0x2) & 0xFFFF))});
+        a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_R11D), FR4(vif, 0)});
+        a.op(ZYDIS_MNEMONIC_SHL, {R(ZYDIS_REGISTER_R11D), I(9)});
+        a.op(ZYDIS_MNEMONIC_OR, {R(ZYDIS_REGISTER_R13D), R(ZYDIS_REGISTER_R11D)});
+        a.op(ZYDIS_MNEMONIC_PUSH, {R(ZYDIS_REGISTER_R10)});
+        a.op(ZYDIS_MNEMONIC_POPFQ, {});
+        a.op(ZYDIS_MNEMONIC_MOV, {M(ZYDIS_REGISTER_R12D, -2, 2), R(ZYDIS_REGISTER_R13W)}, true);
+        esp_add(-2);
+        return true;
+    }
+
+    bool popf16()
+    {
+        a.op(ZYDIS_MNEMONIC_MOVZX, {R(ZYDIS_REGISTER_R13D), M(ZYDIS_REGISTER_R12D, 0, 2)}, true);
+        esp_add(2);
+        a.op(ZYDIS_MNEMONIC_PUSHFQ, {});
+        a.op(ZYDIS_MNEMONIC_POP, {R(ZYDIS_REGISTER_R10)});
+        a.op(ZYDIS_MNEMONIC_AND, {R(ZYDIS_REGISTER_R10D), I((int32_t)(GUEST_FLAGS & 0xFFFF0000u))});
+        a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_R11D), R(ZYDIS_REGISTER_R13D)});
+        a.op(ZYDIS_MNEMONIC_SHR, {R(ZYDIS_REGISTER_R11D), I(9)});
+        a.op(ZYDIS_MNEMONIC_AND, {R(ZYDIS_REGISTER_R11D), I(1)});
+        a.op(ZYDIS_MNEMONIC_MOV, {FR4(vif, 0), R(ZYDIS_REGISTER_R11D)});
+        a.op(ZYDIS_MNEMONIC_AND, {R(ZYDIS_REGISTER_R13D), I((int32_t)(GUEST_FLAGS & 0xFFFF))});
+        a.op(ZYDIS_MNEMONIC_OR, {R(ZYDIS_REGISTER_R13D), I(0x202)});
+        a.op(ZYDIS_MNEMONIC_OR, {R(ZYDIS_REGISTER_R13D), R(ZYDIS_REGISTER_R10D)});
+        a.op(ZYDIS_MNEMONIC_PUSH, {R(ZYDIS_REGISTER_R13)});
         a.op(ZYDIS_MNEMONIC_POPFQ, {});
         return true;
     }
@@ -752,6 +935,10 @@ struct Translator {
         a.op(ZYDIS_MNEMONIC_SHR, {R(ZYDIS_REGISTER_R11D), I(9)});
         a.op(ZYDIS_MNEMONIC_AND, {R(ZYDIS_REGISTER_R11D), I(1)});
         a.op(ZYDIS_MNEMONIC_MOV, {FR4(vif, 0), R(ZYDIS_REGISTER_R11D)});
+        a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_R11D), R(ZYDIS_REGISTER_R13D)});
+        a.op(ZYDIS_MNEMONIC_SHR, {R(ZYDIS_REGISTER_R11D), I(18)});
+        a.op(ZYDIS_MNEMONIC_AND, {R(ZYDIS_REGISTER_R11D), I(1)});
+        a.op(ZYDIS_MNEMONIC_MOV, {FR4(vac, 0), R(ZYDIS_REGISTER_R11D)});
         a.op(ZYDIS_MNEMONIC_AND, {R(ZYDIS_REGISTER_R13D), I((int32_t)GUEST_FLAGS)});
         a.op(ZYDIS_MNEMONIC_OR, {R(ZYDIS_REGISTER_R13D), I(0x202)});
         a.op(ZYDIS_MNEMONIC_PUSH, {R(ZYDIS_REGISTER_R13)});
@@ -866,6 +1053,38 @@ struct Translator {
         }
         case ZYDIS_MNEMONIC_JECXZ: case ZYDIS_MNEMONIC_JCXZ:
         case ZYDIS_MNEMONIC_LOOP: case ZYDIS_MNEMONIC_LOOPE: case ZYDIS_MNEMONIC_LOOPNE: {
+            if (in.address_width == 16) {
+                /* the count is CX (67 E0-E3): CX less one where it counts,
+                 * its zero tested through RCX (JRCXZ), no flag touched;
+                 * the guest's ECX waits in R10 */
+                const bool counts = in.mnemonic != ZYDIS_MNEMONIC_JCXZ && in.mnemonic != ZYDIS_MNEMONIC_JECXZ;
+                if (counts) {
+                    a.op(ZYDIS_MNEMONIC_LEA, {R(ZYDIS_REGISTER_R11D), M(ZYDIS_REGISTER_RCX, -1, 0)});
+                    a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_CX), R(ZYDIS_REGISTER_R11W)});
+                }
+                a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_R10), R(ZYDIS_REGISTER_RCX)});
+                a.op(ZYDIS_MNEMONIC_MOVZX, {R(ZYDIS_REGISTER_ECX), R(ZYDIS_REGISTER_CX)});
+                uint8_t *zero = nullptr, *flag = nullptr;
+                a.byte(0xE3); /* jrcxz: the count is zero */
+                zero = a.p;
+                a.byte(0);
+                if (in.mnemonic == ZYDIS_MNEMONIC_LOOPE || in.mnemonic == ZYDIS_MNEMONIC_LOOPNE) {
+                    a.byte(in.mnemonic == ZYDIS_MNEMONIC_LOOPE ? 0x75 : 0x74); /* jnz / jz: its flag says stop */
+                    flag = a.p;
+                    a.byte(0);
+                }
+                /* not zero: LOOP's jump, JCXZ's fall through */
+                a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_RCX), R(ZYDIS_REGISTER_R10)});
+                exit_to(counts ? next + (uint32_t)o0.imm.value.s : next);
+                *zero = (uint8_t)(a.p - (zero + 1));
+                if (flag) {
+                    /* the flag's stop is LOOP's fall through; the zero count's too */
+                    *flag = (uint8_t)(a.p - (flag + 1));
+                }
+                a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_RCX), R(ZYDIS_REGISTER_R10)});
+                exit_to(counts ? next : next + (uint32_t)o0.imm.value.s);
+                return END;
+            }
             if (in.address_width != 32) {
                 return FAIL;
             }
@@ -903,6 +1122,16 @@ struct Translator {
                 esp_add(-2);
                 return CONTINUE;
             }
+            if (in.operand_width == 16) {
+                /* a word pushed from memory (66 FF /6): its address taken
+                 * with ESP as it was */
+                if (!load_r13(o0, 2) ||
+                    !a.op(ZYDIS_MNEMONIC_MOV, {M(ZYDIS_REGISTER_R12D, -2, 2), R(ZYDIS_REGISTER_R13W)}, true)) {
+                    return FAIL;
+                }
+                esp_add(-2);
+                return CONTINUE;
+            }
             if (in.operand_width != 32) {
                 return FAIL;
             }
@@ -930,6 +1159,18 @@ struct Translator {
                 if (r != ZYDIS_REGISTER_R12W) {
                     esp_add(2);
                 }
+                return CONTINUE;
+            }
+            if (in.operand_width == 16 && o0.type == ZYDIS_OPERAND_TYPE_MEMORY) {
+                /* a word popped to memory (66 8F /0): as the 32-bit form
+                 * below, the store first, its address the one after the pop */
+                a.op(ZYDIS_MNEMONIC_MOVZX, {R(ZYDIS_REGISTER_R14D), M(ZYDIS_REGISTER_R12D, 0, 2)}, true);
+                ZydisEncoderOperand m;
+                const int64_t after = o0.mem.base == ZYDIS_REGISTER_ESP ? 2 : 0;
+                if (!mem_operand(o0, m, after) || !a.op(ZYDIS_MNEMONIC_MOV, {m, R(ZYDIS_REGISTER_R14W)}, true)) {
+                    return FAIL;
+                }
+                esp_add(2);
                 return CONTINUE;
             }
             if (in.operand_width != 32) {
@@ -978,10 +1219,32 @@ struct Translator {
             }
             esp_add(32);
             return CONTINUE;
+        case ZYDIS_MNEMONIC_PUSHA:
+            /* 66 60: the 16-bit registers, 2 bytes each, SP as it was
+             * (Rockstar's timer reads wrap RDTSC in PUSHAW / POPAW: a system
+             * op each until here) */
+            for (int i = 0; i < 8; i++) {
+                a.op(ZYDIS_MNEMONIC_MOV, {M(ZYDIS_REGISTER_R12D, -2 * (i + 1), 2), R(k_r16[i])}, true);
+            }
+            esp_add(-16);
+            return CONTINUE;
+        case ZYDIS_MNEMONIC_POPA:
+            /* 66 61: the low halves only, SP's word skipped */
+            for (int i = 7; i >= 0; i--) {
+                if (i != 4) {
+                    a.op(ZYDIS_MNEMONIC_MOV, {R(k_r16[i]), M(ZYDIS_REGISTER_R12D, 2 * (7 - i), 2)}, true);
+                }
+            }
+            esp_add(16);
+            return CONTINUE;
         case ZYDIS_MNEMONIC_PUSHFD:
             return pushfd() ? CONTINUE : FAIL;
         case ZYDIS_MNEMONIC_POPFD:
             return popfd() ? CONTINUE : FAIL;
+        case ZYDIS_MNEMONIC_PUSHF:
+            return pushf16() ? CONTINUE : FAIL;
+        case ZYDIS_MNEMONIC_POPF:
+            return popf16() ? CONTINUE : FAIL;
         case ZYDIS_MNEMONIC_LEAVE:
             if (in.operand_width != 32) {
                 return FAIL;
@@ -1057,9 +1320,21 @@ struct Translator {
                 a.op(ZYDIS_MNEMONIC_MOV, {m, I(0x3B)}, true);
             }
             return CONTINUE;
+        case ZYDIS_MNEMONIC_LDS: case ZYDIS_MNEMONIC_LES: {
+            /* a far pointer loaded (C5 /r, C4 /r): the register takes the
+             * offset; the selector's segment register stays the flat
+             * model's, as MOV to one does */
+            ZydisEncoderOperand m;
+            if (o0.type != ZYDIS_OPERAND_TYPE_REGISTER || ops[1].type != ZYDIS_OPERAND_TYPE_MEMORY ||
+                !mem_operand(ops[1], m)) {
+                return FAIL;
+            }
+            m.mem.size = (uint16_t)(in.operand_width / 8);
+            return a.op(ZYDIS_MNEMONIC_MOV, {R(remap(o0.reg.value)), m}, true) ? CONTINUE : FAIL;
+        }
         case ZYDIS_MNEMONIC_STR: case ZYDIS_MNEMONIC_SLDT: case ZYDIS_MNEMONIC_LAR: case ZYDIS_MNEMONIC_LSL:
         case ZYDIS_MNEMONIC_VERR: case ZYDIS_MNEMONIC_VERW: case ZYDIS_MNEMONIC_RDTSCP:
-        case ZYDIS_MNEMONIC_LDS: case ZYDIS_MNEMONIC_LES: case ZYDIS_MNEMONIC_LFS: case ZYDIS_MNEMONIC_LGS:
+        case ZYDIS_MNEMONIC_LFS: case ZYDIS_MNEMONIC_LGS:
         case ZYDIS_MNEMONIC_LSS: case ZYDIS_MNEMONIC_AAA: case ZYDIS_MNEMONIC_AAD: case ZYDIS_MNEMONIC_AAM:
         case ZYDIS_MNEMONIC_AAS: case ZYDIS_MNEMONIC_DAA: case ZYDIS_MNEMONIC_DAS: case ZYDIS_MNEMONIC_BOUND:
         case ZYDIS_MNEMONIC_ARPL: case ZYDIS_MNEMONIC_SALC:
@@ -1123,6 +1398,7 @@ static void free_all_blocks(NcCpu *cpu)
     cpu->blocks.clear();
     cpu->bypass.clear();
     cpu->pages.clear();
+    std::fill(cpu->page_bits.begin(), cpu->page_bits.end(), 0);
     cpu->incoming.clear();
 }
 
@@ -1134,12 +1410,18 @@ static void flush_all(NcCpu *cpu)
     // dead blocks are in by_host too; free_all_blocks deleted them once
     l1_clear(cpu);
     cpu->code_p = cpu->code_begin;
+    if (cpu->frame) {
+        cpu->frame->shadow_reset = 1; /* the return predictions point into what went (s_restore) */
+    }
     cpu->flushes++;
     nc_log("hakuX-native", "cpu: translation buffer flushed (%llu so far)", (unsigned long long)cpu->flushes);
 }
 
 static void link_block(NcCpu *cpu, Block *b)
 {
+    if (g_smc_check) {
+        return; /* every exit through its stub and the lookup */
+    }
     for (unsigned i = 0; i < b->exits.size(); i++) {
         Exit &e = b->exits[i];
         auto it = cpu->blocks.find(e.target);
@@ -1167,6 +1449,15 @@ static void kill_block(NcCpu *cpu, Block *b)
         return;
     }
     b->dead = true;
+    /* Its own exits back to their stubs. Its code still runs once more when
+     * a return predicted before it died comes back into it (a call below
+     * made the invalidation: a protection change, memory freed), and a
+     * chained exit then went on into the next block's dead code, the old
+     * translation of what was just replaced: the incoming list below skips
+     * sites in dead blocks. Through the stub the dispatcher finds the new. */
+    for (Exit &e : b->exits) {
+        patch_rel32(e.rel32, e.stub);
+    }
     if (b->bypass) {
         cpu->bypass.erase(b->eip);
         return;
@@ -1189,6 +1480,7 @@ static Block *translate(NcCpu *cpu, uint32_t eip, bool bypass)
     if ((size_t)(cpu->code_end - cpu->code_p) < 64 * 1024) {
         flush_all(cpu);
     }
+    g_ok_page = UINT64_MAX;
     Block *b = new Block();
     b->eip = eip;
     b->bypass = bypass;
@@ -1204,11 +1496,19 @@ static Block *translate(NcCpu *cpu, uint32_t eip, bool bypass)
     const unsigned max_insns = 256;
     unsigned n = 0;
     bool ended = false;
+    /* The guest bytes the block was made from end here: the instruction it
+     * stops at without translating (a hook, one with no translation, one
+     * that doesn't decode) is one of them. A block of only that, at a
+     * page's first byte, was listed under no page, and no invalidation of
+     * its code ever found it. */
+    uint64_t dep_end = (uint64_t)eip + 1;
+    bool probe = false;
     while (!ended) {
         const uint32_t at = t.eip;
         b->map.push_back({(uint32_t)(a.p - b->code), at, 0});
         const bool hooked = cpu->cfg.hook_query && !(bypass && n == 0) && cpu->cfg.hook_query(cpu->cfg.opaque, at);
         if (hooked) {
+            dep_end = std::max(dep_end, (uint64_t)at + 1);
             t.sysop(at, NC_SYSOP_HOOK, 0);
             break;
         }
@@ -1224,6 +1524,9 @@ static Block *translate(NcCpu *cpu, uint32_t eip, bool bypass)
                  * page fault path (its page may be mapped by then) */
                 a.op(ZYDIS_MNEMONIC_MOV, {R(ZYDIS_REGISTER_R11B), M(ZYDIS_REGISTER_NONE, (int32_t)at, 1)}, true);
                 t.exit_to(at);
+                /* not this address's block: kept, its exit came back to
+                 * itself for ever once the page was mapped */
+                probe = true;
             }
             break;
         }
@@ -1241,6 +1544,7 @@ static Block *translate(NcCpu *cpu, uint32_t eip, bool bypass)
         const bool mmx66 = avail >= 3 && ib[0] == 0x66 && ib[1] == 0x0F && nc_x86_mmx_opcode(ib[2]);
         if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&cpu->dec, (const void *)(uintptr_t)(at + (mmx66 ? 1 : 0)),
                                                  avail - (mmx66 ? 1 : 0), &in, ops))) {
+            dep_end = std::max(dep_end, (uint64_t)at + 1);
             t.sysop(at, NC_SYSOP_UD2, 0);
             break;
         }
@@ -1253,6 +1557,7 @@ static Block *translate(NcCpu *cpu, uint32_t eip, bool bypass)
             a.p = insn_start;
             a.failed = false;
             b->map.back().swap = 0;
+            b->map.back().borrow = 0;
             static unsigned logged;
             if (logged++ < 64) {
                 char txt[96] = "?";
@@ -1261,6 +1566,7 @@ static Block *translate(NcCpu *cpu, uint32_t eip, bool bypass)
                 ZydisFormatterFormatInstruction(&fmt, &in, ops, in.operand_count_visible, txt, sizeof(txt), at, nullptr);
                 nc_log("hakuX-native", "cpu: no translation for %08x: %s (a system op)", at, txt);
             }
+            dep_end = std::max(dep_end, (uint64_t)at + in.length);
             t.sysop(at, NC_SYSOP_OTHER, in.length);
             break;
         }
@@ -1269,6 +1575,9 @@ static Block *translate(NcCpu *cpu, uint32_t eip, bool bypass)
         ended = r == Translator::END;
     }
     b->end = t.eip;
+    if (t.eip > eip) {
+        dep_end = std::max(dep_end, (uint64_t)t.eip);
+    }
 
     /* the exits' stubs, after the code: mov r13d, target; jmp dispatch */
     for (auto &pe : t.exits) {
@@ -1286,12 +1595,22 @@ static Block *translate(NcCpu *cpu, uint32_t eip, bool bypass)
     b->code_end = a.p;
     cpu->code_p = (uint8_t *)(((uintptr_t)a.p + 15) & ~(uintptr_t)15);
     cpu->by_host.push_back(b);
-    for (uint32_t p = eip >> 12; p <= ((b->end ? b->end - 1 : eip) >> 12); p++) {
-        cpu->pages[p].push_back(b);
+#ifdef NC_CPU_DIAG
+    if (g_smc_check && !probe && dep_end - eip <= 0x4000 && guest_readable(eip, (uint32_t)(dep_end - eip))) {
+        b->src.assign((const uint8_t *)(uintptr_t)eip, (const uint8_t *)(uintptr_t)eip + (dep_end - eip));
     }
-    if (bypass) {
-        cpu->bypass[eip] = b;
+#endif
+    if (probe) {
+        b->dead = true; /* made again each time it is reached, until the page is there */
     } else {
+        for (uint64_t p = eip >> 12; p <= ((dep_end - 1) >> 12) && p <= 0xFFFFFu; p++) {
+            cpu->pages[(uint32_t)p].push_back(b);
+            cpu->page_bits[p >> 6] |= 1ull << (p & 63);
+        }
+    }
+    if (bypass && !probe) {
+        cpu->bypass[eip] = b;
+    } else if (!bypass && !probe) {
         cpu->blocks[eip] = b;
         l1_set(cpu, eip, b->code);
     }
@@ -1310,8 +1629,28 @@ static uint8_t *code_for(NcCpu *cpu, uint32_t eip)
     }
     auto it = cpu->blocks.find(eip);
     if (it != cpu->blocks.end()) {
-        l1_set(cpu, eip, it->second->code);
-        return it->second->code;
+        Block *b = it->second;
+#ifdef NC_CPU_DIAG
+        if (g_smc_check && !b->src.empty()) {
+            g_ok_page = UINT64_MAX;
+            const uint32_t n = (uint32_t)b->src.size();
+            if (guest_readable(eip, n) && memcmp((const void *)(uintptr_t)eip, b->src.data(), n)) {
+                static unsigned logged;
+                if (logged++ < 200) {
+                    uint32_t at = 0;
+                    while (((const uint8_t *)(uintptr_t)eip)[at] == b->src[at]) {
+                        at++;
+                    }
+                    nc_log("hakuX-native", "cpu: smc: the code at %08x changed with no invalidation (first at %08x, %u bytes)",
+                           eip, eip + at, n);
+                }
+                kill_block(cpu, b);
+                return translate(cpu, eip, false)->code;
+            }
+        }
+#endif
+        l1_set(cpu, eip, b->code);
+        return b->code;
     }
     return translate(cpu, eip, false)->code;
 }
@@ -1328,6 +1667,204 @@ static uint8_t *next_for(NcCpu *cpu, NcFrame *f)
     return code_for(cpu, eip);
 }
 
+/* ------------------------------------------- instructions run in C */
+
+static uint32_t parity_even(uint8_t v)
+{
+    v ^= v >> 4;
+    v ^= v >> 2;
+    v ^= v >> 1;
+    return (v & 1) ? 0 : 0x4;
+}
+
+/* SF, ZF and PF of a byte result into flags (the others as given). */
+static uint64_t szp8(uint64_t fl, uint8_t v)
+{
+    fl &= ~(uint64_t)0xC4;
+    return fl | (v & 0x80) | (v ? 0 : 0x40) | parity_even(v);
+}
+
+/* User-mode instructions 64-bit mode has no encoding for, which the
+ * translator therefore can't pass to the host: the ASCII and decimal
+ * adjusts, SALC, BOUND, INTO, ENTER with a nesting level and the 16-bit
+ * LEAVE. They left to the core as system ops it didn't know, and the title
+ * stopped there. Run here on the frame instead (the flags are the host's
+ * image in f->eflags); true when done, EIP past the instruction. What
+ * faults on a console (BOUND out of range, INTO with OF set, AAM 0) stays
+ * the core's. */
+static bool emulate(NcCpu *cpu, NcFrame *f)
+{
+    const uint32_t eip = (uint32_t)f->rip;
+    g_ok_page = UINT64_MAX;
+    if (!guest_readable(eip, 1)) {
+        return false;
+    }
+    const uint32_t avail = guest_readable(eip, ZYDIS_MAX_INSTRUCTION_LENGTH) ? ZYDIS_MAX_INSTRUCTION_LENGTH
+                                                                              : 0x1000 - (eip & 0xFFF);
+    ZydisDecodedInstruction in;
+    ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&cpu->dec, (const void *)(uintptr_t)eip, avail, &in, ops))) {
+        return false;
+    }
+    uint64_t fl = f->eflags;
+    const bool cf = fl & 0x1, af = fl & 0x10;
+    uint32_t eax = (uint32_t)f->gregs[NC_EAX];
+    uint8_t al = (uint8_t)eax, ah = (uint8_t)(eax >> 8);
+    auto set_ax = [&](uint8_t h, uint8_t l) { f->gregs[NC_EAX] = (eax & 0xFFFF0000u) | (uint32_t)h << 8 | l; };
+    switch (in.mnemonic) {
+    case ZYDIS_MNEMONIC_AAM: {
+        const uint8_t base = (uint8_t)ops[0].imm.value.u;
+        if (!base) {
+            return false; /* a divide error: the core's */
+        }
+        ah = al / base;
+        al = al % base;
+        set_ax(ah, al);
+        fl = szp8(fl & ~(uint64_t)0x811, al); /* OF, AF, CF undefined: clear, as a P6 leaves them */
+        break;
+    }
+    case ZYDIS_MNEMONIC_AAD: {
+        const uint8_t base = (uint8_t)ops[0].imm.value.u;
+        al = (uint8_t)(al + ah * base);
+        set_ax(0, al);
+        fl = szp8(fl & ~(uint64_t)0x811, al);
+        break;
+    }
+    case ZYDIS_MNEMONIC_AAA:
+    case ZYDIS_MNEMONIC_AAS: {
+        uint16_t ax = (uint16_t)eax;
+        const bool adjust = (al & 0x0F) > 9 || af;
+        if (adjust) {
+            ax = in.mnemonic == ZYDIS_MNEMONIC_AAA ? (uint16_t)(ax + 0x106) : (uint16_t)(ax - 6 - 0x100);
+        }
+        ax &= 0xFF0F;
+        f->gregs[NC_EAX] = (eax & 0xFFFF0000u) | ax;
+        fl = (fl & ~(uint64_t)0x11) | (adjust ? 0x11 : 0);
+        break;
+    }
+    case ZYDIS_MNEMONIC_DAA:
+    case ZYDIS_MNEMONIC_DAS: {
+        const bool add = in.mnemonic == ZYDIS_MNEMONIC_DAA;
+        const uint8_t old_al = al;
+        bool ncf = false, naf = false;
+        if ((al & 0x0F) > 9 || af) {
+            ncf = cf || (add ? al > 0xF9 : al < 6);
+            al = add ? (uint8_t)(al + 6) : (uint8_t)(al - 6);
+            naf = true;
+        }
+        if (old_al > 0x99 || cf) {
+            al = add ? (uint8_t)(al + 0x60) : (uint8_t)(al - 0x60);
+            ncf = true;
+        } else if (add) {
+            ncf = false;
+        }
+        f->gregs[NC_EAX] = (eax & 0xFFFFFF00u) | al;
+        fl = szp8((fl & ~(uint64_t)0x11) | (ncf ? 0x1 : 0) | (naf ? 0x10 : 0), al);
+        break;
+    }
+    case ZYDIS_MNEMONIC_SALC:
+        f->gregs[NC_EAX] = (eax & 0xFFFFFF00u) | (cf ? 0xFF : 0);
+        break;
+    case ZYDIS_MNEMONIC_INTO:
+        if (fl & 0x800) {
+            return false; /* the overflow trap: the core's */
+        }
+        break;
+    case ZYDIS_MNEMONIC_BOUND: {
+        /* index register against a pair of signed bounds in memory */
+        const ZydisDecodedOperand &m = ops[1];
+        if (ops[0].type != ZYDIS_OPERAND_TYPE_REGISTER || m.type != ZYDIS_OPERAND_TYPE_MEMORY ||
+            in.address_width != 32) {
+            return false;
+        }
+        auto reg = [&](ZydisRegister r) -> uint32_t {
+            return r == ZYDIS_REGISTER_NONE ? 0 : (uint32_t)f->gregs[ZydisRegisterGetId(r) & 7];
+        };
+        uint32_t ea = reg(m.mem.base) + reg(m.mem.index) * (m.mem.index == ZYDIS_REGISTER_NONE ? 0 : m.mem.scale) +
+                      (m.mem.disp.has_displacement ? (uint32_t)m.mem.disp.value : 0);
+        if (m.mem.segment == ZYDIS_REGISTER_FS) {
+            ea += cpu->fs_base;
+        }
+        const unsigned bytes = in.operand_width / 8;
+        if (!guest_readable(ea, 2 * bytes)) {
+            return false;
+        }
+        int32_t idx, lo, hi;
+        if (bytes == 2) {
+            int16_t b[2];
+            memcpy(b, (const void *)(uintptr_t)ea, 4);
+            idx = (int16_t)reg(ops[0].reg.value);
+            lo = b[0];
+            hi = b[1];
+        } else {
+            int32_t b[2];
+            memcpy(b, (const void *)(uintptr_t)ea, 8);
+            idx = (int32_t)reg(ZydisRegisterGetLargestEnclosing(ZYDIS_MACHINE_MODE_LEGACY_32, ops[0].reg.value));
+            lo = b[0];
+            hi = b[1];
+        }
+        if (idx < lo || idx > hi) {
+            return false; /* the bound range exception: the core's */
+        }
+        break;
+    }
+    case ZYDIS_MNEMONIC_ENTER: {
+        /* with a nesting level (the plain one is translated): the outer
+         * frames' pointers copied down, as the processor does */
+        const uint32_t size = (uint16_t)ops[0].imm.value.u, level = (uint32_t)ops[1].imm.value.u & 31;
+        if (in.operand_width != 32) {
+            return false;
+        }
+        uint32_t esp = (uint32_t)f->gregs[NC_ESP], ebp = (uint32_t)f->gregs[NC_EBP];
+        const uint32_t low = esp - 4 * (level + 1);
+        if (low > esp || !guest_readable(low, 4 * (level + 1)) || (level > 1 && !guest_readable(ebp - 4 * (level - 1), 4 * (level - 1)))) {
+            return false;
+        }
+        auto push = [&](uint32_t v) {
+            esp -= 4;
+            memcpy((void *)(uintptr_t)esp, &v, 4);
+        };
+        push(ebp);
+        const uint32_t frame = esp;
+        for (uint32_t i = 1; i < level; i++) {
+            ebp -= 4;
+            uint32_t v;
+            memcpy(&v, (const void *)(uintptr_t)ebp, 4);
+            push(v);
+        }
+        if (level) {
+            push(frame);
+        }
+        f->gregs[NC_EBP] = frame;
+        f->gregs[NC_ESP] = esp - size;
+        break;
+    }
+    case ZYDIS_MNEMONIC_LEAVE: {
+        /* 66 C9: ESP from EBP whole (the stack's address size is 32), BP
+         * popped as a word (the operand's) */
+        if (in.operand_width != 16) {
+            return false;
+        }
+        const uint32_t esp = (uint32_t)f->gregs[NC_EBP];
+        if (!guest_readable(esp, 2)) {
+            return false;
+        }
+        uint16_t bp;
+        memcpy(&bp, (const void *)(uintptr_t)esp, 2);
+        f->gregs[NC_EBP] = ((uint32_t)f->gregs[NC_EBP] & 0xFFFF0000u) | bp;
+        f->gregs[NC_ESP] = esp + 2;
+        break;
+    }
+    default:
+        return false;
+    }
+    f->eflags = fl;
+    f->rip = eip + in.length;
+    return true;
+}
+
+static void x87_copy(uint8_t *dst, const uint8_t *src);
+
 /* The host's MXCSR for C code; the guest's x87 control word left alone. */
 extern "C" uint8_t *nc_x86_sysop_entry(NcFrame *f)
 {
@@ -1338,6 +1875,28 @@ extern "C" uint8_t *nc_x86_sysop_entry(NcFrame *f)
     const unsigned size = (info >> 8) & 0xFF;
     if (op == NC_SYSOP_INTERRUPT) {
         InterlockedIncrement64(&g_int_sysops);
+        if (!f->x87_load) {
+            /* An interrupt cuts into any guest code, MMX or x87 code with
+             * all eight registers in use among it, and the host code that
+             * serves it is not as free of the x87 as save_state hopes:
+             * MinGW's printf formats floating point on it (long double),
+             * and the core's statistics, formatted every few seconds inside
+             * whichever system op comes then, pushed onto the guest's full
+             * stack: one of its registers (MM7 first) came back as the
+             * indefinite NaN. The registers go to the frame for the
+             * interrupt's time and the hardware's are reset; the restore
+             * loads them again. Other system ops are at instructions of
+             * ordinary code (a kernel call, a port access), where the x87
+             * stack has room. */
+            alignas(16) uint8_t hw[512];
+            __asm__ volatile("fxsave %0" : "=m"(hw));
+            x87_copy(f->fx, hw);
+            f->x87_load = 2;
+            __asm__ volatile("fninit");
+        }
+    }
+    if ((op == NC_SYSOP_OTHER || op == NC_SYSOP_INTO) && emulate(cpu, f)) {
+        return next_for(cpu, f);
     }
     if (!cpu->cfg.sysop(cpu->cfg.opaque, f, op, size)) {
         nc_log("hakuX-native", "cpu: unhandled system op %d at %08x", (int)op, (uint32_t)f->rip);
@@ -1470,7 +2029,7 @@ extern "C" void nc_frame_save(const NcFrame *f, NcCpuContext *c)
         s.gregs[i] = (uint32_t)f->gregs[i];
     }
     s.rip = (uint32_t)f->rip;
-    s.eflags = ((uint32_t)f->eflags & GUEST_FLAGS) | 0x2 | (f->vif ? 0x200 : 0);
+    s.eflags = ((uint32_t)f->eflags & GUEST_FLAGS) | 0x2 | (f->vif ? 0x200 : 0) | (f->vac ? GUEST_AC : 0);
     memcpy(s.fx, f->fx, sizeof(s.fx));
 }
 
@@ -1483,6 +2042,7 @@ extern "C" void nc_frame_load(NcFrame *f, const NcCpuContext *c)
     f->rip = (uint32_t)s.rip;
     f->eflags = (s.eflags & GUEST_FLAGS) | 0x202;
     f->vif = (s.eflags >> 9) & 1;
+    f->vac = (s.eflags >> 18) & 1;
     memcpy(f->fx, s.fx, sizeof(f->fx));
     f->x87_load = 1;
 }
@@ -1564,12 +2124,15 @@ extern "C" void nc_context_import(NcCpuContext *c, const NcCpuState *st)
     for (int bit = 0; bit < 32; bit++) {
         fl |= (uint32_t)(st->flags[bit] & 1) << bit;
     }
-    s.eflags = (fl & (GUEST_FLAGS | 0x200)) | 0x2;
+    s.eflags = (fl & (GUEST_FLAGS | GUEST_AC | 0x200)) | 0x2;
     fx_reset(s.fx);
     memcpy(s.fx + FX_FSW, &st->flags[40], 2);
     memcpy(s.fx + FX_XMM, st->xmm, 8 * 16);
     memcpy(s.fx + FX_ST, st->mm, 8 * 16);
-    memcpy(s.fx + FX_MXCSR, &st->mxcsr, 4);
+    /* only the bits MXCSR has: a reserved one (a damaged state's) faults
+     * the FXRSTOR that brings this context back, in the emulator's own code */
+    const uint32_t mxcsr = st->mxcsr & 0xFFFFu;
+    memcpy(s.fx + FX_MXCSR, &mxcsr, 4);
     memcpy(s.fx + FX_FCW, &st->fcw, 2);
     s.fx[FX_FTW] = st->ftw;
 }
@@ -1614,6 +2177,14 @@ extern "C" NcCpu *nc_cpu_create(const NcCpuConfig *cfg, uint32_t fs_base)
     fx_reset(f->fx);
     cpu->frame = f;
     g_cpu = cpu;
+#ifdef NC_CPU_DIAG
+    if (const char *e = getenv("NC_SMC_CHECK")) {
+        g_smc_check = atoi(e) != 0;
+        if (g_smc_check) {
+            nc_log("hakuX-native", "cpu: NC_SMC_CHECK: every block checked against its code as it is entered (slow)");
+        }
+    }
+#endif
     cpu->veh = AddVectoredExceptionHandler(1, poll_handler);
     nc_log("hakuX-native", "cpu: x86-64 translator, TSC %.1f MHz, KPCR at %08x", tsc_hz() / 1e6, fs_base);
     return cpu;
@@ -1842,19 +2413,16 @@ extern "C" void nc_cpu_run(NcCpu *cpu, const NcCpuContext *c)
 {
     NcFrame *f = cpu->frame;
     cpu->thread_id = GetCurrentThreadId();
+#if HAKUX_DIAG && defined(_WIN32)
+    /* HAKUX_PROF (a build made to investigate): the environment was read at
+     * every entry here, one for each kernel call's return */
     static bool prof_started;
-    const char *pe = getenv("HAKUX_PROF");
+    const char *pe = prof_started ? nullptr : getenv("HAKUX_PROF");
     unsigned ps = 0, pn = 0;
-#ifdef _WIN32
-    if (pe && !prof_started && sscanf(pe, "%u,%u", &ps, &pn) == 2 && pn) {
+    if (pe && sscanf(pe, "%u,%u", &ps, &pn) == 2 && pn) {
         prof_started = true;
         CreateThread(nullptr, 0, prof_thread, new ProfArgs{cpu, ps, pn}, 0, nullptr);
     }
-#else
-    (void)pe;
-    (void)prof_started;
-    (void)ps;
-    (void)pn;
 #endif
     nc_frame_load(f, c);
     f->next_code = (uint64_t)(uintptr_t)next_for(cpu, f);
@@ -1866,34 +2434,44 @@ extern "C" void nc_cpu_invalidate(NcCpu *cpu, uint32_t va, uint32_t len)
     if (!len) {
         return;
     }
-    const uint32_t first = va >> 12, last = (uint32_t)(((uint64_t)va + len - 1) >> 12);
-    if ((uint64_t)(last - first) > cpu->pages.size()) {
-        /* a large range: walk the pages that have blocks */
-        std::vector<uint32_t> hit;
-        for (auto &pg : cpu->pages) {
-            if (pg.first >= first && pg.first <= last) {
-                hit.push_back(pg.first);
-            }
+    const uint32_t first = va >> 12;
+    const uint32_t last = (uint32_t)std::min<uint64_t>(((uint64_t)va + len - 1) >> 12, 0xFFFFFu);
+    for (uint32_t w = first >> 6; w <= (last >> 6); w++) {
+        uint64_t bits = cpu->page_bits[w];
+        if (w == (first >> 6)) {
+            bits &= ~0ull << (first & 63);
         }
-        for (uint32_t p : hit) {
-            for (Block *b : cpu->pages[p]) {
+        if (w == (last >> 6)) {
+            bits &= ~0ull >> (63 - (last & 63));
+        }
+        while (bits) {
+            const unsigned bit = (unsigned)__builtin_ctzll(bits);
+            bits &= bits - 1;
+            cpu->page_bits[w] &= ~(1ull << bit);
+            auto it = cpu->pages.find((w << 6) | bit);
+            if (it == cpu->pages.end()) {
+                continue;
+            }
+            for (Block *b : it->second) {
                 kill_block(cpu, b);
             }
-            cpu->pages.erase(p);
+            cpu->pages.erase(it);
         }
-        return;
-    }
-    for (uint32_t p = first; p <= last; p++) {
-        auto it = cpu->pages.find(p);
-        if (it == cpu->pages.end()) {
-            continue;
-        }
-        for (Block *b : it->second) {
-            kill_block(cpu, b);
-        }
-        cpu->pages.erase(it);
     }
 }
+
+#ifdef NC_CPU_DIAG
+/* Tests: a smaller translation buffer, to reach its flush. */
+extern "C" void nc_cpu_set_code_limit(NcCpu *cpu, size_t bytes)
+{
+    if (bytes >= (128u << 10) && bytes <= CODE_SIZE) {
+        cpu->code_end = cpu->code_begin + bytes;
+        if (cpu->code_p > cpu->code_end) {
+            flush_all(cpu); /* between runs: what is translated is past the new end */
+        }
+    }
+}
+#endif
 
 extern "C" bool nc_cpu_x87_single_check(NcCpu *cpu)
 {
@@ -1956,13 +2534,14 @@ extern "C" uint16_t nc_frame_cs(const NcFrame *f)
 
 extern "C" uint32_t nc_frame_eflags(NcFrame *f)
 {
-    return ((uint32_t)f->eflags & GUEST_FLAGS) | 0x2 | (f->vif ? 0x200 : 0);
+    return ((uint32_t)f->eflags & GUEST_FLAGS) | 0x2 | (f->vif ? 0x200 : 0) | (f->vac ? GUEST_AC : 0);
 }
 
 extern "C" void nc_frame_set_eflags(NcFrame *f, uint32_t eflags)
 {
     f->eflags = (eflags & GUEST_FLAGS) | 0x202;
     f->vif = (eflags >> 9) & 1;
+    f->vac = (eflags >> 18) & 1;
 }
 
 extern "C" uint64_t *nc_frame_regs(NcFrame *f)
@@ -2032,6 +2611,10 @@ extern "C" NcFrame *nc_cpu_fault_frame(NcCpu *cpu, void *ucontext)
         const uint64_t t = f->gregs[m->swap];
         f->gregs[m->swap] = f->gregs[NC_ESP];
         f->gregs[NC_ESP] = t;
+    }
+    if (m->borrow) {
+        /* the register holds an FS operand's address: its value is in R13 */
+        f->gregs[m->borrow - 1] = (uint32_t)ctx->R13;
     }
     f->rip = m->eip;
     f->eflags = (ctx->EFlags & GUEST_FLAGS) | 0x202;

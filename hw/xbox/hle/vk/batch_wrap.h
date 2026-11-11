@@ -157,6 +157,12 @@ static VKAPI_ATTR void VKAPI_CALL w_vkCmdSetCullMode(VkCommandBuffer commandBuff
     R.vkCmdSetCullMode(commandBuffer, cullMode);
 }
 
+static VKAPI_ATTR void VKAPI_CALL w_vkCmdSetDiscardRectangleEXT(VkCommandBuffer commandBuffer, uint32_t firstDiscardRectangle, uint32_t discardRectangleCount, const VkRect2D* pDiscardRectangles)
+{
+    batch_before(commandBuffer);
+    R.vkCmdSetDiscardRectangleEXT(commandBuffer, firstDiscardRectangle, discardRectangleCount, pDiscardRectangles);
+}
+
 static VKAPI_ATTR void VKAPI_CALL w_vkCmdSetDepthBias(VkCommandBuffer commandBuffer, float depthBiasConstantFactor, float depthBiasClamp, float depthBiasSlopeFactor)
 {
     batch_before(commandBuffer);
@@ -347,6 +353,9 @@ static void wrap_table(struct VolkDeviceTable *t)
     }
     if (t->vkCmdSetDepthBias) {
         t->vkCmdSetDepthBias = w_vkCmdSetDepthBias;
+    }
+    if (t->vkCmdSetDiscardRectangleEXT) {
+        t->vkCmdSetDiscardRectangleEXT = w_vkCmdSetDiscardRectangleEXT;
     }
     if (t->vkCmdSetDepthBiasEnable) {
         t->vkCmdSetDepthBiasEnable = w_vkCmdSetDepthBiasEnable;

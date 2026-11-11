@@ -685,7 +685,7 @@ bool nc_mods_state_load(NcRd *r, unsigned v)
         NcModsPatch rec = {{0}};
         nc_rec_get(r, &nc_rec_NcModsPatch, &rec, v);
         rec.xbe[sizeof(rec.xbe) - 1] = 0;
-        const uint8_t *old = rec.n && rec.n <= 256 ? nc_rd_ptr(r, rec.n) : NULL;
+        const uint8_t *old = rec.n && rec.n <= MOD_PATCH_MAX ? nc_rd_ptr(r, rec.n) : NULL;
         const uint8_t *neu = old ? nc_rd_ptr(r, rec.n) : NULL;
         if (!neu) {
             return false;

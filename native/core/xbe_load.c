@@ -99,6 +99,14 @@ bool nc_xbe_load(NcVm *vm, const NcDisc *disc, const char *path, NcKernel *k, Nc
         return false;
     }
 
+    /* an image lives in the title's part of the address space (retail and
+     * debug XBEs are at 0x00010000): one that names the kernel's half would
+     * have its headers read over the kernel's own memory */
+    if (base < 0x10000u || (uint64_t)base + (image_size > hdr_size ? image_size : hdr_size) > 0x7FFE0000u) {
+        nc_log("hakuX-native", "xbe: an image of %u KiB at %08x isn't in the title's address space",
+               (image_size > hdr_size ? image_size : hdr_size) >> 10, base);
+        return false;
+    }
     const uint32_t span = nc_align_up(image_size > hdr_size ? image_size : hdr_size, NC_PAGE);
     if (!nc_xbe_back(vm, base, hdr_size)) {
         return false;
@@ -146,6 +154,12 @@ bool nc_xbe_load(NcVm *vm, const NcDisc *disc, const char *path, NcKernel *k, Nc
 
     /* Kernel thunk table: 0x80000000 | ordinal entries, zero-terminated. */
     for (uint32_t t = x->kernel_thunk;; t += 4) {
+        if (nc_vm_phys(vm, t) == UINT32_MAX || nc_vm_phys(vm, t + 3) == UINT32_MAX) {
+            /* not in what was loaded (a damaged header, or a table in a
+             * section that isn't preloaded): read anyway, it faulted here */
+            nc_log("hakuX-native", "xbe: the kernel thunk table at %08x isn't in the loaded image", t);
+            return false;
+        }
         uint32_t v = nc_vm_rd32(vm, t);
         if (!v) {
             break;

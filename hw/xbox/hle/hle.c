@@ -387,7 +387,9 @@ void hle_init(void)
     hle_prof_init();
     hle_barrier_init(hle_ram_size());
     hle_log("hakuX-hle", "init posture=%s", hle_posture_name(g_hle.posture));
-    if (hle_active()) {
+    /* the reports every second (the decoder's and the back end's counts, the
+     * profile, the debug views): a build made to investigate only */
+    if (HAKUX_DIAG && hle_active()) {
         g_diag_timer = hle_timer_new(diag_tick, NULL);
         hle_timer_mod(g_diag_timer, hle_now_ms() + 1000);
         if (getenv("HAKUX_HLE_PCHIST")) {

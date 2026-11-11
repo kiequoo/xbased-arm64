@@ -68,3 +68,13 @@ One entry per section version (tools/native/statelock.py).
 
 - a thread keeps up to 64 exception dispatches and unwinds in progress (seh_more holds those past the first 8): Unreal Engine 2 titles rethrow from each guarded function's catch block, XIII 9 deep at boot
 - upgraded: v1..v3 states load
+
+## THRD v5 (2026-11-09, after 457fae3b01)
+
+- NcThread.saturation: KeSetBasePriorityThread's +-16 (+1, -1), for KeQueryBasePriorityThread, which returns it as +-16 as on NT; base priorities stay in 1..15 (v4 states: 0, not saturated)
+- upgraded: v1..v4 states load
+
+## THRD v6 (2026-11-10, after f535a59a7e)
+
+- a thread's wait may be a frame latency hold (NcWait.hold, flip_seq): it ends without a status in EAX
+- upgraded: v1..v5 states load

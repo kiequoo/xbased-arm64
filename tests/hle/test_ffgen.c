@@ -40,6 +40,7 @@ static void test_ui_quad(void)
     HT_CHECK(n > 0);
     HT_CHECK(strstr(buf, "(t0 * vDiffuse)") != NULL);        /* MODULATE TEXTURE, DIFFUSE */
     HT_CHECK(strstr(buf, "a >= r") != NULL);                  /* GREATEREQUAL */
+    HT_CHECK(strstr(buf, "r = floor(pc.alpha_ref * 255.0 + 0.5)") != NULL);    /* in eight bits */
     HT_CHECK(strstr(buf, "discard") != NULL);
     dump("ui", "frag");
 }

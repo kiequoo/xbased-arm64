@@ -50,6 +50,9 @@ typedef struct HlePshKey {
     uint32_t dot_map;                   /* PSDotMapping */
     uint32_t input_tex;                 /* PSInputTexture */
     uint32_t compare;                   /* PSCompareMode */
+    uint32_t ckey[4];                   /* the stages' colour keys (A8R8G8B8), where one is on
+                                           (HLE_PSH_CKEY): its alpha 0 where the texture's
+                                           format has none */
     uint8_t alpha_test;                 /* ALPHATESTENABLE */
     uint8_t alpha_func;                 /* D3DCMP_* - 0x200 (0..7) */
     uint8_t flat;
@@ -104,8 +107,34 @@ typedef struct HlePshKey {
  * stage (bit = stage) whose texture was defined with its signed bytes
  * flipped (hle_tex_sign_xor): read centred on 0x80, filtered as signed. */
 #define HLE_PSH_TFLIP(k) ((k)->input_tex & 15)
+/* HlePshKey.tex_modes bits 20-27 (PSTextureModes has 20): per stage, 2 bits
+ * (stage 0 lowest), the colour key's operation, SET_TEXTURE_CONTROL0 1:0: a
+ * fetched texel equal to the stage's SET_COLOR_KEY_COLOR (ckey) has its
+ * alpha 0 (1), is (0, 0, 0, 0) (2), or the pixel is not drawn (3). Bits
+ * 28-31: the stage's texture format has no alpha, and the key's alpha is
+ * not compared (X1R5G5B5, X8R8G8B8). */
+#define HLE_PSH_CKEY(k, s) (((k)->tex_modes >> (20 + 2 * (s))) & 3u)
+#define HLE_PSH_CKEY_NOALPHA(k, s) (((k)->tex_modes >> (28 + (s))) & 1u)
+#define HLE_PSH_CKEY_BITS(s, op, noalpha) \
+    ((uint32_t)((op) & 3u) << (20 + 2 * (s)) | (uint32_t)((noalpha) ? 1u : 0u) << (28 + (s)))
+/* HlePshKey.compare bits 16-19 (PSCompareMode has 16): the stage's texture is
+ * of another kind than its mode fetches, and is read as the NV2A reads it
+ * (psh.c): a 2D texture under a mode that fetches a cube (CUBEMAP,
+ * DOT_STR_CUBE, DOT_RFLCT_DIFF, DOT_RFLCT_SPEC) or a volume (DOT_STR_3D), a
+ * cube under PROJECT2D. */
+#define HLE_PSH_TKIND(k, s) (((k)->compare >> (16 + (s))) & 1u)
+#define HLE_PSH_TKIND_BIT(s) (1u << (16 + (s)))
+/* HlePshKey.compare bits 20-23: the stage's texture has its own border
+ * (cmd.h tex_border, its word in pc.scr: programs only) */
+#define HLE_PSH_BORDER_BIT(s) (1u << (20 + (s)))
+/* HlePshKey.compare bit 24: texture coordinates without perspective (cmd.h tex_affine) */
+#define HLE_PSH_TEX_AFFINE (1u << 24)
 #define HLE_PSH_RECT 0x10u              /* HlePshKey.vol: a linear texture kept to its size */
 #define HLE_PSH_RECT4 0x20u             /* HlePshKey.vol: each stage's in pc.scr (programs) */
+#define HLE_PSH_TWO_SIDE 0x40u          /* HlePshKey.vol: SET_TWO_SIDE_LIGHT_EN: a back face's
+                                           v0 / v1 are the program's oB0 / oB1 */
+#define HLE_PSH_ZTRUNC 0x80u            /* HlePshKey.vol: an integer depth buffer's depth
+                                           truncated to its steps (a title without D3D) */
 
 /* Key from the render-state array (rs[0..56] = the pixel-shader block). */
 void hle_psh_key(const uint32_t *rs, HlePshKey *k);

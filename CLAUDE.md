@@ -12,7 +12,7 @@
 - CI: arm64-only AppImage, caching, short SHA as version on PRs/branches, GitHub release on version tags
 - A/B–X/Y glyph swap toggle (Settings > Interface; relabels hints, does not change button actions)
 - Controller button icons shown immediately when a controller is connected
-- EmuDeck-style Select-modifier combos: Select+Start=quit, +R3=menu, +R1=save, +L1=load, +Y=screenshot, +L3=pause, +R2=fast-forward
+- EmuDeck-style controller defaults via upstream's configurable hotkey system: Select+Start=quit (`IM_HK_QUIT`, our addition), +R3=menu, +R1=save, +L1=load, +Y=screenshot, +L3=pause, +D-pad Right=fast-forward (turbo moved to a button; R2 is a trigger and can't be a `BACK_WITH` combo); all editable in Settings › Shortcuts with game-button suppression
 
 ## Keeping up with upstream
 
@@ -49,6 +49,19 @@ Our `ui.swapab` A/B–X/Y face-button swap (`which ^ 1`, drawing `k_col[gi]` / `
 
 **`tools/release/package_linux.sh`**
 Keep our `ARCH=${ARCH:-$(uname -m)}` line and the `aarch64` references throughout; take upstream's `VERSION` default value. Upstream periodically hardens this to `x86_64` only — revert those changes.
+
+**`native/app/win_main.c` — `SDL_EVENT_GAMEPAD_BUTTON_DOWN` press path**
+Take upstream's `else if (gp && b != SDL_GAMEPAD_BUTTON_BACK && SDL_GetGamepadButton(gp, SDL_GAMEPAD_BUTTON_BACK)) { code = IM_HKP_BACK_WITH + b; }` branch. **Drop upstream's inline `else if (BACK && START) ingame_menu(...)` branch** — we route Back+Start through `IM_HK_QUIT` via the hotkey dispatch, so the inline menu call would fire before the combo can dispatch.
+
+**`native/kernel/ex.c` — `__builtin_ia32_pause`**
+Any new upstream use of `__builtin_ia32_pause` must be guarded:
+```c
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __asm__ volatile("yield" ::: "memory");
+#endif
+```
 
 ## PR workflow
 
@@ -93,7 +106,7 @@ Requires: `sudo pacman -S aarch64-linux-gnu-gcc aarch64-linux-gnu-glibc aarch64-
 
 ## Test device
 
-AYN Odin 3 running Armada OS: `ssh armada@192.168.68.30`
+AYN Odin 3 running Armada OS: `ssh armada@192.168.68.34`
 AppImage at `~/Applications/xbased.AppImage`
 
 ## Commit style

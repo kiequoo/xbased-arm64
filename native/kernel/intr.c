@@ -128,6 +128,9 @@ void nc_intr_isr_line_set(uint8_t line)
 
 static void hold_note(NcKernel *k, uint32_t lines, uint8_t why)
 {
+    if (!HAKUX_DIAG) {
+        return;                         /* (a build's made to investigate) */
+    }
     for (unsigned l = 0; l < NC_IRQ_LINES; l++) {
         if (!(lines & (1u << l))) {
             continue;
@@ -148,6 +151,9 @@ static void hold_note(NcKernel *k, uint32_t lines, uint8_t why)
 
 static void hold_report(unsigned l)
 {
+    if (!HAKUX_DIAG) {
+        return;
+    }
     const uint64_t rise = nc_irq_rise_ns(l);
     const uint64_t lat = rise ? nc_irq_now_ns() - rise : 0;
     if (lat > 8000000ull) {

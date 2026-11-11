@@ -77,6 +77,10 @@ static void skinning(Buf *b, const HleFfhwKey *k)
 
 static void texgen(Buf *b, const HleFfhwKey *k)
 {
+    /* the direction a reflection is taken about: from the eye to the vertex,
+     * or straight ahead for every vertex (SET_TEXGEN_VIEW_MODEL's infinite
+     * viewer: xemu's tests on a console, its pull request 3087) */
+    const char *view = k->texgen_inf ? "vec3(0.0, 0.0, 1.0)" : "normalize(tPos.xyz)";
     for (unsigned s = 0; s < 4; s++) {
         put(b, "    oT%u = v%u;\n", s, 9 + s);
         for (unsigned j = 0; j < 4; j++) {
@@ -87,11 +91,11 @@ static void texgen(Buf *b, const HleFfhwKey *k)
             } else if (g == HLE_FFHW_TG_OBJECT) {
                 put(b, "    oT%u.%c = dot(c[%u], pos);\n", s, c, plane);
             } else if (g == HLE_FFHW_TG_SPHERE && j < 2) {
-                put(b, "    { vec3 r = reflect(normalize(tPos.xyz), tN);\n"
+                put(b, "    { vec3 r = reflect(%s, tN);\n"
                        "      oT%u.%c = r.%c / (2.0 * length(r + vec3(0.0, 0.0, 1.0))) + 0.5; }\n",
-                    s, c, c);
+                    view, s, c, c);
             } else if (g == HLE_FFHW_TG_REFLECTION && j < 3) {
-                put(b, "    oT%u.%c = reflect(normalize(tPos.xyz), tN).%c;\n", s, c, c);
+                put(b, "    oT%u.%c = reflect(%s, tN).%c;\n", s, c, view, c);
             } else if (g == HLE_FFHW_TG_NORMAL && j < 3) {
                 put(b, "    oT%u.%c = tN.%c;\n", s, c, c);
             }
@@ -102,47 +106,60 @@ static void texgen(Buf *b, const HleFfhwKey *k)
     }
 }
 
-static void lighting(Buf *b, const HleFfhwKey *k)
+/* One side's colours: the front's in oD0 / oD1 from the front material and
+ * lights; with two-sided lighting (SET_LIGHT_TWO_SIDE_ENABLE) the back's in
+ * oB0 / oB1, the normal turned round, from the back registers (the back
+ * scene ambient + emission, alpha, emission, specular numbers, the lights'
+ * back colours and SET_COLOR_MATERIAL's back sources): nxdk_pgraph_tests'
+ * Specular_back, the back faces lit in the back lights' colours. */
+static void light_side(Buf *b, const HleFfhwKey *k, bool back)
 {
-    if (!k->lighting) {
-        put(b, "    oD0 = v3;\n    oD1 = v4;\n");
-        return;
-    }
-    const char *alpha = k->src[2] == 1 ? "v3.a" : k->src[2] == 2 ? "v4.a" : "c[%u].w";
+    const uint8_t *src = back ? k->bsrc : k->src;
+    const char *N = back ? "(-tN)" : "tN", *d0 = back ? "oB0" : "oD0", *d1 = back ? "oB1" : "oD1";
+    const unsigned amb = back ? HLE_FFHW_C_BACK_AMBIENT : HLE_FFHW_C_AMBIENT;
+    const unsigned emi = back ? HLE_FFHW_C_BACK_EMISSION : HLE_FFHW_C_EMISSION;
+    const unsigned spc = back ? HLE_FFHW_C_BACK_SPEC : HLE_FFHW_C_SPEC;
+    const char *alpha = src[2] == 1 ? "v3.a" : src[2] == 2 ? "v4.a" : "c[%u].w";
     char a[32];
-    snprintf(a, sizeof(a), alpha, HLE_FFHW_C_AMBIENT);
+    snprintf(a, sizeof(a), alpha, amb);
     /* the ambient source scaled by the emission register, plus the
      * emission source (the scene ambient register for the material: D3D
      * folds ambient * material ambient + emissive into it) */
-    char amb[16];
-    snprintf(amb, sizeof(amb), "c[%u].rgb", HLE_FFHW_C_AMBIENT);
-    put(b, "    oD0 = vec4(%s * c[%u].rgb + %s, %s);\n",
-        k->src[1] == 0 ? amb : src_rgb(k->src[1]), HLE_FFHW_C_EMISSION,
-        k->src[0] == 0 ? amb : src_rgb(k->src[0]), a);
-    put(b, "    oD1 = vec4(0.0, 0.0, 0.0, v4.a);\n");
-    /* the direction to the eye: the eye position for a local viewer, else
-     * along -z (D3D's eye space looks down +z) */
-    if (k->local_eye) {
-        put(b, "    vec3 eyeV = normalize(c[%u].xyz / c[%u].w - tPos.xyz / tPos.w);\n",
-            HLE_FFHW_C_EYE, HLE_FFHW_C_EYE);
+    /* ... as the chip makes it (xemu's tests on a console): with the
+     * emission or the ambient from the material, the scene ambient register
+     * plus the other one's vertex colour scaled by the emission register;
+     * with both from vertex colours, the emission's colour plus the
+     * ambient's scaled by it. (The scene ambient scaled by the emission
+     * register was added to the emission source whatever they were:
+     * nxdk_pgraph_tests' Material_color_source, every case with an emission
+     * off the console's.) */
+    if (src[0] == 0 || src[1] == 0) {
+        put(b, "    %s = vec4(c[%u].rgb, %s);\n", d0, amb, a);
+        const unsigned add = src[0] != 0 ? src[0] : src[1];
+        if (add) {
+            put(b, "    %s.rgb += %s * c[%u].rgb;\n", d0, src_rgb(add), emi);
+        }
     } else {
-        put(b, "    vec3 eyeV = vec3(0.0, 0.0, -1.0);\n");
+        put(b, "    %s = vec4(%s + %s * c[%u].rgb, %s);\n", d0, src_rgb(src[0]), src_rgb(src[1]), emi, a);
     }
+    put(b, "    %s = vec4(0.0, 0.0, 0.0, v4.a);\n", d1);
     for (unsigned i = 0; i < 8; i++) {
         const unsigned t = k->light[i], L = HLE_FFHW_C_LIGHTS + HLE_FFHW_LIGHT_VEC4 * i;
         if (!t) {
             continue;
         }
+        /* its colours: the front's, or the back's (SET_BACK_LIGHT_*_COLOR) */
+        const unsigned lc = back ? HLE_FFHW_C_BACK_LIGHTS + 3 * i : L + HLE_FFHW_L_AMBIENT;
         put(b, "    { /* light %u */\n"
                "      float att = 1.0, nl, nh;\n"
                "      bool lit = true;\n", i);
         if (t == 1) {
             put(b, "      vec3 Ld = normalize(c[%u].xyz);\n"
-                   "      nl = max(dot(tN, Ld), 0.0);\n", L + HLE_FFHW_L_DIRECTION);
+                   "      nl = max(dot(%s, Ld), 0.0);\n", L + HLE_FFHW_L_DIRECTION, N);
             if (k->local_eye) {
-                put(b, "      nh = max(dot(tN, normalize(Ld + eyeV)), 0.0);\n");
+                put(b, "      nh = max(dot(%s, normalize(Ld + eyeV)), 0.0);\n", N);
             } else {
-                put(b, "      nh = max(dot(tN, c[%u].xyz), 0.0);\n", L + HLE_FFHW_L_HALF);
+                put(b, "      nh = max(dot(%s, c[%u].xyz), 0.0);\n", N, L + HLE_FFHW_L_HALF);
             }
         } else {
             put(b, "      vec3 VP = c[%u].xyz - tPos.xyz / tPos.w;\n"
@@ -151,30 +168,70 @@ static void lighting(Buf *b, const HleFfhwKey *k)
                    "      VP = normalize(VP);\n"
                    "      vec3 at = c[%u].xyz;\n"
                    "      att = 1.0 / (at.x + at.y * d + at.z * d * d);\n"
-                   "      nl = max(dot(tN, VP), 0.0);\n"
-                   "      nh = max(dot(tN, normalize(VP + eyeV)), 0.0);\n",
-                L + HLE_FFHW_L_POSITION, L + HLE_FFHW_L_RANGE, L + HLE_FFHW_L_ATTENUATION);
+                   "      nl = max(dot(%s, VP), 0.0);\n"
+                   "      nh = max(dot(%s, normalize(VP + eyeV)), 0.0);\n",
+                L + HLE_FFHW_L_POSITION, L + HLE_FFHW_L_RANGE, L + HLE_FFHW_L_ATTENUATION, N, N);
             if (t == 3) {
-                /* D3D's spot: the direction scaled by 1 / (cos(theta/2) -
-                 * cos(phi/2)), w = -cos(phi/2) times that: rho past the
-                 * outer cone 0, inside the inner one 1, between linear */
+                /* The spot: its direction comes scaled by 1 / (cos(theta/2)
+                 * - cos(phi/2)) with w = -cos(phi/2) times that, so s below
+                 * is 0 at the outer cone and 1 at the inner one. Between
+                 * them the NV2A takes the falloff curve as a ratio of two
+                 * lines, (s + L) / (M s + N), by SET_LIGHT_SPOT_FALLOFF's
+                 * three numbers (the same form as the specular power's;
+                 * xemu's pull request 3078, from its tests on a console). A
+                 * falloff of 1 is (0, 0, 1): the straight line this was for
+                 * every falloff. */
                 put(b, "      vec4 sd = c[%u];\n"
-                       "      float inv = 1.0 / length(sd.xyz), cphi = -inv * sd.w;\n"
-                       "      float sdv = dot(sd.xyz, VP), rho = inv * sdv;\n"
-                       "      if (rho <= cphi) att = 0.0;\n"
-                       "      else if (rho <= inv + cphi) att *= sdv + sd.w;\n",
-                    L + HLE_FFHW_L_SPOT);
+                       "      float s = dot(sd.xyz, VP) + sd.w;\n"
+                       "      if (s <= 0.0) att = 0.0;\n"
+                       "      else if (s < 1.0) {\n"
+                       "        vec3 fo = c[%u].xyz;\n"
+                       "        float dn = fo.y * s + fo.z;\n"
+                       "        att *= s <= -fo.x ? 0.0 : dn == 0.0 ? 1.0 :\n"
+                       "               dn > 0.0 ? clamp((s + fo.x) / dn, 0.0, 1.0) : 0.0;\n"
+                       "      }\n",
+                    L + HLE_FFHW_L_SPOT, L + HLE_FFHW_L_FALLOFF);
             }
         }
+        /* The specular factor: the NV2A has no power function. It takes
+         * n.h through a ratio of two lines, (x + L) / (M x + N), by
+         * SET_SPECULAR_PARAMS' first three numbers, which D3D fits to the
+         * material's power (0 below x = -L, 1 at x = 1); xemu's pull request
+         * 3076, from its tests on a console. The power was worked back from
+         * the numbers and raised here: the same at a power of 1, a wider
+         * foot to the highlight above it, and nothing for numbers that
+         * weren't D3D's. */
         put(b, "      if (lit) {\n"
-               "        float pf = nl == 0.0 || nh == 0.0 ? 0.0 : pow(nh, c[%u].x);\n"
-               "        oD0.rgb += c[%u].rgb * att;\n"
-               "        oD0.rgb += %s * c[%u].rgb * (att * nl);\n"
-               "        oD1.rgb += %s * c[%u].rgb * (att * pf);\n"
+               "        vec3 sc = c[%u].xyz;\n"
+               "        float dn = sc.y * nh + sc.z;\n"
+               "        float pf = nl <= 0.0 || nh <= -sc.x ? 0.0 : dn == 0.0 ? 10000.0 :\n"
+               "                   dn > 0.0 ? clamp((nh + sc.x) / dn, 0.0, 10000.0) : 0.0;\n"
+               "        %s.rgb += %s * c[%u].rgb * att;\n"
+               "        %s.rgb += %s * c[%u].rgb * (att * nl);\n"
+               "        %s.rgb += %s * c[%u].rgb * (att * pf);\n"
                "      }\n"
                "    }\n",
-            HLE_FFHW_C_PARAMS, L + HLE_FFHW_L_AMBIENT, src_rgb(k->src[2]), L + HLE_FFHW_L_DIFFUSE,
-            src_rgb(k->src[3]), L + HLE_FFHW_L_SPECULAR);
+            spc, d0, src_rgb(src[1]), lc + 0, d0, src_rgb(src[2]), lc + 1, d1, src_rgb(src[3]), lc + 2);
+    }
+}
+
+static void lighting(Buf *b, const HleFfhwKey *k)
+{
+    if (!k->lighting) {
+        put(b, "    oD0 = v3;\n    oD1 = v4;\n");
+        return;
+    }
+    /* the direction to the eye: the eye position for a local viewer, else
+     * along -z (D3D's eye space looks down +z) */
+    if (k->local_eye) {
+        put(b, "    vec3 eyeV = normalize(c[%u].xyz / c[%u].w - tPos.xyz / tPos.w);\n",
+            HLE_FFHW_C_EYE, HLE_FFHW_C_EYE);
+    } else {
+        put(b, "    vec3 eyeV = vec3(0.0, 0.0, -1.0);\n");
+    }
+    light_side(b, k, false);
+    if (k->two_side) {
+        light_side(b, k, true);
     }
 }
 
@@ -199,15 +256,25 @@ size_t hle_ffhw_glsl(const uint32_t *tokens, unsigned nslots, const HleVshKey *v
     }
     texgen(&b, &k);
     lighting(&b, &k);
-    put(&b, "    oB0 = v7;\n    oB1 = v8;\n");
+    /* the back colours (two-sided lighting's back faces, psh.c HLE_PSH_TWO_SIDE):
+     * unlit, none (nxdk_pgraph_tests' Specular_back: back faces black with
+     * lighting off, whatever colours the vertices carry); lit two-sided,
+     * the back's own (light_side); lit one-sided, the front ones */
+    if (!k.lighting || !k.two_side) {
+        put(&b, k.lighting ? "    oB0 = oD0;\n    oB1 = oD1;\n" :
+                             "    oB0 = vec4(0.0, 0.0, 0.0, 1.0);\n    oB1 = vec4(0.0, 0.0, 0.0, 1.0);\n");
+    }
+    /* SEPARATE_SPECULAR off: the lights' specular in the diffuse colour,
+     * SPECULAR_ENABLE or not (nxdk_pgraph_tests' Lighting_control NoSpec
+     * pictures: the highlights on the console with it off) */
+    if (!k.separate_spec && k.lighting) {
+        put(&b, k.two_side ? "    oD0.rgb += oD1.rgb;\n    oB0.rgb += oB1.rgb;\n" : "    oD0.rgb += oD1.rgb;\n");
+    }
     if (!k.specular) {
         put(&b, "    oD1 = vec4(0.0, 0.0, 0.0, 1.0);\n    oB1 = vec4(0.0, 0.0, 0.0, 1.0);\n");
     } else {
         if (!k.separate_spec) {
-            if (k.lighting) {
-                put(&b, "    oD0.rgb += oD1.rgb;\n");
-            }
-            put(&b, "    oD1 = v4;\n");
+            put(&b, k.lighting && k.two_side ? "    oD1 = v4;\n    oB1 = v4;\n" : "    oD1 = v4;\n");
         }
         if (!k.alpha_mat_spec) {
             put(&b, "    oD1.a = 1.0;\n    oB1.a = 1.0;\n");
@@ -258,62 +325,4 @@ size_t hle_ffhw_glsl(const uint32_t *tokens, unsigned nslots, const HleVshKey *v
         return 0;
     }
     return hle_vsh_glsl_wrap(vk, body, k.fog != 0, buf, cap);
-}
-
-/* ---- the specular exponent ---- */
-
-/* D3D turns the material's power into six coefficients of the hardware's
- * specular curve; the exponent comes back from the first (and the fourth,
- * the half power's) by piecewise fits over the powers D3D produces (the
- * curve fit of the hardware tests, LLE's pgraph_kelvin_map.c, read as
- * reference). */
-static float fit(float c0, unsigned i)
-{
-    static const struct { double a, b, c; uint8_t ratio; } k_fit[9] = {
-        { 1.000108475163, -9.838607076280, 54.829089549713, 0 },
-        { 1.199164441703, -3.292603784852, 7.799987995214, 0 },
-        { 8.653441252033, 29.189473787191, 43.586027561823, 0 },
-        { -531.307758450301, 117.398468683934, 113.155490738338, 1 },
-        { -4.662713151292, 1.221108944572, 1.217360986939, 1 },
-        { -124.435242105211, 35.401219563514, 35.408114377045, 1 },
-        { 10672560.259502287954, 21565843.555823743343, 10894794.336297152564, 0 },
-        { -51973801.463933646679, -104199997.554352939129, -52225454.356278456748, 0 },
-        { 972270.324080004124, 2025882.096547174733, 1054898.052467488218, 0 },
-    };
-    const double x = c0;
-    return (float)(k_fit[i].ratio ? k_fit[i].a * x / (k_fit[i].b + k_fit[i].c * x)
-                                  : k_fit[i].a + k_fit[i].b * x + k_fit[i].c * x * x);
-}
-
-static float power_of(float c0)
-{
-    /* where each fit starts: the coefficient at powers 1.25, 4, 9, 20, 90,
-     * 375, 650, 1000, 1250 */
-    static const float k_step[9] = {
-        -0.022553957999f, -0.421539008617f, -0.678715527058f, -0.838916420937f,
-        -0.961754500866f, -0.990773200989f, -0.994858562946f, -0.996561050415f,
-        -0.999547004700f,
-    };
-    for (unsigned i = 0; i < 9; i++) {
-        if (c0 > k_step[i]) {
-            return fit(c0, i);
-        }
-    }
-    return 0.0f;
-}
-
-float hle_ffhw_specular_power(const float p[6])
-{
-    if (p[1] > 0.0f && p[2] < 1.0f) {
-        return p[2] - 2.0f * p[0];      /* powers below 1 */
-    }
-    if (p[0] > 0.0f || p[3] > 0.0f) {
-        return 0.0001f;                 /* not D3D's */
-    }
-    const float pw = power_of(p[0]), half = power_of(p[3]);
-    /* past 1250 the half power's coefficients carry it */
-    if (pw == 0.0f || (half > pw && p[0] < -0.1f)) {
-        return 2.0f * half;
-    }
-    return pw;
 }

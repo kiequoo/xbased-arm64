@@ -636,6 +636,9 @@ static uint32_t resume(NcKernel *k, NcThread *t)
     uint32_t prev = t->suspend;
     if (t->suspend && !--t->suspend) {
         k->resched = true;
+        if (t->state == NC_T_WAITING) {
+            nc_ke_check_waits(k);           /* its wait, left while it was suspended */
+        }
     }
     return prev;
 }

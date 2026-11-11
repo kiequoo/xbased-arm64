@@ -22,7 +22,7 @@
 #endif
 
 #ifndef XBASED_VERSION
-#define XBASED_VERSION "1.0.89"
+#define XBASED_VERSION "1.0.104"
 #endif
 
 Dash D;
@@ -1718,11 +1718,17 @@ static int title_repeats(const LibGame *g)
  * same name, region and version (title_repeats 2) */
 static void file_label(const LibGame *g, char *info, size_t n)
 {
-    const char *b = g->g.path;
+    const char *b = g->g.path, *prev = NULL;
     for (const char *q = b; *q; q++) {
         if (*q == '/' || *q == '\\') {
+            prev = b;
             b = q + 1;
         }
+    }
+    if (prev && !SDL_strcasecmp(b, "default.xbe")) {
+        /* an extracted game's XBE: its folder's name */
+        snprintf(info, n, "%.*s", (int)(b - 1 - prev), prev);
+        return;
     }
     snprintf(info, n, "%s", b);
     char *dot = strrchr(info, '.');
@@ -2049,8 +2055,13 @@ static void scr_games(void)
             file_label(g, file, sizeof(file) - 2);
             strcat(file, "  ");
         }
-        snprintf(info, sizeof(info), "%s%s%s%s%s  v%u  %.1f GB", file, pub, *pub ? "  " : "", year,
-                 region_text(g->g.regions), g->g.version, g->g.size / 1073741824.0);
+        /* a game folder's size isn't known (its files aren't added up) */
+        char gb[24] = "";
+        if (g->g.size > 0) {
+            snprintf(gb, sizeof(gb), "  %.1f GB", g->g.size / 1073741824.0);
+        }
+        snprintf(info, sizeof(info), "%s%s%s%s%s  v%u%s", file, pub, *pub ? "  " : "", year,
+                 region_text(g->g.regions), g->g.version, gb);
         ui_text_fit(W - 60, H - 120, info, 20, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_RIGHT, 480);
         char played[256];
         played_text(g, played, sizeof(played));
@@ -2157,7 +2168,11 @@ static void scr_game(void)
     if (g->g.year) {
         snprintf(year, sizeof(year), "%s%d", *pub ? "   " : "", g->g.year);
     }
-    snprintf(info[2], sizeof(info[2]), "%s%s   %.1f GB", pub, year, g->g.size / 1073741824.0);
+    char gb[24] = "";
+    if (g->g.size > 0) {
+        snprintf(gb, sizeof(gb), "   %.1f GB", g->g.size / 1073741824.0);
+    }
+    snprintf(info[2], sizeof(info[2]), "%s%s%s", pub, year, gb);
     for (int i = 0; i < 3; i++) {
         ui_text_fit(70, 160 + ch + 26 * i, info[i], 18, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_LEFT, cw + 20);
     }

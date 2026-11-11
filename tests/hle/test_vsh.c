@@ -49,8 +49,12 @@ static void test_program(void)
     HT_CHECK(strstr(buf, "vec4 m = v3.xyzw;\n    vec4 i = rcp4((R1.wwww).x);\n"
                          "    oD0.xyzw = m.xyzw;\n    R1.w = i.w;") != NULL);
     HT_CHECK(strstr(buf, "oPos.z = m.z;") != NULL);
+    /* w kept within 2^-64 .. 2^64 either side of zero; a w of 0 is not 1 */
+    HT_CHECK(strstr(buf, "clamp(w, uintBitsToFloat(0x1F800000u), uintBitsToFloat(0x5F800000u))") != NULL);
+    HT_CHECK(strstr(buf, "clamp(w, uintBitsToFloat(0xDF800000u), uintBitsToFloat(0x9F800000u))") != NULL);
+    HT_CHECK(strstr(buf, "w == 0.0") == NULL);
     HT_CHECK(strstr(buf, "mulz(oPos.xyzz, c[58].xyzz)") != NULL);   /* R12 reads oPos */
-    HT_CHECK(strstr(buf, "oFog.x = i.w;") != NULL);     /* the top masked component */
+    HT_CHECK(strstr(buf, "oFog.x = i.x;") != NULL);     /* the result's first component */
     HT_CHECK(strstr(buf, "vFog = oFog.x;") != NULL);
     HT_CHECK(strstr(buf, "A0 = int(floor(m.x + 1.0 / 1024.0));") != NULL);
     HT_CHECK(strstr(buf, "c[clamp(A0 + 121, 0, 191)].zwww") != NULL);
@@ -120,8 +124,30 @@ static void test_overflow(void)
     HT_CHECK(hle_vsh_glsl(&k_prog[0][0], NSLOTS, &k, buf, 512) == 0);
 }
 
+/* A point list's size: the program's oPts under point parameters, SET_POINT_SIZE without */
+static void test_point_size(void)
+{
+    HleVshKey k = { .in_mask = 1 };
+    HT_CHECK(hle_vsh_glsl_wrap(&k, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
+    HT_CHECK(strstr(buf, "gl_PointSize = max(oPts.x, 1.0) * float(max((pc.flags >> 16) & 255u, 1u));") != NULL);
+    k.pt_size = HLE_VSH_PT_FIXED | 34;              /* 4.25 pixels */
+    HT_CHECK(hle_vsh_glsl_wrap(&k, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
+    HT_CHECK(strstr(buf, "gl_PointSize = 4.250 * float(max((pc.flags >> 16) & 255u, 1u));") != NULL);
+    HT_CHECK(strstr(buf, "oPts.x, 1.0") == NULL);
+    k.pt_size = HLE_VSH_PT_FIXED | 0x1FF;           /* the most: 63.875 */
+    HT_CHECK(hle_vsh_glsl_wrap(&k, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
+    HT_CHECK(strstr(buf, "gl_PointSize = 63.875 * ") != NULL);
+    k.pt_size = HLE_VSH_PT_FIXED | 3;               /* under a pixel: one */
+    HT_CHECK(hle_vsh_glsl_wrap(&k, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
+    HT_CHECK(strstr(buf, "gl_PointSize = 1.000 * ") != NULL);
+    k.pt_size = HLE_VSH_PT_FIXED;
+    HT_CHECK(hle_vsh_glsl_wrap(&k, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
+    HT_CHECK(strstr(buf, "gl_PointSize = 1.000 * ") != NULL);
+}
+
 int main(void)
 {
+    HT_RUN(test_point_size);
     HT_RUN(test_program);
     HT_RUN(test_attr_kinds);
     HT_RUN(test_no_final);

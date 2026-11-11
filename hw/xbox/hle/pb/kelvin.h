@@ -10,6 +10,8 @@
 
 /* A Kelvin method the decoder ran. */
 void hle_kelvin_method(uint32_t m, uint32_t v);
+/* The register a method wrote last (0: never). */
+uint32_t hle_kelvin_reg(uint32_t m);
 /* The draw state the registers make: render states, texture-stage states,
  * the combiner block (over st's defaults where never written). */
 void hle_kelvin_state(HleCmdState *st);

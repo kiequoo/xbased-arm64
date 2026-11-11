@@ -172,6 +172,16 @@ static bool in_window(const NcVm *vm, uint32_t va)
            (va >= NC_GPU_WINDOW && va - NC_GPU_WINDOW < vm->ram_size);
 }
 
+/* [va, va + len) reaches into one of the two views of all of RAM: a state's
+ * run never does (runs() leaves them out), and one that did would map other
+ * pages where the kernel takes address and page for the same. */
+static bool over_window(const NcVm *vm, uint32_t va, uint64_t len)
+{
+    const uint64_t end = (uint64_t)va + len;
+    return (va < (uint64_t)NC_CONTIG_WINDOW + vm->ram_size && end > NC_CONTIG_WINDOW) ||
+           (va < (uint64_t)NC_GPU_WINDOW + vm->ram_size && end > NC_GPU_WINDOW);
+}
+
 /* The mappings outside the windows, as runs of pages mapped in order:
  * fn(run) each; returns how many. */
 static uint32_t runs(const NcVm *vm, void (*fn)(void *ctx, const NcVmRun *run), void *ctx)
@@ -235,7 +245,8 @@ bool nc_vm_state_load(NcRd *r, unsigned v)
     for (uint32_t i = 0; i < st.nruns; i++) {
         NcVmRun run = {0};
         nc_rec_get(r, &nc_rec_NcVmRun, &run, v);
-        if (r->fail || !run.pages || in_window(vm, run.va) ||
+        if (r->fail || !run.pages || run.pages > vm->ram_size / NC_PAGE ||
+            over_window(vm, run.va, (uint64_t)run.pages * NC_PAGE) ||
             !nc_vm_map(vm, run.va, run.pa, run.pages * NC_PAGE)) {
             return false;
         }

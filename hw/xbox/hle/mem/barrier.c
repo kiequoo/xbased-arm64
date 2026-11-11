@@ -11,6 +11,7 @@
 #include <sched.h>
 
 static HlePageUse g_pu;
+static HlePageFree g_pf;
 static uint64_t g_ram;
 static uint64_t (*g_completed)(void);
 static void (*g_wait)(uint64_t);
@@ -127,6 +128,7 @@ void hle_barrier_init(uint64_t ram_size)
 {
     g_ram = ram_size;
     hle_pageuse_init(&g_pu, ram_size);
+    hle_pagefree_init(&g_pf, ram_size);
     g_contended = g_new0(uint32_t, (ram_size >> 12) / 32 + 1);
     g_cspan = g_new0(uint32_t, ram_size >> 12);
     g_hot = g_new0(uint8_t, ram_size >> 12);
@@ -591,9 +593,15 @@ int hle_mem_stale_neighbour(uint32_t lo, uint32_t hi)
     return r;
 }
 
-/* [pa, pa + len) freed: its guards go, its pages hot no more */
+uint32_t hle_barrier_frees(uint32_t pa, uint32_t len)
+{
+    return hle_pagefree_count(&g_pf, pa, len);
+}
+
+/* [pa, pa + len) freed: counted, its guards go, its pages hot no more */
 void hle_barrier_freed(uint32_t pa, uint32_t len)
 {
+    hle_pagefree_mark(&g_pf, pa, len);
     if (!len || (uint64_t)pa + len > g_ram) {
         return;
     }

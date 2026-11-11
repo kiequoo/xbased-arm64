@@ -62,6 +62,11 @@ void hle_pb_flipped(uint32_t start);
  * target, if drawn since the last swap, is a frame whose flip can come
  * before its FLIP_INCREMENT_WRITE. */
 void hle_pbd_trap(void);
+/* Frames swapped that have left the queue for the display (shown at their
+ * flip, or let go): a count that only grows. Any thread. */
+uint32_t hle_pbd_frames_taken(void);
+/* ... and frames swapped (each FLIP_INCREMENT_WRITE decoded), the same count's start. */
+uint32_t hle_pbd_frames_swapped(void);
 /* Counters for the decoder's log line (swaps: FLIP_INCREMENT_WRITE's and
  * PCRTC_START's presents; rt_uploads: render targets the CPU wrote). */
 void hle_pbd_counts(uint64_t *clears, uint64_t *swaps, unsigned *objects,
@@ -84,11 +89,12 @@ uint32_t hle_pbd_target_rows(uint32_t pa, uint32_t pitch);
  * queued at on the timeline (vk/timeline.c hle_tl_land_copy: behind the
  * landings of the targets over the source whose images are newer, and the
  * copies queued over either range before it; dbase: a blit's destination
- * surface, 0 for M2MF); then hle_pbd_copy_done: a queued one's destination
- * closed to the guest till it lands, the targets over it with their memory
- * newer than their images. */
+ * surface, 0 for M2MF; reads_dst: the copy reads its destination too, a
+ * blend: made now, after every image over either range landed); then
+ * hle_pbd_copy_done: a queued one's destination closed to the guest till it
+ * lands, the targets over it with their memory newer than their images. */
 uint64_t hle_pbd_copy_begin(uint32_t slo, uint32_t sp, uint32_t dlo, uint32_t dp, uint32_t row,
-                            uint32_t rows, uint32_t dbase);
+                            uint32_t rows, uint32_t dbase, bool reads_dst);
 void hle_pbd_copy_done(uint32_t dlo, uint32_t dp, uint32_t row, uint32_t rows, uint64_t dep);
 /* Counters: targets' images landed, copies queued, decoder waits for them */
 void hle_pbd_coh_counts(uint64_t *lands, uint64_t *copies, uint64_t *waits);

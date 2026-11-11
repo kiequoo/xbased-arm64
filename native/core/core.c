@@ -235,7 +235,9 @@ bool nc_core_boot(NcCore *c, int disc_fd)
          * certificate's title name (another edition, another id) */
         char name[41] = "";
         const uint32_t cert = nc_vm_rd32(&c->vm, c->xbe.info.base + 0x118);
-        if (cert >= c->xbe.info.base && cert - c->xbe.info.base < c->xbe.info.sizeof_headers) {
+        /* the certificate's title name (40 characters at +0xC) whole inside the headers that were loaded */
+        if (cert >= c->xbe.info.base && c->xbe.info.sizeof_headers >= 0xC + 82 &&
+            cert - c->xbe.info.base <= c->xbe.info.sizeof_headers - (0xC + 82)) {
             for (unsigned i = 0; i < 40; i++) {
                 const uint16_t ch = (uint16_t)(nc_vm_rd32(&c->vm, cert + 0xC + 2 * i) & 0xFFFF);
                 if (!ch) {
@@ -420,9 +422,18 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
     const uintptr_t pc = ((ucontext_t *)ucontext)->uc_mcontext.pc;
 #endif
     if (sig == SIGFPE) {
-        /* A guest DIV/IDIV's divide error (fault_win.c): the Xbox kernel would
-         * hand it to the title's handlers, which a title rarely has; said
+        /* A guest DIV/IDIV's divide error (fault_win.c): to the title's
+         * handlers, as the Xbox kernel hands it (a divisor of zero, or a
+         * quotient that doesn't fit: si_code says which); with none, said
          * where it happened rather than leaving the process gone unlogged. */
+        NcFrame *df = nc_cpu_fault_frame(c->cpu, ucontext);
+        if (df && (nc_kernel_trap(&c->kernel, df, 0, nc_frame_eip(df)) ||
+                   nc_seh_fault(&c->kernel, df, info->si_code == NC_FPE_OVERFLOW ? NC_STATUS_INTEGER_OVERFLOW
+                                                                                 : NC_STATUS_INTEGER_DIVIDE_BY_ZERO,
+                                nc_frame_eip(df), 0, 0, 0))) {
+            nc_cpu_fault_resume(c->cpu, ucontext);
+            return true;
+        }
         return fault_report(c, pc, 0, "divide error");
     }
     if (sig == SIGBUS && nc_cpu_unaligned_fault(c->cpu, info->si_code, ucontext)) {
@@ -507,7 +518,21 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
                nc_frame_eip(f));
     }
     if (!nc_kernel_page_fault(&c->kernel, f, (uint32_t)va, nc_cpu_fault_is_write(ucontext))) {
-        return fault_report(c, pc, va, "the title doesn't handle it");
+        /* no page-fault handler of the title's: an access violation, to the
+         * thread's exception handlers (a __try around a probe, a title's own
+         * crash handler), as the Xbox kernel raises it */
+        const bool write = nc_cpu_fault_is_write(ucontext);
+        const uint32_t at = nc_frame_eip(f);
+        if (!nc_seh_fault(&c->kernel, f, NC_STATUS_ACCESS_VIOLATION, at, 2, write, (uint32_t)va)) {
+            return fault_report(c, pc, va, "the title doesn't handle it");
+        }
+        static unsigned told;
+        if (told++ < 4) {
+            /* the first few with what led to them: a title that goes on may still be lost */
+            nc_log("hakuX-native-frontier", "guest access violation: %s of %08x at eip %08x, taken by the title's handlers",
+                   write ? "write" : "read", (uint32_t)va, at);
+            nc_kernel_dump_recent(-1);
+        }
     }
     nc_cpu_fault_resume(c->cpu, ucontext);
     return true;

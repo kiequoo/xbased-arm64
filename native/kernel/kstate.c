@@ -86,6 +86,22 @@ bool nc_kern_state_load(NcRd *r, unsigned v)
                k->xbe_base, k->xbe_size, k->kprocess, base, size, kprocess);
         return false;
     }
+    /* A state is a file that may come from anywhere: what indexes the
+     * kernel's own tables has to fit them, and the pool's free ranges have
+     * to be RAM (an allocation clears its range through the contiguous
+     * window). A free count past the list had the allocator read and
+     * rewrite the kernel's memory after it as ranges. */
+    bool fits = k->pool_nfree <= NC_POOL_RANGES && k->threads_hi <= NC_MAX_THREADS;
+    for (unsigned i = 0; fits && i < k->pool_nfree; i++) {
+        const NcRange *fr = &k->pool_free[i];
+        fits = fr->va >= NC_CONTIG_WINDOW && (uint64_t)(fr->va - NC_CONTIG_WINDOW) + fr->len <= k->vm->ram_size;
+    }
+    if (!fits) {
+        nc_log("hakuX-native-state", "kernel: the pool's free list or the thread count doesn't fit (a damaged state)");
+        k->pool_nfree = 0;
+        k->threads_hi = 0;
+        return false;
+    }
     NcKState s = {0};
     s.isr_line = 0xFF;
     nc_rec_get(r, &nc_rec_NcKState, &s, v);
@@ -185,6 +201,15 @@ bool nc_thrd_state_load(NcRd *r, unsigned v)
         }
         NcThread *t = &k->threads[i];
         nc_rec_get(r, &nc_rec_NcThread, t, v);
+        /* a state is a file that may come from anywhere: the counts that
+         * index the thread's own arrays have to fit them (a level of exception
+         * dispatch past the last one was written outside the thread) */
+        if (t->wait.count > NC_MAX_WAIT_OBJECTS || t->ncallouts > NC_MAX_CALLOUTS || t->apc_nest > NC_MAX_APC_NEST ||
+            t->nseh > NC_MAX_SEH || t->napcs > 65536) {
+            nc_log("hakuX-native-state", "threads: thread %u's counts don't fit (a damaged state)", i);
+            memset(t, 0, sizeof(*t));   /* no thread: nothing of it is looked at again */
+            return false;
+        }
         NcCpuState cs = {0};
         nc_rec_get(r, &nc_rec_NcCpuState, &cs, v);
         nc_context_import(&t->ctx, &cs);

@@ -19,7 +19,7 @@ enum {
     IM_LUP, IM_LDOWN, IM_LLEFT, IM_LRIGHT, IM_RUP, IM_RDOWN, IM_RLEFT, IM_RRIGHT,
     IM_INPUTS
 };
-enum { IM_HK_MENU, IM_HK_SAVE, IM_HK_LOAD, IM_HK_TURBO, IM_HK_PAUSE, IM_HK_SHOT, IM_HK_FULL, IM_HOTKEYS };
+enum { IM_HK_MENU, IM_HK_SAVE, IM_HK_LOAD, IM_HK_TURBO, IM_HK_PAUSE, IM_HK_SHOT, IM_HK_FULL, IM_HK_QUIT, IM_HOTKEYS };
 
 /* The Duke's state, as the core's NcPadState (usb.h) holds it. */
 typedef struct ImPad {
@@ -47,9 +47,12 @@ void im_hotkey_name(const Config *c, int h, char *out, size_t n);
 void im_set_hotkey(Config *c, int h, SDL_Keycode k, SDL_Keymod mod);
 
 /* A shortcut's controller combination: none, the Guide button alone (a tap),
- * Guide with another button, the touchpad, or Share. Only buttons the Xbox
- * controller hasn't: no game can mean them (hkpad.<shortcut>). */
-enum { IM_HKP_NONE, IM_HKP_GUIDE, IM_HKP_TOUCHPAD, IM_HKP_SHARE, IM_HKP_WITH };  /* IM_HKP_WITH + SDL button */
+ * Guide with another button, the touchpad, Share (buttons the Xbox
+ * controller hasn't: no game can mean them), or Back with another button
+ * for controllers without a Guide button (the game sees Back pressed, not
+ * the button with it) (hkpad.<shortcut>). */
+enum { IM_HKP_NONE, IM_HKP_GUIDE, IM_HKP_TOUCHPAD, IM_HKP_SHARE, IM_HKP_WITH,
+       IM_HKP_BACK_WITH = IM_HKP_WITH + 64 };   /* IM_HKP_WITH / IM_HKP_BACK_WITH + SDL button */
 int im_hkpad_count(void);                   /* the choices, for the settings' row */
 const char *im_hkpad_value(int i);          /* "none", "guide", "guide+a", ... */
 const char *im_hkpad_label(int i);          /* "Guide + A" */

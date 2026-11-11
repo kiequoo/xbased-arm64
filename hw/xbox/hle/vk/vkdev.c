@@ -134,6 +134,19 @@ static void chain(VkBaseOutStructure **tail, void *s)
     *tail = s;
 }
 
+/* VK_EXT_legacy_vertex_attributes' feature, by its numbers (headers before 1.3.285 lack it):
+ * with it on, an attribute may lie at an address its component size does not divide, as the
+ * console's vertices do (Fable's are 15 bytes, GTA's 9). Without it such a fetch is undefined:
+ * most drivers make it all the same, and those that don't get the vertices copied with their
+ * attributes aligned (HLE_QUIRK_VB_ALIGN). */
+typedef struct HleLegacyVattrFeatures {
+    VkStructureType sType;
+    void *pNext;
+    VkBool32 legacyVertexAttributes;
+} HleLegacyVattrFeatures;
+#define HLE_STYPE_LEGACY_VATTR_FEATURES ((VkStructureType)1000495000)
+#define HLE_LEGACY_VATTR_EXT "VK_EXT_legacy_vertex_attributes"
+
 /* debug.hakux.caps (else HAKUX_HLE_CAPS), read at device creation: "-name"
  * turns a capability off, so its substitute runs (what other vendors'
  * drivers lack), e.g. "-bc,-vids,-push"; "-vk13" makes a 1.3 device a 1.1 one
@@ -347,6 +360,7 @@ int hle_vk_init(void)
     g_autofree VkExtensionProperties *ext = g_new(VkExtensionProperties, ne);
     vkEnumerateDeviceExtensionProperties(v->phys, NULL, &ne, ext);
     bool e_vids = has_ext(ext, ne, VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+    bool e_lva = e_vids && has_ext(ext, ne, HLE_LEGACY_VATTR_EXT);     /* (it needs the other) */
     bool e_eds2 = has_ext(ext, ne, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
     bool e_cbc = has_ext(ext, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     bool e_pv = has_ext(ext, ne, VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
@@ -361,6 +375,8 @@ int hle_vk_init(void)
     bool e_gpl = has_ext(ext, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
                  has_ext(ext, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
     bool e_lr = has_ext(ext, ne, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
+    bool e_bary = has_ext(ext, ne, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
+    bool e_drect = has_ext(ext, ne, VK_EXT_DISCARD_RECTANGLES_EXTENSION_NAME);
     bool e_pd = has_ext(ext, ne, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
     /* Below 1.3 (vk/compat.c): what 1.2 and 1.3 made core, from extensions;
      * a 1.2 device has 1.2's in its core (the structs are core 1.2's then) */
@@ -401,6 +417,7 @@ int hle_vk_init(void)
 
     VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT q_vids = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT };
+    HleLegacyVattrFeatures q_lva = { .sType = HLE_STYPE_LEGACY_VATTR_FEATURES };
     VkPhysicalDeviceExtendedDynamicState2FeaturesEXT q_eds2 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT };
     VkPhysicalDeviceCustomBorderColorFeaturesEXT q_cbc = {
@@ -419,6 +436,8 @@ int hle_vk_init(void)
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT };
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR q_lr = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR };
+    VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR q_bary = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR };
     VkPhysicalDeviceVulkan13Features q13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
     VkPhysicalDeviceVulkan12Features q12 = {
@@ -454,6 +473,7 @@ int hle_vk_init(void)
         if (e_pcc) chain(&tail, &q_pcc);
     }
     if (e_vids) chain(&tail, &q_vids);
+    if (e_lva) chain(&tail, &q_lva);
     if (e_eds2) chain(&tail, &q_eds2);
     if (e_cbc) chain(&tail, &q_cbc);
     if (e_pv) chain(&tail, &q_pv);
@@ -463,6 +483,7 @@ int hle_vk_init(void)
     if (e_eds3) chain(&tail, &q_eds3);
     if (e_gpl) chain(&tail, &q_gpl);
     if (e_lr) chain(&tail, &q_lr);
+    if (e_bary) chain(&tail, &q_bary);
     vkGetPhysicalDeviceFeatures2(v->phys, &q);
     /* the limits the bindless set and the samplers need (Vulkan 1.2's: a 1.1
      * device fails the floor without them) */
@@ -505,6 +526,7 @@ int hle_vk_init(void)
     c->floor_ok = true;
     need(c, v->qfam != UINT32_MAX, "graphics queue");
     c->wide_lines = q.features.wideLines;
+    c->fill_lines = q.features.fillModeNonSolid;
     need(c, q.features.largePoints, "largePoints");
     c->depth_clamp = q.features.depthClamp;
     need(c, ok_tl, "timelineSemaphore");
@@ -548,6 +570,7 @@ int hle_vk_init(void)
         }
     }
     c->vids = e_vids && q_vids.vertexInputDynamicState;
+    c->legacy_vattr = c->vids && e_lva && q_lva.legacyVertexAttributes && !caps_off("lva");
     c->push = v->props.limits.maxPushConstantsSize >= HLE_PUSH_BYTES;
     c->push_desc = e_pd;
     c->cbc_any = q_cbc.customBorderColorWithoutFormat &&
@@ -579,6 +602,15 @@ int hle_vk_init(void)
     /* local read is dynamic rendering's: 1.3 devices only */
     c->local_read = v13 && e_lr && q_lr.dynamicRenderingLocalRead;
     c->fbfetch = c->local_read && !getenv("HAKUX_HLE_NO_FBFETCH");
+    c->bary = e_bary && q_bary.fragmentShaderBarycentric && !getenv("HAKUX_HLE_NO_BARY");
+    if (e_drect && !getenv("HAKUX_HLE_NO_DISCARD_RECTS")) {
+        VkPhysicalDeviceDiscardRectanglePropertiesEXT dp = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DISCARD_RECTANGLE_PROPERTIES_EXT };
+        VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                           .pNext = &dp };
+        vkGetPhysicalDeviceProperties2(v->phys, &p2);
+        c->discard = dp.maxDiscardRectangles >= 8;
+    }
     c->exec_props = has_ext(ext, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
     c->aniso = q.features.samplerAnisotropy;
     c->host_query_reset = v13 ? q12.hostQueryReset : e_hqr && q_hqr.hostQueryReset;
@@ -649,6 +681,8 @@ int hle_vk_init(void)
         .sType = q_gpl.sType, .graphicsPipelineLibrary = VK_TRUE };
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR f_lr = {
         .sType = q_lr.sType, .dynamicRenderingLocalRead = VK_TRUE };
+    VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR f_bary = {
+        .sType = q_bary.sType, .fragmentShaderBarycentric = VK_TRUE };
     VkPhysicalDeviceVulkan13Features f13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
         .synchronization2 = VK_TRUE, .dynamicRendering = VK_TRUE,
@@ -685,6 +719,7 @@ int hle_vk_init(void)
     VkPhysicalDevicePipelineCreationCacheControlFeatures f_pcc = {
         .sType = q_pcc.sType, .pipelineCreationCacheControl = VK_TRUE };
     f.features.wideLines = c->wide_lines;
+    f.features.fillModeNonSolid = c->fill_lines;
     f.features.largePoints = VK_TRUE;
     f.features.depthClamp = c->depth_clamp;
     f.features.shaderSampledImageArrayDynamicIndexing = !c->bindless;
@@ -695,6 +730,8 @@ int hle_vk_init(void)
     f.features.occlusionQueryPrecise = c->occl_precise;
     f_vids.pNext = NULL;
     f_vids.vertexInputDynamicState = VK_TRUE;
+    HleLegacyVattrFeatures f_lva = { .sType = HLE_STYPE_LEGACY_VATTR_FEATURES,
+                                     .legacyVertexAttributes = VK_TRUE };
     tail = v13 ? (VkBaseOutStructure *)&f13 : (VkBaseOutStructure *)&f;
     if (!v13) {
         chain(&tail, &f_tl);
@@ -707,6 +744,7 @@ int hle_vk_init(void)
         if (c->cache_control) chain(&tail, &f_pcc);
     }
     if (u_vids) chain(&tail, &f_vids);
+    if (c->legacy_vattr) chain(&tail, &f_lva);
     if (u_eds2) chain(&tail, &f_eds2);
     if (c->cbc) chain(&tail, &f_cbc);
     if (u_pv) chain(&tail, &f_pv);
@@ -716,6 +754,7 @@ int hle_vk_init(void)
     if (c->eds3) chain(&tail, &f_eds3);
     if (c->gpl) chain(&tail, &f_gpl);
     if (c->fbfetch) chain(&tail, &f_lr);
+    if (c->bary) chain(&tail, &f_bary);
 
     const char *exts[32];
     uint32_t nx = 0;
@@ -738,6 +777,7 @@ int hle_vk_init(void)
         if (c->cache_control) exts[nx++] = VK_EXT_PIPELINE_CREATION_CACHE_CONTROL_EXTENSION_NAME;
     }
     if (u_vids) exts[nx++] = VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME;
+    if (c->legacy_vattr) exts[nx++] = HLE_LEGACY_VATTR_EXT;
     if (u_eds2) exts[nx++] = VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME;
     if (c->cbc) exts[nx++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
     if (u_pv) exts[nx++] = VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME;
@@ -758,6 +798,12 @@ int hle_vk_init(void)
         if (e_pd) {
             exts[nx++] = VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME;
         }
+    }
+    if (c->bary) {
+        exts[nx++] = VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME;
+    }
+    if (c->discard) {
+        exts[nx++] = VK_EXT_DISCARD_RECTANGLES_EXTENSION_NAME;
     }
     if (c->swapchain) {
         exts[nx++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -793,12 +839,12 @@ int hle_vk_init(void)
         vkGetDeviceProcAddr(v->dev, "vkGetAndroidHardwareBufferPropertiesANDROID") : NULL;
     hle_log("hakuX-hle-back", "vk: device \"%s\" api %u.%u.%u driver 0x%x floor=ok "
             "plus: gpl=%d eds3=%d dbuf=%d m5=%d sscaled=%d local_read=%d fbfetch=%d cache_control=%d "
-            "swapchain=%d",
+            "swapchain=%d legacy_vattr=%d",
             v->props.deviceName, VK_API_VERSION_MAJOR(v->props.apiVersion),
             VK_API_VERSION_MINOR(v->props.apiVersion),
             VK_API_VERSION_PATCH(v->props.apiVersion), v->props.driverVersion,
             c->gpl, c->eds3, c->descriptor_buffer, c->maint5, c->sscaled,
-            c->local_read, c->fbfetch, c->cache_control, c->swapchain);
+            c->local_read, c->fbfetch, c->cache_control, c->swapchain, c->legacy_vattr);
     hle_log("hakuX-hle-back", "vk: bc=%d vids=%d push=%d push_desc=%d cbc=%d cbc_any=%d "
             "x4444=%d d24s8=%d bda=%d ahb=%d vk13=%d dyn_render=%d sync2=%d eds1=%d eds2=%d "
             "bindless=%d depth_clamp=%d (0: the substitute runs)", c->bc, c->vids, c->push,

@@ -76,12 +76,15 @@
 #define NV_PTIMER_TIME_0    0x009400u
 #define NV_PTIMER_TIME_1    0x009410u
 #define NV_PTIMER_ALARM_0   0x009420u
+#define NV_PFB_CFG0         0x100200u
 #define NV_PFB_CSTATUS      0x10020Cu
 #define NV_PFB_WBC          0x100410u
 #define NV_PCRTC_INTR_0     0x600100u
 #define NV_PCRTC_INTR_EN_0  0x600140u
 #define NV_PCRTC_START      0x600800u
 #define NV_PCRTC_RASTER     0x600808u
+#define NV_PRAMDAC_NVPLL_COEFF 0x680500u
+#define NV_PRAMDAC_VPLL_COEFF  0x680508u
 
 #define PMC_INTR_PCRTC   (1u << 24)
 #define PMC_INTR_PTIMER  (1u << 20)
@@ -119,7 +122,13 @@ static uint64_t g_disp_vsync_ns, g_disp_period_ns;
  * the vblank followed its own presents, and the game ran at 57 or 62 fps:
  * it runs free instead. */
 static uint64_t g_disp_nominal_ns;
+/* The vsyncs as the presenter's swapchain has them (hle_host_display_sync:
+ * the driver's own instants, where the compositor's above are a thread's
+ * wake after each), the lead its timed presents keep, and when they came
+ * (stale after VSYNC_STALE: the others again). */
+static uint64_t g_sync_vsync_ns, g_sync_period_ns, g_sync_lead_ns, g_sync_fed_ns;
 static bool g_vblank_locked;          /* next_vblank's last: locked to the vsyncs */
+static bool g_vblank_timed;           /* ... and placed for the presenter's timed presents */
 static int64_t g_pick_off_ns = -1;    /* pickups after a vsync (smoothed, 0..period) */
 #define VSYNC_LEAD   3000000ll
 #define VSYNC_STALE  200000000ull
@@ -159,6 +168,11 @@ static uint32_t ld(uint32_t off)
 
 static void census(uint32_t off, bool write, uint32_t v)
 {
+#if !HAKUX_DIAG
+    (void)off;                          /* (a build's made to investigate) */
+    (void)write;
+    (void)v;
+#else
     uint32_t key = off & ~3u;
     unsigned i = (key * 2654435761u) >> 20 & (CENSUS_SLOTS - 1);
     for (unsigned k = 0; k < 16; k++, i = (i + 1) & (CENSUS_SLOTS - 1)) {
@@ -180,6 +194,7 @@ static void census(uint32_t off, bool write, uint32_t v)
         g_census.r[i].rd++;
     }
     g_census.r[i].last = v;
+#endif
 }
 
 /* Once a second from the vblank thread: the busiest registers since. */
@@ -221,8 +236,9 @@ static bool fifo_empty(void)
     return !g_pbmode || ld(NV_PFIFO_CACHE1_DMA_GET) == ld(NV_PFIFO_CACHE1_DMA_PUT);
 }
 
-/* ---- debug: the GPU event trace (host.h hle_host_gpu_trace) ---- */
 uint64_t nc_ke_now_ns(void);           /* native/kernel/ke.c */
+#if HAKUX_DIAG
+/* ---- debug: the GPU event trace (host.h hle_host_gpu_trace) ---- */
 #define GTR_N 32768u
 static struct {
     uint64_t ns;
@@ -277,6 +293,7 @@ void hle_host_gpu_trace_dump(const char *why, uint32_t mark)
         }
     }
 }
+#endif
 
 static uint32_t pmc_intr(void)
 {
@@ -293,9 +310,20 @@ static uint32_t pmc_intr(void)
     return v;
 }
 
+/* The line as the registers have it, looked at and set as one step. The
+ * vblank and alarm threads, the decoder (a trap) and the guest (its ISR
+ * clearing what it handled) each change a register and then come here: with
+ * the look and the set apart, one of them set the level it had seen before
+ * another's change, after that one's: a line left low with an interrupt
+ * pending (taken a vblank late), or high with none (its ISR run for nothing
+ * until the next change). */
+static pthread_mutex_t g_irq_mu = PTHREAD_MUTEX_INITIALIZER;
+
 static void update_irq(void)
 {
+    pthread_mutex_lock(&g_irq_mu);
     nc_irq_set(NV2A_IRQ, (ld(NV_PMC_INTR_EN_0) & 1) && pmc_intr());
+    pthread_mutex_unlock(&g_irq_mu);
 }
 
 /* ---- PTIMER's alarm ---- */
@@ -647,6 +675,24 @@ bool nc_dev_nv2a_vblank_locked(void)
     return __atomic_load_n(&g_vblank_locked, __ATOMIC_RELAXED);
 }
 
+bool nc_dev_nv2a_vblank_timed(void)
+{
+    return __atomic_load_n(&g_vblank_timed, __ATOMIC_RELAXED);
+}
+
+void hle_host_display_sync(uint64_t vsync_ns, uint64_t period_ns, uint64_t lead_ns)
+{
+    __atomic_store_n(&g_sync_vsync_ns, vsync_ns, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_sync_period_ns, period_ns, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_sync_lead_ns, lead_ns, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_sync_fed_ns, now_ns(), __ATOMIC_RELEASE);
+}
+
+bool hle_host_vblank_timed(void)
+{
+    return nc_dev_nv2a_vblank_timed();
+}
+
 void nc_dev_nv2a_display_nominal(uint64_t period_ns)
 {
     __atomic_store_n(&g_disp_nominal_ns, period_ns, __ATOMIC_RELAXED);
@@ -699,13 +745,23 @@ void nc_dev_nv2a_display_pickup(uint64_t ns)
 /* The next vblank after one at prev: a frame later, or locked to the panel
  * (its period times the vsyncs per frame, the phase nudged at most 0.5 ms a
  * vblank so the guest's clock never jumps). */
-static uint64_t next_vblank(uint64_t prev)
+static uint64_t place_vblank(uint64_t prev, bool *locked, bool *timed)
 {
     const uint64_t frame = __atomic_load_n(&g_frame_ns, __ATOMIC_RELAXED);
-    const uint64_t vs = __atomic_load_n(&g_disp_vsync_ns, __ATOMIC_ACQUIRE);
-    const uint64_t pd = __atomic_load_n(&g_disp_period_ns, __ATOMIC_RELAXED);
-    __atomic_store_n(&g_vblank_locked, false, __ATOMIC_RELAXED);
-    if (!vs || !pd || now_ns() - vs > VSYNC_STALE) {
+    uint64_t vs = __atomic_load_n(&g_disp_vsync_ns, __ATOMIC_ACQUIRE);
+    uint64_t pd = __atomic_load_n(&g_disp_period_ns, __ATOMIC_RELAXED);
+    /* the presenter's own, while they come: exact where the compositor's
+     * are a thread's wake */
+    const uint64_t now = now_ns();
+    const uint64_t fed = __atomic_load_n(&g_sync_fed_ns, __ATOMIC_ACQUIRE);
+    const bool exact = fed && now - fed < VSYNC_STALE && __atomic_load_n(&g_sync_period_ns, __ATOMIC_RELAXED);
+    uint64_t lead = 0;
+    if (exact) {
+        vs = __atomic_load_n(&g_sync_vsync_ns, __ATOMIC_RELAXED);
+        pd = __atomic_load_n(&g_sync_period_ns, __ATOMIC_RELAXED);
+        lead = __atomic_load_n(&g_sync_lead_ns, __ATOMIC_RELAXED);
+    }
+    if (!vs || !pd || (!exact && now - vs > VSYNC_STALE)) {
         return prev + frame;                /* no panel (the app in the background) */
     }
     const uint64_t k = (frame + pd / 2) / pd;
@@ -716,14 +772,35 @@ static uint64_t next_vblank(uint64_t prev)
     if (nominal && llabs((int64_t)pd - (int64_t)nominal) > (int64_t)(nominal / 50)) {
         return prev + frame;                /* not the panel's vsyncs (variable refresh): free running */
     }
-    __atomic_store_n(&g_vblank_locked, true, __ATOMIC_RELAXED);
+    *locked = true;
     const uint64_t next = prev + k * pd;
     const int64_t pick = __atomic_load_n(&g_pick_off_ns, __ATOMIC_RELAXED);
-    const int64_t at = pick < 0 ? -VSYNC_LEAD : pick + (int64_t)pd / 2;  /* after a vsync */
+    int64_t at = pick < 0 ? -VSYNC_LEAD : pick + (int64_t)pd / 2;  /* after a vsync */
+    if (lead) {
+        /* The presenter shows a frame `lead` after its vblank (timed
+         * presents): the vblank that much before the middle of a refresh, so
+         * the present falls midway between two vsyncs, as far as can be from
+         * both, and each frame is on for the same refreshes. Placed by where
+         * the presenter happened to pick frames up, which the queue behind
+         * it moves, a flip now and then fell on the pickup: one frame shown
+         * twice and the next never (Burnout 3 at 60 Hz with V-Sync: once in
+         * 45 s). */
+        at = (int64_t)pd / 2 - (int64_t)(lead % pd);
+        *timed = true;
+    }
     const int64_t ph = wrap_half((int64_t)next - (int64_t)vs - at, (int64_t)pd);
     int64_t c = -ph / 8;
     c = c > 500000 ? 500000 : c < -500000 ? -500000 : c;
     return next + (uint64_t)c;
+}
+
+static uint64_t next_vblank(uint64_t prev)
+{
+    bool locked = false, timed = false;
+    const uint64_t next = place_vblank(prev, &locked, &timed);
+    __atomic_store_n(&g_vblank_locked, locked, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_vblank_timed, timed, __ATOMIC_RELAXED);
+    return next;
 }
 
 /* Uncapped (the app's setting: HAKUX_HLE_UNCAP; debug.hakux.uncap 1 / 0
@@ -811,7 +888,9 @@ static uint64_t wait_vblank(uint64_t next, uint64_t last)
                 if (paced) {
                     if (stall != s_stall) {
                         s_stall = stall;
-                        s_frame_t = t;
+                        /* on the limit's grid while frames keep up with it (the
+                         * timer wakes a little late), else from now */
+                        s_frame_t = g_cap_ns && t - s_frame_t < 2 * g_cap_ns ? s_frame_t + g_cap_ns : t;
                     }
                     return t;
                 }
@@ -870,7 +949,9 @@ static void *vblank_thread(void *arg)
         }
         if (g_census.on && next - g_census.t_log >= 1000000000ull) {
             g_census.t_log = next;
-            census_log();
+            if (HAKUX_DIAG) {
+                census_log();
+            }
         }
     }
     return NULL;
@@ -885,9 +966,16 @@ void nc_dev_nv2a_set_ram(uint32_t bytes)
 
 void nc_dev_nv2a_init(void)
 {
-    g_regs = calloc(1, NV2A_SIZE); /* pages are touched only where the guest writes */
+    g_regs = calloc(1, NV2A_SIZE + 16); /* pages are touched only where the guest writes (a word of slack past the end) */
     nc_wr32(g_regs + NV_PMC_BOOT_0, 0x02A000A1u);
     nc_wr32(g_regs + NV_PFB_CSTATUS, 64u << 20);
+    /* What the console's own start-up leaves in them, for code that programs
+     * the chip itself rather than through D3D (pbkit checks both before it
+     * sets its channel up, and gives up on a core clock that isn't the
+     * console's 233.33 MHz: 16.67 MHz * 28 / 2). */
+    nc_wr32(g_regs + NV_PFB_CFG0, 3);                       /* memory partitions */
+    nc_wr32(g_regs + NV_PRAMDAC_NVPLL_COEFF, 0x00011C01u);  /* P 1, N 28, M 1 */
+    nc_wr32(g_regs + NV_PRAMDAC_VPLL_COEFF, 0x0003C20Du);
     char v[PROP_VALUE_MAX] = "";
     hle_prop_get("debug.hakux.nvcensus", v);
     const char *e = getenv("NC_NV2A_CENSUS");
@@ -933,6 +1021,11 @@ void nc_dev_nv2a_vblank_multiply(unsigned n)
 uint64_t hle_host_vblank_count(void)
 {
     return __atomic_load_n(&g_vblanks, __ATOMIC_RELAXED);
+}
+
+uint64_t hle_host_vblank_ns(void)
+{
+    return __atomic_load_n(&g_last_vblank_ns, __ATOMIC_ACQUIRE);
 }
 
 int64_t hle_host_vblank_period_ns(void)
@@ -1004,7 +1097,7 @@ static void misc_write(void *opaque, uint32_t off, uint64_t value, unsigned size
 
 void nc_dev_misc_init(void)
 {
-    g_misc = calloc(1, MISC_SIZE);
+    g_misc = calloc(1, MISC_SIZE + 16);
     const NcMmioDev dev = {"misc", MISC_BASE, MISC_SIZE, misc_read, misc_write, NULL};
     nc_mmio_register(&dev);
 }

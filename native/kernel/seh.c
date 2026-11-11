@@ -290,6 +290,58 @@ static uint64_t RtlRaiseException(NcKernel *k, NcFrame *f, const uint32_t *a)
     return 0;
 }
 
+/* An exception the processor raises in the title's code (an access
+ * violation, a divide error, an invalid opcode, a breakpoint, BOUND's and
+ * INTO's), from the frame at that instruction: dispatched to the thread's
+ * handlers as the Xbox kernel's trap handlers do, with the record a title's
+ * __except filter reads (code, address, and for an access violation whether
+ * it wrote and where). next_eip: where the context goes on if a handler
+ * continues it (the instruction itself for a fault, the one after for INTO's
+ * trap). False, and nothing changed, when no handler is registered or the
+ * stack below has no room for the dispatch: the caller reports it as the
+ * fault no title code took. These went nowhere before: the title stopped at
+ * a fault its own handler would have caught on a console. */
+bool nc_seh_fault(NcKernel *k, NcFrame *f, uint32_t code, uint32_t next_eip, unsigned nparams, uint32_t p0, uint32_t p1)
+{
+#ifndef NC_DESKTOP
+    return false;   /* Android keeps the stop it had: this path was never run there */
+#else
+    NcThread *t = k->current;
+    const uint32_t esp = nc_frame_gpr(f, NC_ESP), eip = nc_frame_eip(f);
+    const uint32_t low = (esp - LV_SIZE) & ~15u;
+    if (!t || low >= esp || chain_head(k) == CHAIN_END) {
+        return false;
+    }
+    for (uint32_t p = low & ~(NC_PAGE - 1); p < esp; p += NC_PAGE) {
+        if (nc_vm_phys(k->vm, p) == UINT32_MAX) {
+            return false;
+        }
+    }
+    NcSeh *l = push_level(k, f, t, esp);
+    if (!l) {
+        return true; /* the stop is asked for */
+    }
+    l->rec = l->base + LV_REC;
+    memset(nc_vm_host(k->vm, l->rec), 0, ER_SIZE);
+    wr(k, l->rec + ER_CODE, code);
+    wr(k, l->rec + ER_ADDRESS, eip);
+    wr(k, l->rec + ER_NPARAMS, nparams);
+    wr(k, l->rec + ER_INFO, p0);
+    wr(k, l->rec + ER_INFO + 4, p1);
+    capture(k, f, l->ctx, next_eip, esp);
+    l->reg = chain_head(k);
+    static unsigned s_logged;
+    if (s_logged++ < 32) {
+        char calls[96];
+        nc_kernel_frame_chain(k, f, calls, sizeof(calls));
+        nc_log("hakuX-native", "seh: t%u takes exception %08x at %08x (%08x %08x): to its handlers | frames%s", t->id,
+               code, eip, p0, p1, calls);
+    }
+    step(k, f, t);
+    return true;
+#endif
+}
+
 /* RtlUnwind(TargetFrame, TargetIp, ExceptionRecord, ReturnValue): calls the
  * handlers above TargetFrame to unwind and unlinks them, then returns. */
 static uint64_t RtlUnwind(NcKernel *k, NcFrame *f, const uint32_t *a)

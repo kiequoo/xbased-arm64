@@ -127,7 +127,7 @@ bool nc_xcheat_load(const char *path, NcXCheat *x)
     }
     const uint32_t texts = rd32(x->data + 0x0E), ids = rd32(x->data + 0x12);
     x->opts_off = rd32(x->data + 0x0A);
-    if (texts > x->size || x->opts_off >= texts || ids + 12 > x->size) {
+    if (texts > x->size || x->opts_off >= texts || ids > x->size - 12) {   /* (not ids + 12: it wraps) */
         nc_xcheat_free(x);
         return false;
     }

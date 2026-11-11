@@ -223,6 +223,32 @@ extern "C" bool nc_vmos_init(NcVm *vm, uint32_t ram_size)
     nc_log("hakuX-native", "vm: %llu MiB of the low 4 GiB reserved for the guest (%u ranges)",
            (unsigned long long)(reserved >> 20), ranges);
 
+    /* The 4 GiB above the guest's stay empty too, as far as they are free.
+     * Host code reaches guest memory as address + length, both the guest's
+     * (a kernel call's buffer and its size): at most 4 GiB past the guest's
+     * last byte. Nothing of the process may ever be there to be read or
+     * written that way: with these reserved, such an access faults and is
+     * reported as the title's. */
+    uint64_t guard = 0;
+    for (at = 1ull << 32; at < (2ull << 32);) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery((void *)(uintptr_t)at, &mbi, sizeof(mbi))) {
+            break;
+        }
+        const uint64_t lo = (uint64_t)(uintptr_t)mbi.BaseAddress, end = lo + mbi.RegionSize;
+        const uint64_t hi = end < (2ull << 32) ? end : (2ull << 32);
+        const uint64_t a = (lo + 0xFFFF) & ~0xFFFFull, b = hi & ~0xFFFFull;
+        if (mbi.State == MEM_FREE && b > a &&
+            VirtualAlloc((void *)(uintptr_t)a, (SIZE_T)(b - a), MEM_RESERVE, PAGE_NOACCESS) == (void *)(uintptr_t)a) {
+            guard += b - a;
+        }
+        at = end;
+    }
+    if (guard != (1ull << 32)) {
+        nc_log("hakuX-native", "vm: %llu MiB of the 4 GiB above the guest's kept empty (the rest is the process's)",
+               (unsigned long long)(guard >> 20));
+    }
+
     g_section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, ram_size, nullptr);
     if (!g_section) {
         nc_log("hakuX-native", "vm: guest RAM section failed: %lu", GetLastError());

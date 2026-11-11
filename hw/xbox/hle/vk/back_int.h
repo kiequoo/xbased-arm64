@@ -219,6 +219,7 @@ typedef struct HleDispFrame {
     uint64_t value;             /* the render timeline's (hle_tl_sem) when it was done */
     VkImage img;
     VkImageView view;
+    uint64_t due_ns;            /* when it is due on screen (0: as it comes) */
 } HleDispFrame;
 bool hle_disp_acquire(HleDispFrame *f);
 /* The slots' generation (made again at a resize): inside use_begin/end. */

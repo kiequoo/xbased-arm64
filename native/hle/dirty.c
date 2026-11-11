@@ -16,6 +16,7 @@
 
 #include "hw/xbox/hle/host.h"
 #include "hw/xbox/hle/mem/barrier.h"
+#include "hw/xbox/hle/vk/back.h"
 #include "native/core/mmio.h"
 
 #include <dlfcn.h>
@@ -75,7 +76,8 @@ static void unguard_written(uint32_t pa, uint32_t len)
 static void freed(uint32_t pa, uint32_t len)
 {
     if (g_vm) {
-        hle_barrier_freed(pa, len);
+        hle_barrier_freed(pa, len);         /* counted first (pbdraw.c obj_freed) */
+        hle_tl_land_freed(pa, len);         /* nothing the GPU drew lands in it later */
     }
 }
 
@@ -441,6 +443,11 @@ static void dirty_sample(uint32_t pa)
     }
 }
 
+/* The last store that faulted on a page nobody holds protected, and how
+ * often in a row (nc_hle_dirty_fault) */
+static __thread uintptr_t t_open_at;
+static __thread unsigned t_open_again;
+
 bool nc_hle_dirty_fault(const siginfo_t *info, void *ucontext)
 {
     if (!g_vm) {
@@ -473,8 +480,21 @@ bool nc_hle_dirty_fault(const siginfo_t *info, void *ucontext)
     }
     const uint8_t wp = __atomic_load_n(&g_vm->wp[pa / NC_PAGE], __ATOMIC_ACQUIRE);
     if (!wp) {
-        /* protected, but not by write tracking: someone else's (the JIT's
-         * code pages), or tracking lost the page (a crash follows) */
+        /* Nobody holds the page protected now. Between the store's fault and
+         * this look another thread may have opened it (a host or a device
+         * write reported there: every view writable again, the page tracked
+         * no more): the store only has to run again. Taken for a fault of
+         * the title's at once, it ended the game on a page it could write.
+         * A store that faults again and again at the same address is
+         * someone else's protection (or tracking lost the page). */
+        const uintptr_t at = (uintptr_t)info->si_addr;
+        if (at != t_open_at) {
+            t_open_at = at;
+            t_open_again = 0;
+        }
+        if (t_open_again++ < 4) {
+            return true;
+        }
         static unsigned s_logged;
         if (s_logged++ < 8) {
             nc_log("hakuX-native-watch", "write fault at guest %08x (pa %08x), a page tracking "
@@ -482,6 +502,7 @@ bool nc_hle_dirty_fault(const siginfo_t *info, void *ucontext)
         }
         return false;
     }
+    t_open_at = 0;                      /* a tracked page's fault: the count above starts again */
     if (wp == NC_WP_WRITTEN) {
         open_view(pa, info->si_addr);   /* written through another view already */
         return true;

@@ -32,6 +32,9 @@ void nc_dev_nv2a_display_nominal(uint64_t period_ns);
 /* True while the vblank is locked to the display's vsyncs (a fixed refresh
  * rate that a frame is a whole number of). */
 bool nc_dev_nv2a_vblank_locked(void);
+/* ... and placed for a presenter that shows each frame a lead after its
+ * vblank (Windows' frame): frames are shown as they come, at their times. */
+bool nc_dev_nv2a_vblank_timed(void);
 /* The presenter looked for a new front image (host monotonic ns): the vblank
  * keeps half a panel period from its pickups. */
 void nc_dev_nv2a_display_pickup(uint64_t ns);

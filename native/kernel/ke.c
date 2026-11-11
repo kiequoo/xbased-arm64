@@ -472,14 +472,25 @@ static void boost(NcThread *t, int inc)
 }
 
 /* Ends the waits that are satisfied (inc: the signal's increment, 0 for a
- * timer's or none) or timed out; the earliest timeout left. */
+ * timer's or none) or timed out; the earliest timeout left. A suspended
+ * thread's wait is left as it is until it is resumed (nc_ps resume): on NT
+ * its suspend APC took it out of the wait, and the signal goes to another
+ * waiter or stays. Satisfied here, a suspended thread took the object and
+ * kept it: AMF Bowling 2004 suspends its cache copier while it waits on the
+ * game's file lock, the copier got the lock as the main thread let it go,
+ * and the main thread waited on it for ever at its first load. */
+/* Frame latency: flips so far (any thread), and a hold asked for (the
+ * flips then, plus one; 0: none) */
+static volatile uint32_t g_frame_flips, g_frame_req;
+#define FRAME_HOLD_MAX_NS 50000000ull
+
 static uint64_t check_waits(NcKernel *k, int inc)
 {
     const uint64_t now = nc_ke_now_ns();
     uint64_t earliest = 0;
     for (unsigned i = 0; i < NC_MAX_THREADS; i++) {
         NcThread *t = &k->threads[i];
-        if (t->state != NC_T_WAITING) {
+        if (t->state != NC_T_WAITING || t->suspend) {
             continue;
         }
         int idx = satisfied(k, t, &t->wait);
@@ -488,6 +499,14 @@ static uint64_t check_waits(NcKernel *k, int inc)
             nc_context_set_gpr(&t->ctx, NC_EAX, (uint32_t)idx);
             t->state = NC_T_READY;
             boost(t, inc);
+        } else if (t->wait.hold) {
+            /* a frame latency hold: until a flip, or its deadline; the
+             * thread was between two instructions, its registers stay */
+            if (__atomic_load_n(&g_frame_flips, __ATOMIC_ACQUIRE) != t->wait.flip_seq || now >= t->wait.deadline_ns) {
+                t->state = NC_T_READY;
+            } else if (!earliest || t->wait.deadline_ns < earliest) {
+                earliest = t->wait.deadline_ns;
+            }
         } else if (t->wait.deadline_ns && now >= t->wait.deadline_ns) {
             /* A delay ends successfully; a wait times out. */
             nc_context_set_gpr(&t->ctx, NC_EAX, t->wait.count ? NC_STATUS_TIMEOUT : NC_STATUS_SUCCESS);
@@ -503,6 +522,50 @@ static uint64_t check_waits(NcKernel *k, int inc)
 uint64_t nc_ke_check_waits(NcKernel *k)
 {
     return check_waits(k, 0);
+}
+
+void nc_ke_frame_flipped(void)
+{
+    __atomic_add_fetch(&g_frame_flips, 1, __ATOMIC_ACQ_REL);
+}
+
+void nc_ke_frame_wait_request(NcKernel *k)
+{
+    __atomic_store_n(&g_frame_req, __atomic_load_n(&g_frame_flips, __ATOMIC_ACQUIRE) + 1u, __ATOMIC_RELEASE);
+    if (k->cpu) {
+        nc_cpu_request_interrupt(k->cpu);   /* at the next block's start */
+    }
+}
+
+static uint8_t *irql(NcKernel *k);
+
+/* The hold asked for: the running thread waits, if it is a thread's own
+ * code at passive or APC level (not an ISR's or a DPC's, nor a thread that
+ * holds a spin lock: the flip it waits for comes by the vblank's ISR and
+ * DPC) and the flip hasn't come meanwhile. */
+void nc_ke_frame_take(NcKernel *k)
+{
+    const uint32_t req = __atomic_exchange_n(&g_frame_req, 0u, __ATOMIC_ACQ_REL);
+    if (!req) {
+        return;
+    }
+    const uint32_t seq = req - 1u;
+    NcThread *t = k->current;
+    if (!t || t->state != NC_T_RUNNING || t->suspend || k->in_isr || k->in_dpc || t == k->isr_thread ||
+        t == k->dpc_thread || k->redirected || *irql(k) >= 2 ||
+        __atomic_load_n(&g_frame_flips, __ATOMIC_ACQUIRE) != seq) {
+        return;
+    }
+    memset(&t->wait, 0, sizeof(t->wait));
+    t->wait.hold = true;
+    t->wait.flip_seq = seq;
+    t->wait.deadline_ns = nc_ke_now_ns() + FRAME_HOLD_MAX_NS;
+    if (!k->wait_due_ns || t->wait.deadline_ns < k->wait_due_ns) {
+        k->wait_due_ns = t->wait.deadline_ns;
+        nc_kernel_clock_arm(k);
+    }
+    t->state = NC_T_WAITING;
+    k->resched = true;
 }
 
 /* After something was signaled (inc: its priority increment): wake waiters,
@@ -1549,18 +1612,30 @@ static NcThread *thread_arg(NcKernel *k, uint32_t kthread)
 
 #define BASE_PRIORITY 8
 
-/* KeSetBasePriorityThread(Thread, Increment) -> old increment. An increment of
- * +-16 saturates to the top or bottom of the dynamic range. */
+/* A thread's base priority as an increment over the process's: +-16 when
+ * saturated (KeSetBasePriorityThread). */
+static int base_increment(const NcThread *t)
+{
+    return t->saturation ? 16 * t->saturation : t->priority - BASE_PRIORITY;
+}
+
+/* KeSetBasePriorityThread(Thread, Increment) -> old increment. As on NT, the
+ * title's threads stay in the variable range: an increment of +-16 saturates
+ * to its top or bottom (15, 1), and any other lands in it, clamped to 1..15.
+ * Angelic Concert gives its idle counter +14: at 22 it ran above the main
+ * thread, which had raised itself to 15 to measure it and never ran again,
+ * a black screen. */
 static uint64_t KeSetBasePriorityThread(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     NcThread *t = thread_arg(k, a[0]);
     if (!t) {
         return 0;
     }
-    int old = t->priority - BASE_PRIORITY;
-    int inc = (int32_t)a[1];
-    int p = inc >= 16 ? 15 : inc <= -16 ? 1 : BASE_PRIORITY + inc;
-    t->priority = p < 1 ? 1 : p > 31 ? 31 : p;
+    const int old = base_increment(t);
+    const int inc = (int32_t)a[1];
+    t->saturation = inc >= 16 ? 1 : inc <= -16 ? -1 : 0;
+    const int p = t->saturation ? (t->saturation > 0 ? 15 : 1) : BASE_PRIORITY + inc;
+    t->priority = p < 1 ? 1 : p > 15 ? 15 : p;
     t->boost = 0;
     k->resched = true;
     return (uint32_t)old;
@@ -1570,7 +1645,7 @@ static uint64_t KeSetBasePriorityThread(NcKernel *k, NcFrame *f, const uint32_t 
 static uint64_t KeQueryBasePriorityThread(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     const NcThread *t = thread_arg(k, a[0]);
-    return t ? (uint32_t)(t->priority - BASE_PRIORITY) : 0;
+    return t ? (uint32_t)base_increment(t) : 0;
 }
 
 /* KeSetPriorityThread(Thread, Priority) -> old priority */

@@ -33,7 +33,7 @@
 > - arm64 Linux build target (FEX x86→arm64 CPU backend + SDL3 desktop frontend)
 > - A/B–X/Y glyph swap toggle — relabels on-screen button hints without changing button actions
 > - Controller button icons shown immediately when a controller is detected
-> - EmuDeck-style Select-modifier combos: Select+Start=quit, +R3=menu, +R1=save, +L1=load, +Y=screenshot, +L3=pause, +R2=fast-forward
+> - EmuDeck-style controller defaults: Select+Start=quit, +R3=menu, +R1=save, +L1=load, +Y=screenshot, +L3=pause, +D-pad Right=fast-forward — all configurable in Settings › Shortcuts alongside a Quit shortcut
 >
 > **[Download arm64 Linux AppImage](https://github.com/kiequoo/xbased-arm64/releases/latest)** · [Build from source](BUILDING.md)
 
@@ -56,8 +56,8 @@ No BIOS, MCPX ROM or hard-disk image is needed.
 
 | Platform | File | |
 |---|---|---|
-| **Windows** 10/11 (x64) | `xbased-1.0.89-windows-x64.zip` | Unzip anywhere and run `xbased.exe`. Portable: everything stays in its folder. |
-| **Linux** (x86-64) | `xbased-1.0.89-x86_64.AppImage` | `chmod +x` it and run. Ubuntu 22.04 or newer, or any distribution of the same age. |
+| **Windows** 10/11 (x64) | `xbased-1.0.104-windows-x64.zip` | Unzip anywhere and run `xbased.exe`. Portable: everything stays in its folder. |
+| **Linux** (x86-64) | `xbased-1.0.104-x86_64.AppImage` | `chmod +x` it and run. Ubuntu 22.04 or newer, or any distribution of the same age. |
 
 Get them from **[Releases](https://github.com/crazyriddler/xbased/releases/latest)**.
 
@@ -107,6 +107,8 @@ xbased doesn't include any copyrighted Xbox software.
   it, pick your own cover image, hide it, or make a **desktop shortcut** that
   starts it straight away (handy for Steam and other front ends).
 - **Disc images**: ISO, XISO and **CHD** (`chdman createdvd` or `createcd`).
+- **Extracted games**: a folder with the game's `default.xbe` and its files
+  plays as the disc, and shows in the library like an image.
 - **Memory manager**: your games' saves with their icons; export, import and
   delete.
 - **Import from xemu**: xemu's saves copied in and re-signed so games accept
@@ -158,7 +160,8 @@ xbased doesn't include any copyrighted Xbox software.
   gamepad: states, settings, controls, restart, back to the dashboard.
 - **Shortcuts**: F5 quick save, F8 quick load, Tab fast forward, F2 pause,
   F12 screenshot, F11 full screen; all configurable, with Ctrl, Alt or Shift
-  too, and on the controller as Guide plus a button, the touchpad or Share.
+  too, and on the controller as Guide or Back plus a button, the touchpad
+  or Share.
 
 </td>
 <td valign="top">
@@ -227,7 +230,7 @@ xbased doesn't include any copyrighted Xbox software.
 3. Choose a game in **Games**. Box art downloads automatically (it can be
    turned off).
 
-Command line: `xbased <image.iso or .chd> [options]` starts a game directly; options
+Command line: `xbased <image.iso, .chd or a game's folder> [options]` starts a game directly; options
 are the same as the settings files' lines (`scale=2`, `uncap`, `crt=2`,
 `fullscreen=0`, `mod=<patch>`...). Settings are kept in `xbased.ini` (global)
 and `games/<TITLE ID>.<version>.ini` (per game) beside the executable on
@@ -243,12 +246,14 @@ Windows, in `~/.local/share/xbased/` on Linux.
 | Start / Back | Enter / Backspace | Stick clicks | F / H |
 
 **Shortcuts:** F1 menu, F5 quick save, F8 quick load (Shift: slot 2), Tab fast
-forward (hold), F2 pause, F12 screenshot, F11 full screen. On a gamepad,
-Back + Start or a tap of the Guide button opens the menu and Share takes a
-screenshot. In Settings › Shortcuts any of them can be a key with Ctrl, Alt
-or Shift, and on the controller Guide plus a button (held: the game doesn't
-see that button), the touchpad or Share. Those are buttons the Xbox
-controller doesn't have, so no game uses them.
+forward (hold), F2 pause, F12 screenshot, F11 full screen, plus a Quit action
+(no keyboard default — assign one in Settings if wanted). On a gamepad the
+defaults follow the EmuDeck layout: Select+Start=quit, +R3=menu, +R1=save,
++L1=load, +Y=screenshot, +L3=pause, +D-pad Right=fast-forward. The game
+doesn't see the second button of any combo (button suppression). Every
+shortcut can be changed in Settings › Shortcuts — Guide+button, Back+button,
+the touchpad or Share on the controller; or a key with Ctrl, Alt or Shift.
+A tap of the Guide button alone also opens the menu.
 
 ### Playing on Insignia
 

@@ -160,6 +160,14 @@ void nc_rec_get(NcRd *r, const NcRecord *rec, void *obj, unsigned v)
             nc_recs_get(r, f->rec, o + f->offset, f->esize, f->count, v);
         } else {
             nc_rd_get(r, o + f->offset, (size_t)f->esize * f->count);
+            if (f->type == NC_FT_BOOL) {
+                /* a bool holds 0 or 1: any other byte of a damaged file is
+                 * true, not a value the compiled code never expects in one */
+                uint8_t *b = o + f->offset;
+                for (size_t n = 0; n < (size_t)f->esize * f->count; n++) {
+                    b[n] = b[n] != 0;
+                }
+            }
         }
     }
 }

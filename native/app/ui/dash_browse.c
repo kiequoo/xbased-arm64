@@ -29,7 +29,7 @@
 #define MAX_PLACES 64
 #define PATH_MAX_B 1024
 
-enum PlaceKind { PK_LIBRARY, PK_HOME, PK_FOLDER, PK_ROOT, PK_DISK, PK_REMOVABLE, PK_NETWORK, PK_OPTICAL };
+enum PlaceKind { PK_LIBRARY, PK_HOME, PK_FOLDER, PK_ROOT, PK_DISK, PK_REMOVABLE, PK_NETWORK, PK_OPTICAL, PK_SYSTEM };
 
 typedef struct Place {
     char path[PATH_MAX_B];
@@ -529,6 +529,97 @@ static void places_load(void)
     user_folder(SDL_FOLDER_DOCUMENTS, S_BR_DOCUMENTS, PK_FOLDER);
     user_folder(SDL_FOLDER_DOWNLOADS, S_BR_DOWNLOADS, PK_FOLDER);
     drives();
+    /* the system's own picker: a network path (\\server\share) the places
+     * don't list, typed or browsed there (#211) */
+    place_add("::system", T(S_BR_SYSTEM), T(S_BR_SYSTEM_SUB), PK_SYSTEM, 3);
+}
+
+/* ------------------------------------------------------------ the system's picker */
+
+static struct {
+    SDL_Mutex *mu;
+    char path[PATH_MAX_B];
+    bool ready, open;
+} g_sys;
+
+/* the dialog's answer: any thread; taken by the screen (sys_poll) */
+static void SDLCALL sys_done(void *ud, const char *const *list, int filter)
+{
+    (void)ud;
+    (void)filter;
+    SDL_LockMutex(g_sys.mu);
+    g_sys.open = false;
+    if (list && list[0]) {
+        snprintf(g_sys.path, sizeof(g_sys.path), "%s", list[0]);
+        g_sys.ready = true;
+    }
+    SDL_UnlockMutex(g_sys.mu);
+}
+
+static void sys_pick(void)
+{
+    if (!g_sys.mu) {
+        g_sys.mu = SDL_CreateMutex();
+    }
+    SDL_LockMutex(g_sys.mu);
+    const bool busy = g_sys.open;
+    g_sys.open = true;
+    SDL_UnlockMutex(g_sys.mu);
+    if (busy) {
+        return;
+    }
+    SDL_Window *w = SDL_GetKeyboardFocus();
+    const char *start_at = B.cwd[0] ? B.cwd : NULL;
+    if (B.games) {
+        /* a folder: the library's (or a game's own, extracted) */
+        SDL_ShowOpenFolderDialog(sys_done, NULL, w, start_at, false);
+    } else {
+        static char pattern[96];
+        static SDL_DialogFileFilter f[1];
+        const size_t n = strlen(B.exts);
+        snprintf(pattern, sizeof(pattern), "%.*s", n > 2 ? (int)(n - 2) : 0, B.exts[0] ? B.exts + 1 : "");
+        f[0].name = B.title;
+        f[0].pattern = pattern;
+        SDL_ShowOpenFileDialog(sys_done, NULL, w, pattern[0] ? f : NULL, pattern[0] ? 1 : 0, start_at, false);
+    }
+}
+
+static bool has_default_xbe(const char *dir)
+{
+    char p[PATH_MAX_B];
+    SDL_PathInfo pi;
+    join(p, sizeof(p), dir, "default.xbe");
+    return SDL_GetPathInfo(p, &pi) && pi.type == SDL_PATHTYPE_FILE;
+}
+
+static void choose_file(const char *path);
+static void open_dir(const char *path, const char *reselect);
+
+/* what the system's picker chose, on the screen's frame */
+static void sys_poll(void)
+{
+    char p[PATH_MAX_B];
+    if (!g_sys.mu) {
+        return;
+    }
+    SDL_LockMutex(g_sys.mu);
+    const bool ready = g_sys.ready;
+    g_sys.ready = false;
+    snprintf(p, sizeof(p), "%s", g_sys.path);
+    SDL_UnlockMutex(g_sys.mu);
+    if (!ready) {
+        return;
+    }
+    tidy(p);
+    if (!B.games) {
+        choose_file(p);
+    } else if (has_default_xbe(p)) {
+        add_file(p);        /* an extracted game: the folder is the disc */
+        open_dir(p, NULL);
+    } else {
+        add_folder(p);
+        open_dir(p, NULL);
+    }
 }
 
 /* ------------------------------------------------------------ a folder, read on a thread */
@@ -739,7 +830,8 @@ static void start(const char *title, const char *exts, bool games, SDL_DialogFil
 
 void dash_browse_games(void)
 {
-    start(T(S_ADD_GAMES), "iso;xiso;cci;chd", true, NULL, NULL);
+    /* default.xbe: an extracted game, its folder the disc (#214) */
+    start(T(S_ADD_GAMES), "iso;xiso;cci;chd;xbe", true, NULL, NULL);
 }
 
 void dash_browse_file(const char *title, const char *exts, SDL_DialogFileCallback cb, void *ud)
@@ -798,6 +890,12 @@ static void icon(float x, float y, float s, int what, UiColor c)
         ui_round(x + s * 0.1f, y + s * 0.1f, s * 0.8f, s * 0.5f, 5, c);
         ui_rect(x + s * 0.46f, y + s * 0.6f, s * 0.08f, s * 0.2f, c);
         ui_rect(x + s * 0.12f, y + s * 0.8f, s * 0.76f, s * 0.07f, c);
+        break;
+    case 10 + PK_SYSTEM:
+        ui_round(x + s * 0.06f, y + s * 0.16f, s * 0.88f, s * 0.64f, 4, c);
+        ui_rect(x + s * 0.06f, y + s * 0.28f, s * 0.88f, s * 0.07f, dark);
+        ui_rect(x + s * 0.2f, y + s * 0.46f, s * 0.6f, s * 0.07f, dark);
+        ui_rect(x + s * 0.2f, y + s * 0.6f, s * 0.4f, s * 0.07f, dark);
         break;
     case 10 + PK_OPTICAL:
         ui_ring(x + s / 2, y + s / 2, s * 0.42f, s * 0.42f, 0, s * 0.1f, c);
@@ -909,6 +1007,7 @@ void scr_browse(void)
 {
     const float W = ui_w(), H = ui_h();
     poll_ready();
+    sys_poll();
     draw_header(B.title, B.cwd[0] ? B.cwd : T(S_BR_PLACES));
     const bool asked = D.ask != NULL;
     In in = D.in;
@@ -994,7 +1093,11 @@ void scr_browse(void)
             if ((over && in.click) || (s && B.focus == 0 && in.ok)) {
                 in.click = in.ok = false;
                 B.psel = i;
-                open_dir(pl->path, NULL);
+                if (pl->kind == PK_SYSTEM) {
+                    sys_pick();
+                } else {
+                    open_dir(pl->path, NULL);
+                }
             }
         }
         ui_unclip();

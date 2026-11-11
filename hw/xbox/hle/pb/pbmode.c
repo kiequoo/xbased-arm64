@@ -8,6 +8,8 @@
 #include "hw/xbox/hle/mem/barrier.h"
 #include "hw/xbox/hle/mem/guestmem.h"
 #include "hw/xbox/hle/pb/kelvin.h"
+#include "hw/xbox/hle/pb/kvdma.h"
+#include "hw/xbox/hle/pb/kvfmt.h"
 #include "hw/xbox/hle/pb/pbdraw.h"
 #include "hw/xbox/hle/pb/pbmode.h"
 #include "hw/xbox/hle/pb/pbstate.h"
@@ -18,6 +20,7 @@
 
 #if defined(__ANDROID__) || defined(_WIN32) || defined(NC_DESKTOP)
 #include <sys/system_properties.h>
+#include <time.h>
 #endif
 
 /* The NV2A's channel-0 FIFO registers and its instance memory. */
@@ -25,6 +28,7 @@
 #define NV_PFIFO_CACHE1_PUSH1        0x003204u  /* bits 4:0: the channel */
 #define NV_PFIFO_CACHE1_DMA_INSTANCE 0x00322Cu  /* bits 15:0: the push buffer's DMA object >> 4 */
 #define NV_PFIFO_CACHE1_DMA_PUT      0x003240u
+#define NV_PGRAPH_CTX_SWITCH1        0x40014Cu
 #define NV_PFIFO_CACHE1_DMA_GET      0x003244u
 #define NV_PFIFO_CACHE1_DMA_SUBROUTINE 0x00324Cu /* the return offset | 1 inside a call */
 #define NV_PGRAPH_INTR               0x400100u  /* pending; the ISR writes 1s to clear */
@@ -42,6 +46,10 @@
 #define NV_CLASS_PATTERN    0x44u
 #define NV_CLASS_SURFACES2D 0x62u
 #define NV_CLASS_BLIT       0x9Fu
+#define NV_CLASS_BETA       0x12u
+#define NV_CLASS_CLIPRECT   0x19u
+#define NV_CLASS_SURF2D_NV4 0x42u                 /* NV04's 2D surfaces: NV062's methods */
+#define NV_CLASS_SOLID_LINE 0x5Cu
 #define PGRAPH_INTR_ERROR            (1u << 20)
 #define PGRAPH_NSOURCE_NOTIFICATION  1u
 #define NV_PRAMIN                    0x700000u
@@ -89,6 +97,8 @@ static struct {
     /* the subchannels' objects: instance (PRAMIN offset) and class */
     uint32_t obj_inst[8];
     uint8_t obj_class[8];
+    HleKvDma kvdma;                     /* Kelvin's DMA contexts: its offsets as addresses */
+    bool kvdma_stale;                   /* ... to be taken from the shadows (a savestate's) */
     uint32_t sem_inst, sem_offset;      /* Kelvin's semaphore DMA object, offset */
     uint32_t report_inst;               /* its report DMA object (visibility tests) */
     uint64_t reports;
@@ -99,6 +109,9 @@ static struct {
     bool trap_wait;                     /* a software trap until the ISR clears it */
     uint32_t sub_r[8][0x400 / 4];       /* the 2D objects' methods, by subchannel */
     uint32_t s2d[0x400 / 4];            /* the 2D surfaces' (one at a time in D3D) */
+    uint32_t beta;                      /* NV012 SET_BETA as the blend uses it (blit) */
+    uint32_t clip_pt, clip_sz;          /* NV019 SET_POINT, SET_SIZE (blit) */
+    uint32_t line_pt[2];                /* NV04_SOLID_LINE START, END (solid_line) */
     uint64_t blits, blit_bytes, m2mfs, m2mf_bytes, copies_skipped;
     volatile bool in_run;               /* debug: the decode thread is in the pusher */
     uint32_t disp_pa;                   /* hle_pb_display_start's, for the decode thread */
@@ -114,6 +127,7 @@ static struct {
     bool gamma_set;                     /* ... once at least (a savestate applies it again) */
     uint64_t traps;
     bool runs_ok;                       /* run records done here (run_record) */
+    bool put_sync;                      /* a title without D3D: each PUT waits for the decoder */
     uint64_t runs;                      /* ... done */
     struct { uint32_t v, n; } trapk[32]; /* traps by code (the log line's top 8) */
     uint32_t trap_other;
@@ -421,7 +435,7 @@ static int kelvin(uint32_t m, uint32_t v)
  * (polled once a decode pass, pblog_poll): the next n */
 static int g_pblog = -1;
 
-static void pblog_poll(void)
+static __attribute__((unused)) void pblog_poll(void)
 {
     if (g_pblog < 0) {
         const char *e = getenv("HAKUX_HLE_PBLOG");
@@ -439,7 +453,11 @@ static void pblog_poll(void)
 
 static inline unsigned pblog_left(void)
 {
+#if HAKUX_DIAG
     return g_pblog > 0 ? (unsigned)g_pblog-- : 0;
+#else
+    return 0;
+#endif
 }
 
 static void log_object(const char *what, uint32_t handle)
@@ -522,13 +540,33 @@ static void blit(const uint32_t *r)
 {
     static const uint8_t k_bpp[16] = { 0, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 4 };
     const uint32_t *s = g_pb.s2d;
-    const uint32_t bpp = k_bpp[s[0x300 >> 2] & 0xF];
+    const uint32_t bpp = k_bpp[s[0x300 >> 2] & 0xF], cfmt = s[0x300 >> 2] & 0xF;
+    const uint32_t op = r[0x2FC >> 2];      /* NV09F SET_OPERATION: 2 BLEND_AND, 3 SRCCOPY */
     const uint32_t pin = r[0x300 >> 2], pout = r[0x304 >> 2], size = r[0x308 >> 2];
     uint32_t w = size & 0xFFFF, h = size >> 16;
     const uint32_t sp = s[0x304 >> 2] & 0xFFFF, dp = s[0x304 >> 2] >> 16;
     const uint32_t sbase = (ctx_base(s[0x184 >> 2]) + s[0x308 >> 2]) & 0x07FFFFFFu;
     const uint32_t dbase = (ctx_base(s[0x188 >> 2]) + s[0x30C >> 2]) & 0x07FFFFFFu;
-    const uint32_t ix = pin & 0xFFFF, iy = pin >> 16, ox = pout & 0xFFFF, oy = pout >> 16;
+    uint32_t ix = pin & 0xFFFF, iy = pin >> 16, ox = pout & 0xFFFF, oy = pout >> 16;
+    /* SET_CONTEXT_CLIP_RECTANGLE naming an NV019 object: the destination
+     * pixels inside its rectangle only (a null object's: all of them) */
+    const uint32_t cinst = r[0x188 >> 2] ? ramht_find(r[0x188 >> 2]) : 0;
+    if (cinst && (pramin(cinst) & 0xFF) == NV_CLASS_CLIPRECT) {
+        const uint32_t cx0 = g_pb.clip_pt & 0xFFFF, cy0 = g_pb.clip_pt >> 16;
+        const uint32_t cx1 = cx0 + (g_pb.clip_sz & 0xFFFF), cy1 = cy0 + (g_pb.clip_sz >> 16);
+        const uint32_t x0 = MAX(ox, cx0), y0 = MAX(oy, cy0);
+        const uint32_t x1 = MIN(ox + w, cx1), y1 = MIN(oy + h, cy1);
+        if (x1 <= x0 || y1 <= y0) {
+            g_pb.copies_skipped++;
+            return;
+        }
+        ix += x0 - ox;
+        iy += y0 - oy;
+        ox = x0;
+        oy = y0;
+        w = x1 - x0;
+        h = y1 - y0;
+    }
     /* Rows wider than the destination's pitch, into a render target: as
      * much as lands in it. Each row's spill past the target's width goes
      * under the next row's start, which the next row then writes, so the
@@ -561,7 +599,7 @@ static void blit(const uint32_t *r)
      * the images over it following */
     if (!hle_pbd_blit_images(sbase, sp, dbase, dp, bpp, ix, iy, ox, oy, w, h)) {
         const uint32_t slo = sbase + iy * sp + ix * bpp, dlo = dbase + oy * dp + ox * bpp;
-        const uint64_t dep = hle_pbd_copy_begin(slo, sp, dlo, dp, row, h, dbase);
+        const uint64_t dep = hle_pbd_copy_begin(slo, sp, dlo, dp, row, h, dbase, op == 2);
         for (uint32_t y = 0; !dep && y < h; y++) {
             const uint32_t so = slo + y * sp, d = dlo + y * dp;
             uint8_t *sr = hle_pa_ptr(so, row), *dr = hle_pa_ptr(d, row);
@@ -569,7 +607,24 @@ static void blit(const uint32_t *r)
                 g_pb.copies_skipped++;
                 return;
             }
-            memmove(dr, sr, row);
+            if (op == 2 && bpp == 4) {
+                /* BLEND_AND: source by beta, destination by the rest (8 bits of
+                 * 0x7F80), the alpha left */
+                const uint32_t bm = g_pb.beta >> 16, im = 0x7F80u - bm;
+                for (uint32_t x = 0; x < w; x++) {
+                    for (unsigned ch = 0; ch < 3; ch++) {
+                        dr[x * 4 + ch] = (uint8_t)((sr[x * 4 + ch] * bm + dr[x * 4 + ch] * im) / 0x7F80u);
+                    }
+                }
+            } else {
+                memmove(dr, sr, row);
+            }
+            if (bpp == 4 && (cfmt == 6 || cfmt == 7)) {
+                /* X8R8G8B8 writes its X: Z8R8G8B8 zeros, O8R8G8B8 ones */
+                for (uint32_t x = 0; x < w; x++) {
+                    dr[x * 4 + 3] = cfmt == 7 ? 0xFF : 0x00;
+                }
+            }
             hle_mem_mark_written(d, row);
         }
         hle_pbd_copy_done(dlo, dp, row, h, dep);
@@ -577,6 +632,72 @@ static void blit(const uint32_t *r)
     }
     g_pb.blits++;
     g_pb.blit_bytes += (uint64_t)row * h;
+}
+
+/* NV04_SOLID_LINE END (class 0x5C): a line from START to END into the 2D
+ * surfaces' destination, its last pixel left out (nxdk_pgraph_tests'
+ * 2D_Lines: 400,200 - 400,400 covers rows 200 .. 399), in the colour
+ * format's value widened to the surface's (alpha 0xFF). Over memory, the
+ * images there landed first and the target over it taking the rows after. */
+static void solid_line(const uint32_t *r)
+{
+    const uint32_t *s = g_pb.s2d;
+    const uint32_t sfmt = s[0x300 >> 2] & 0xF, dp = s[0x304 >> 2] >> 16;
+    const uint32_t bpp = sfmt == 0xA || sfmt == 6 || sfmt == 7 ? 4 : sfmt == 4 ? 2 : 0;
+    const uint32_t dbase = (ctx_base(s[0x188 >> 2]) + s[0x30C >> 2]) & 0x07FFFFFFu;
+    const int32_t x0 = (int16_t)(g_pb.line_pt[0] & 0xFFFF), y0 = (int16_t)(g_pb.line_pt[0] >> 16);
+    const int32_t x1 = (int16_t)(g_pb.line_pt[1] & 0xFFFF), y1 = (int16_t)(g_pb.line_pt[1] >> 16);
+    if (!bpp || !dp || x0 < 0 || y0 < 0 || x1 < 0 || y1 < 0 || (x0 == x1 && y0 == y1)) {
+        return;
+    }
+    /* the colour as A8R8G8B8 (1 R5G6B5, 2 X1R5G5B5, else X8R8G8B8) */
+    const uint32_t cv = r[0x304 >> 2], cf = r[0x300 >> 2];
+    uint32_t c;
+    if (cf == 1) {
+        const uint32_t rr = (cv >> 11) & 31, gg = (cv >> 5) & 63, bb = cv & 31;
+        c = (rr << 3 | rr >> 2) << 16 | (gg << 2 | gg >> 4) << 8 | (bb << 3 | bb >> 2);
+    } else if (cf == 2) {
+        const uint32_t rr = (cv >> 10) & 31, gg = (cv >> 5) & 31, bb = cv & 31;
+        c = (rr << 3 | rr >> 2) << 16 | (gg << 3 | gg >> 2) << 8 | (bb << 3 | bb >> 2);
+    } else {
+        c = cv & 0xFFFFFFu;
+    }
+    c |= 0xFF000000u;
+    const uint16_t c16 = (uint16_t)(((c >> 19) & 31) << 11 | ((c >> 10) & 63) << 5 | ((c >> 3) & 31));
+    const int32_t xa = MIN(x0, x1), xb = MAX(x0, x1), ya = MIN(y0, y1), yb = MAX(y0, y1);
+    const uint32_t dlo = dbase + (uint32_t)ya * dp + (uint32_t)xa * bpp;
+    const uint32_t row = (uint32_t)(xb - xa + 1) * bpp, rows = (uint32_t)(yb - ya + 1);
+    if ((uint64_t)dp * rows > (16u << 20)) {
+        return;
+    }
+    hle_pbd_copy_begin(dlo, dp, dlo, dp, row, rows, dbase, true);
+    /* Bresenham, the end left out */
+    const int32_t dx = abs(x1 - x0), dy = -abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    int32_t err = dx + dy, x = x0, y = y0;
+    while (x != x1 || y != y1) {
+        uint8_t *px = hle_pa_ptr(dbase + (uint32_t)y * dp + (uint32_t)x * bpp, bpp);
+        if (px) {
+            if (bpp == 4) {
+                memcpy(px, &c, 4);
+            } else {
+                memcpy(px, &c16, 2);
+            }
+        }
+        const int32_t e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y += sy;
+        }
+    }
+    for (uint32_t i = 0; i < rows; i++) {
+        hle_mem_mark_written(dlo + i * dp, row);
+    }
+    hle_pbd_copy_done(dlo, dp, row, rows, 0);
+    hle_pbd_blit(dbase, dp, (uint32_t)xa, (uint32_t)ya, (uint32_t)(xb - xa + 1), rows, 0);
 }
 
 /* NV039 BUFFER_NOTIFY: LINE_COUNT lines of LINE_LENGTH_IN bytes, OFFSET_IN
@@ -592,7 +713,7 @@ static void m2mf(const uint32_t *r)
         return;
     }
     /* now, or queued behind the landings of the images it reads */
-    const uint64_t dep = hle_pbd_copy_begin(in, (uint32_t)pin, out, (uint32_t)pout, len, lines, 0);
+    const uint64_t dep = hle_pbd_copy_begin(in, (uint32_t)pin, out, (uint32_t)pout, len, lines, 0, false);
     for (uint32_t y = 0; !dep && y < lines; y++) {
         uint8_t *s = hle_pa_ptr(in + y * pin, len), *d = hle_pa_ptr(out + y * pout, len);
         if (!s || !d) {
@@ -620,7 +741,22 @@ static void method_2d(unsigned subch, uint32_t m, uint32_t v)
         }
         break;
     case NV_CLASS_SURFACES2D:
+    case NV_CLASS_SURF2D_NV4:
         g_pb.s2d[m >> 2] = v;
+        break;
+    case NV_CLASS_CLIPRECT:
+        if (m == 0x300) {
+            g_pb.clip_pt = v;
+        } else if (m == 0x304) {
+            g_pb.clip_sz = v;
+        }
+        break;
+    case NV_CLASS_BETA:
+        if (m == 0x300) {
+            /* a sign and 31 fraction bits: negative is 0, 8 bits kept (xemu's
+             * measure) */
+            g_pb.beta = v & 0x80000000u ? 0 : v & 0x7F800000u;
+        }
         break;
     case NV_CLASS_BLIT:
         if (m == 0x308) {
@@ -690,38 +826,53 @@ static bool contig_pa(uint32_t va, uint32_t *pa)
 
 static bool run_record(uint32_t v)
 {
-    const uint32_t *w = (const uint32_t *)hle_pa_ptr(v >> 5, 16);
-    uint32_t fix = 0, buf, ret;
-    if (!w || (w[0] && !contig_pa(w[0], &fix)) || !contig_pa(w[1], &buf) || !contig_pa(w[3], &ret) ||
-        (w[2] & 3) || !hle_pa_ptr(buf + w[2], 4)) {
+    /* the record and each fixup's header are the guest's memory, which its other threads may
+     * write meanwhile: read once, into what is checked and then used */
+    const uint8_t *rec = hle_pa_ptr(v >> 5, 16);
+    uint32_t w[4], fix = 0, buf, ret;
+    if (!rec) {
+        return false;
+    }
+    memcpy(w, rec, sizeof(w));
+    uint8_t *end = NULL;
+    if ((w[0] && !contig_pa(w[0], &fix)) || !contig_pa(w[1], &buf) || !contig_pa(w[3], &ret) ||
+        (w[2] & 3) || !(end = hle_pa_ptr(buf + w[2], 4))) {
         return false;
     }
     /* the fixups, checked whole before any is applied */
     unsigned n = 0;
     for (uint32_t e = fix; e; n++) {
-        const uint32_t *h = (const uint32_t *)hle_pa_ptr(e, 8);
+        const uint8_t *h = hle_pa_ptr(e, 8);
         if (!h || n >= RUN_FIXUPS_MAX) {
             return false;
         }
-        if (h[0] == 0xFFFFFFFFu) {
+        const uint32_t len = hle_ldl_le(h), off = hle_ldl_le(h + 4);
+        if (len == 0xFFFFFFFFu) {
             break;
         }
-        if (!hle_pa_ptr(e + 8, h[0]) || !hle_pa_ptr(buf + h[1], h[0])) {
+        if (!hle_pa_ptr(e + 8, len) || !hle_pa_ptr(buf + off, len)) {
             return false;
         }
-        e += 8 + h[0];
+        e += 8 + len;
     }
-    for (uint32_t e = fix; e;) {
-        const uint32_t *h = (const uint32_t *)hle_pa_ptr(e, 8);
-        if (h[0] == 0xFFFFFFFFu) {
+    /* ... and applied: as many as were checked, each as it reads now */
+    for (uint32_t e = fix; e && n; n--) {
+        const uint8_t *h = hle_pa_ptr(e, 8);
+        const uint32_t len = h ? hle_ldl_le(h) : 0xFFFFFFFFu, off = h ? hle_ldl_le(h + 4) : 0;
+        if (len == 0xFFFFFFFFu) {
             break;
         }
-        memmove(hle_pa_ptr(buf + h[1], h[0]), hle_pa_ptr(e + 8, h[0]), h[0]);
-        hle_mem_mark_written(buf + h[1], h[0]);
-        e += 8 + h[0];
+        uint8_t *d = hle_pa_ptr(buf + off, len);
+        const uint8_t *s = hle_pa_ptr(e + 8, len);
+        if (!d || !s) {
+            break;                              /* changed since it was checked */
+        }
+        memmove(d, s, len);
+        hle_mem_mark_written(buf + off, len);
+        e += 8 + len;
     }
     const uint32_t jump = (w[3] & 0x0FFFFFFFu) + 1;
-    memcpy(hle_pa_ptr(buf + w[2], 4), &jump, 4);
+    memcpy(end, &jump, 4);
     hle_mem_mark_written(buf + w[2], 4);
     if ((v & 0x1F) == 3) {
         /* the DPC's DMA_SUBROUTINE write, through the guest's way in (the
@@ -753,6 +904,29 @@ static void trap_past(uint32_t pa)
     __atomic_store_n(&g_trel.n, n + 1, __ATOMIC_RELEASE);
 }
 
+/* The Kelvin methods that name a DMA object or carry an offset inside one
+ * (hle_kvdma_acts, by method / 4). */
+static const bool k_kvdma_acts[2048] = {
+    [0x0184 / 4] = true, [0x0188 / 4] = true,
+    [0x0194 / 4 ... 0x01A0 / 4] = true,
+    [0x0210 / 4] = true, [0x0214 / 4] = true,
+    [0x1720 / 4 ... 0x175C / 4] = true,
+    [0x1B00 / 4] = true, [0x1B04 / 4] = true, [0x1B40 / 4] = true, [0x1B44 / 4] = true,
+    [0x1B80 / 4] = true, [0x1B84 / 4] = true, [0x1BC0 / 4] = true, [0x1BC4 / 4] = true,
+};
+
+/* Kelvin's DMA contexts after a load: from the objects its shadow names. */
+static void kvdma_restore(void)
+{
+    static const uint16_t k_ctx[HLE_KVDMA_N] = { 0x0184, 0x0188, 0x0194, 0x0198, 0x019C, 0x01A0 };
+    uint32_t base[HLE_KVDMA_N];
+    for (unsigned i = 0; i < HLE_KVDMA_N; i++) {
+        base[i] = ctx_base(hle_kelvin_reg(k_ctx[i]));
+    }
+    hle_kvdma_restore(&g_pb.kvdma, base, hle_kelvin_reg);
+    g_pb.kvdma_stale = false;
+}
+
 /* Per packet, not per method: PGRAPH's FIFO access (only D3D's trap
  * handler turns it off, with the decoder stalled at the trap; consume
  * checks it to go on) and GET, published at a packet's start and every 64
@@ -781,11 +955,13 @@ static int count_method(void *opaque, unsigned subch, uint32_t m, uint32_t v)
             log_object(m ? "context" : "object", v);
         }
     }
+#if HAKUX_DIAG
     /* debug (the log line's top methods): one method in 16, counted 16;
      * every method's count cost ~3% of the decoder (a 64 KB table) */
     if (!(++g_pb.hist_tick & 15)) {
         g_pb.hist[subch][(m & 0x1FFFu) / 4] += 16;
     }
+#endif
     if (m == NV_NO_OPERATION && !v) {
         return HLE_PB_GO;                       /* padding (Crimson Sea: 1.3M a second) */
     }
@@ -835,6 +1011,11 @@ static int count_method(void *opaque, unsigned subch, uint32_t m, uint32_t v)
         g_pb.obj_inst[subch] = inst;
         g_pb.obj_class[subch] = inst ? (uint8_t)pramin(inst) : 0;
         g_pb.binds++;
+        if (g_pb.put_sync && g_pb.obj_class[subch] == 0x97) {
+            /* the graphics context's object word (a title without D3D reads
+             * it to write 0 there and back, below) */
+            hle_host_gpu_reg_set(NV_PGRAPH_CTX_SWITCH1, pramin(inst));
+        }
         static uint32_t s_seen[8];                  /* each class logged once */
         const uint8_t cls = g_pb.obj_class[subch];
         if (!(s_seen[cls >> 5] & (1u << (cls & 31)))) {
@@ -844,6 +1025,41 @@ static int count_method(void *opaque, unsigned subch, uint32_t m, uint32_t v)
         return HLE_PB_GO;
     }
     if (g_pb.obj_class[subch] == 0x97) {
+        /* NV_PGRAPH_CTX_SWITCH1 written 0 by the title (no object: a title
+         * without D3D): the methods do nothing until it is back
+         * (nxdk_pgraph_tests' Context_switch GRZero: the polygon pushed then
+         * is not drawn and its colour not kept) */
+        if (g_pb.put_sync && !hle_host_gpu_reg(NV_PGRAPH_CTX_SWITCH1)) {
+            return HLE_PB_GO;
+        }
+        if (!hle_kv_takes(m, v)) {
+            return HLE_PB_GO;                   /* a value the method doesn't take: its state stays */
+        }
+        uint32_t wc;
+        const unsigned nwc = hle_kv_window_clip_spread(m, &wc);
+        if (nwc) {
+            /* a window clip rectangle's word: its slot's and every later one's */
+            for (unsigned i = 0; i < nwc; i++) {
+                hle_kelvin_method(wc + 4 * i, v);
+                hle_pbd_method(wc + 4 * i, v);
+            }
+            return HLE_PB_GO;
+        }
+        if (k_kvdma_acts[(m >> 2) & 0x7FF]) {
+            /* an offset inside a DMA object, or the object: the shadows
+             * take addresses (kvdma.h) */
+            if (g_pb.kvdma_stale) {
+                kvdma_restore();
+            }
+            HleKvDmaOut o[HLE_KVDMA_OUT];
+            const unsigned n = hle_kvdma_method(&g_pb.kvdma, m, v,
+                                                hle_kvdma_context(m) >= 0 ? ctx_base(v) : 0, o);
+            for (unsigned i = 0; i < n; i++) {
+                hle_kelvin_method(o[i].m, o[i].v);
+                hle_pbd_method(o[i].m, o[i].v);
+            }
+            return HLE_PB_GO;
+        }
         int r = kelvin(m, v);
         hle_kelvin_method(m, v);                /* its register shadow: the draw state */
         hle_pbd_method(m, v);
@@ -851,6 +1067,12 @@ static int count_method(void *opaque, unsigned subch, uint32_t m, uint32_t v)
     }
     if (m < 0x400) {
         method_2d(subch, m, v);
+    } else if (g_pb.obj_class[subch] == NV_CLASS_SOLID_LINE && (m == 0x400 || m == 0x404)) {
+        /* NV04_SOLID_LINE START, END (past the 2D objects' kept methods) */
+        g_pb.line_pt[(m >> 2) & 1] = v;
+        if (m == 0x404) {
+            solid_line(g_pb.sub_r[subch]);
+        }
     }
     return HLE_PB_GO;
 }
@@ -878,7 +1100,9 @@ static uint32_t count_run(void *opaque, unsigned subch, uint32_t m, bool noninc,
     if (g_pb.obj_class[subch & 7] == 0x97) {
         hle_pbd_run(m, noninc, w, n);
     }
+#if HAKUX_DIAG
     g_pb.hist[subch & 7][(m & 0x1FFFu) / 4] += n;    /* debug: a run counts at its first method */
+#endif
     return n;
 }
 
@@ -906,7 +1130,9 @@ static bool dma_object(uint32_t *base, uint32_t *limit, uint32_t *inst)
 
 static void consume_pass(void)
 {
+#if HAKUX_DIAG
     pblog_poll();
+#endif
     boundary_take();
     hle_pbd_front_serve();      /* before the stalls below: the guest's write waits on it */
     if (__atomic_exchange_n(&g_pb.disp_req, false, __ATOMIC_ACQ_REL)) {
@@ -1343,17 +1569,179 @@ static bool decoder_held(void)
     return g_pb.trap_wait || g_pb.flip_wait || !fifo_open();
 }
 
+/* Frame latency. A title's CPU finishes frames ahead of the display
+ * while its GPU waits for the flip (FLIP_STALL), each in a push buffer
+ * that holds only so much: here the guest's CPU runs several times a
+ * console's, and finishes frames much sooner than its own console could.
+ * Ahead by more than the push buffer holds, D3D's next write waited for the
+ * GPU to free room, and the GPU frees it only after a flip, a whole frame
+ * at once: the CPU then went on wherever in its frame the room ran out.
+ * GTA Vice City writes some 390 KB a frame into its 512 KB push buffer:
+ * now and then a frame began 33 ms after the one before and the next 1.4 ms
+ * after it (at 30 fps, 67 and 1.3), the game's clock read as it began, so
+ * its world moved two steps in one picture and almost none in the next
+ * (turning the camera, a judder at any frame rate). A console's slower CPU
+ * never gets that far ahead.
+ *
+ * So the guest's thread that pushed a frame's end (FLIP_INCREMENT_WRITE,
+ * counted in what it pushed: its DMA_PUT) while another frame it finished
+ * still waits for the display waits for the next flip (the kernel's, from
+ * its next instruction: hle_host_frame_wait), as a slower CPU would have
+ * still been drawing: at a frame's end, not partway through one, and each
+ * frame then begins at a flip. Its vCPU goes on meanwhile (the vblank's
+ * ISR and DPC, and D3D's traps, which the flip comes by: holding the vCPU
+ * itself delayed them, and the flips, a frame or more). At most one hold a
+ * frame, of at most 50 ms. Counts that don't add up (a title that swaps
+ * another way, or a run started mid-stream) start over, and hold nothing. */
+
+static struct {
+    bool synced;
+    uint32_t pos;                       /* where the scan of the pushed words goes on (DMA offset) */
+    uint32_t ends;                      /* frames finished in what was pushed */
+    bool hold;                          /* the push holds its CPU (hle_pb_put) */
+    uint64_t holds;
+} g_fl;
+
+/* flips: the last one's time and the time between the last two (any
+ * thread); the CPU's own time to make a frame (smoothed), from its frame's
+ * start (the last frame end or a flip since, whichever came later) */
+static int64_t g_fl_flip_ns, g_fl_every_ns, g_fl_end_ns, g_fl_work_ns;
+
+void hle_pb_frame_flipped(void)
+{
+    const int64_t now = hle_now_ns(), last = __atomic_load_n(&g_fl_flip_ns, __ATOMIC_RELAXED);
+    if (last && now - last > 1000000 && now - last < 200000000) {
+        __atomic_store_n(&g_fl_every_ns, now - last, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&g_fl_flip_ns, now, __ATOMIC_RELEASE);
+    hle_host_frame_flipped();
+}
+
+/* The frame ends in the words from pos to put; pos where the next scan goes
+ * on. False: the words don't read as a push buffer. */
+static bool fl_count(uint32_t base, uint32_t limit, uint32_t *at, uint32_t put, uint32_t *ends)
+{
+    uint32_t pos = *at;
+    for (unsigned guard = 0; pos != put; guard++) {
+        const uint32_t *wp = guard < 262144 && pos <= limit ? (const uint32_t *)hle_pa_ptr(base + pos, 4) : NULL;
+        if (!wp) {
+            return false;
+        }
+        const uint32_t w = *wp;
+        if ((w & 0xE0000003u) == 0x20000000u) {            /* old jump */
+            pos = w & 0x1FFFFFFCu;
+            continue;
+        }
+        if ((w & 3) == 1) {                                 /* jump (the ring's wrap) */
+            pos = w & ~3u;
+            continue;
+        }
+        if ((w & 3) == 2 || w == 0x00020000u) {             /* call (a recorded buffer), return */
+            pos += 4;
+            continue;
+        }
+        const uint32_t kind = w & 0xE0030003u;
+        if (kind != 0 && kind != 0x40000000u) {
+            return false;
+        }
+        const uint32_t m = w & 0x1FFCu, n = (w >> 18) & 0x7FFu;
+        if (n && m <= NV097_FLIP_INCREMENT_WRITE && (kind ? m == NV097_FLIP_INCREMENT_WRITE
+                                                          : NV097_FLIP_INCREMENT_WRITE < m + 4 * n) &&
+            g_pb.obj_class[(w >> 13) & 7] == 0x97) {
+            *ends += kind ? n : 1;
+        }
+        const uint32_t next = pos + 4 * (n + 1);
+        if (pos < put && next > put) {
+            pos = next;                         /* its data comes in a later push */
+            break;
+        }
+        pos = next;
+    }
+    *at = pos;
+    return true;
+}
+
+/* Synced while the decoder waits at a FLIP_STALL (its GET published there,
+ * past its frame's end): the frames swapped, and those between GET and the
+ * push. */
+static void fl_scan(uint32_t put)
+{
+    uint32_t base, limit, inst;
+    if (!dma_object(&base, &limit, &inst)) {
+        g_fl.synced = false;
+        return;
+    }
+    if (!g_fl.synced) {
+        if (!hle_pb_flip_waiting()) {
+            return;
+        }
+        uint32_t pos = hle_host_gpu_reg(NV_PFIFO_CACHE1_DMA_GET), ends = hle_pbd_frames_swapped();
+        if (!hle_pb_flip_waiting() || !fl_count(base, limit, &pos, put, &ends)) {
+            return;
+        }
+        g_fl.pos = pos;
+        g_fl.ends = ends;
+        g_fl.synced = true;
+        return;
+    }
+    if (!fl_count(base, limit, &g_fl.pos, put, &g_fl.ends)) {
+        g_fl.synced = false;                    /* lost: again at a later stall */
+    }
+}
+
 void hle_pb_pushed(uint32_t put)
 {
     /* armed by the decoder (GET_REPORT): the scout syncs at this PUT */
     if (__atomic_load_n(&g_sc_on, __ATOMIC_ACQUIRE)) {
         scout_to(put);
     }
+    if (!g_pb.on) {
+        return;
+    }
+    const uint32_t ends0 = g_fl.ends;
+    fl_scan(put);
+    const bool ended = g_fl.synced && g_fl.ends != ends0;   /* a frame's end in this push */
+    const uint32_t taken = hle_pbd_frames_taken();
+    const int32_t waiting = (int32_t)(g_fl.ends - taken);
+    if (g_fl.synced && (waiting < 0 || waiting > 6)) {
+        g_fl.synced = false;                    /* counts that don't add up: again at a stall */
+    }
+    /* only with the GPU through every frame but this one (its swaps): held
+     * while the GPU still drew the one before, the CPU's next frame waited
+     * on it and the two no longer ran side by side (GTA San Andreas, its GPU
+     * the busier: 30 fps down to 20) */
+    const bool gpu_caught_up = (int32_t)(hle_pbd_frames_swapped() - (g_fl.ends - 1u)) >= 0;
+    /* ... and only a CPU that makes a frame in under a quarter of the time between
+     * flips: one nearer it (San Andreas' ~25 ms of 33), held to the flip,
+     * finished its next frame past the flip after (20 fps) */
+    bool quick = false;
+    if (ended) {
+        const int64_t now = hle_now_ns(), flip = __atomic_load_n(&g_fl_flip_ns, __ATOMIC_ACQUIRE);
+        const int64_t start = flip > g_fl_end_ns ? flip : g_fl_end_ns;
+        if (g_fl_end_ns && now - start < 200000000) {
+            const int64_t w = now - start;
+            g_fl_work_ns = g_fl_work_ns ? g_fl_work_ns + (w - g_fl_work_ns) / 8 : w;
+        }
+        g_fl_end_ns = now;
+        const int64_t every = __atomic_load_n(&g_fl_every_ns, __ATOMIC_RELAXED);
+        quick = every && g_fl_work_ns * 4 < every;
+    }
+    g_fl.hold = ended && g_fl.synced && waiting >= 2 && waiting <= 6 && gpu_caught_up && quick;
+}
+
+static void fl_hold(void)
+{
+    if (g_fl.hold) {
+        g_fl.hold = false;
+        g_fl.holds++;
+        hle_host_frame_wait();
+    }
 }
 
 void hle_pb_get(void)
 {
     g_sc.synced = false;
+    g_fl.synced = false;
 }
 
 /* After a pass: up to ~200 us waiting for the next kick in WFE on the kick
@@ -1522,6 +1910,7 @@ void hle_pb_state_set(const HlePbState *s)
     memcpy(g_pb.gamma, s->gamma, sizeof(s->gamma));
     g_pb.gamma_set = s->gamma_set;
     g_pb.gamma_req = s->gamma_req || s->gamma_set;      /* the ramp applied again */
+    g_pb.kvdma_stale = true;                /* (the shadows and the instance memory may come after) */
 }
 
 static void *decode_thread(void *opaque)
@@ -1573,6 +1962,17 @@ void hle_pb_put(void)
         hle_hitch_thread(HLE_HT_VCPU);  /* the vCPU's CPU time for the monitor */
     }
     hle_pb_kick();
+    fl_hold();                          /* the decoder kicked first: it works meanwhile */
+    /* A title without D3D (nxdk's tests, homebrew) writes the memory a draw
+     * it just pushed reads, with no wait for the GPU: the console's, close
+     * behind the push, has read it by then. nxdk_pgraph_tests' Texture_border
+     * 2D generates nine textures in one buffer, each after the draw of the one
+     * before: the decoder, behind, read the last one's texels for all. The
+     * guest's thread waits at its PUT until the decoder has read up to it
+     * (catch_up: the decoder's own waits on the guest end it). */
+    if (g_pb.put_sync) {
+        catch_up();
+    }
 }
 
 void hle_pb_start(void)
@@ -1587,6 +1987,8 @@ void hle_pb_start(void)
         const HleXbeLib *lib = hle_xbe_d3d_lib(&g_hle.title.xbe);
         const char *e = getenv("HAKUX_HLE_PB_RUNS");
         g_pb.runs_ok = lib && lib->build == 4928 && !(e && !strcmp(e, "0"));
+        const char *ps = getenv("HAKUX_HLE_PB_PUTSYNC");     /* debug: =0, none (A/B) */
+        g_pb.put_sync = !lib && !(ps && !strcmp(ps, "0"));
     }
     hle_pbd_start();
     hle_host_gpu_reg_set(NV_PGRAPH_FIFO, 1);        /* methods go to PGRAPH until D3D says not */
@@ -1632,7 +2034,7 @@ void hle_pb_stop(void)
 
 void hle_pb_diag(void)
 {
-    if (!g_pb.on) {
+    if (!HAKUX_DIAG || !g_pb.on) {
         return;
     }
     if (g_pb.flip_wait && !g_pb.dumped && hle_now_ns() - g_pb.flip_wait_ns > 100000000) {

@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 #include <unistd.h>
 
 #define POOL_HDR 16u  /* our header before each Ex pool block: its size, then POOL_PAGES */
@@ -30,6 +31,9 @@
  * back to the title (JSRF's stage loads ran out of RAM). */
 static uint32_t pool_alloc(NcKernel *k, uint32_t size)
 {
+    if (size > k->vm->ram_size) {
+        return 0;                       /* more than there is (and near 4 GiB the sums below wrapped to a few bytes) */
+    }
     if (size + POOL_HDR > NC_PAGE) {
         const uint32_t len = nc_align_up(size + POOL_HDR, NC_PAGE);
         const uint32_t pa = nc_vm_alloc_phys_high(k->vm, len);
@@ -1084,6 +1088,39 @@ static uint64_t KeBugCheck(NcKernel *k, NcFrame *f, const uint32_t *a)
     return 0;
 }
 
+/* KeStallExecutionProcessor(MicroSeconds): the processor spins that long, as
+ * the console's does, and nothing else of the title runs meanwhile. It
+ * returned at once: a driver's wait for its device (look, stall 10 us, a few
+ * hundred times) was over before a device that takes real time here could
+ * answer, and the time a title measures around a stall didn't pass. A tenth
+ * of a second at most (its callers ask for microseconds). */
+static uint64_t KeStallExecutionProcessor(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    const uint64_t ns = (uint64_t)(a[0] < 100000u ? a[0] : 100000u) * 1000u;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const uint64_t until = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec + ns;
+    for (;;) {
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        const uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+        if (now >= until) {
+            break;
+        }
+        if (until - now > 500000u) {
+            const struct timespec nap = {0, (long)(until - now - 200000u)};
+            nanosleep(&nap, NULL);      /* the long ones mostly asleep: the host's other threads run */
+        } else {
+#if defined(__x86_64__) || defined(__i386__)
+            __builtin_ia32_pause();
+#elif defined(__aarch64__)
+            __asm__ volatile("yield" ::: "memory");
+#endif
+        }
+    }
+    nc_ke_time_stale();                 /* the call's cached time is past */
+    return 0;
+}
+
 /* ----------------------------------------------------------- DPC objects */
 
 /* KDPC: Type 0x00, Inserted 0x02, DpcListEntry 0x04, DeferredRoutine 0x0C, DeferredContext 0x10,
@@ -1129,7 +1166,9 @@ void nc_kernel_title_loaded(NcKernel *k, const NcDisc *disc, const NcDiscFile *x
 
     /* Certificate (header 0x118): GameRegion at 0xA0. */
     const uint32_t cert = nc_vm_rd32(k->vm, xbe_base + 0x118);
-    const uint32_t region = nc_vm_rd32(k->vm, cert + 0xA0);
+    /* in the headers that were loaded, or no region told (a damaged header's address faulted here) */
+    const bool cert_ok = nc_vm_phys(k->vm, cert + 0xA0) != UINT32_MAX && nc_vm_phys(k->vm, cert + 0xA3) != UINT32_MAX;
+    const uint32_t region = cert_ok ? nc_vm_rd32(k->vm, cert + 0xA0) : 0;
     k->game_regions = region;
     k->game_region = region & 1 ? 1 : region & 2 ? 2 : region & 4 ? 4 : 1;
 
@@ -1208,7 +1247,7 @@ void nc_ex_register(NcKernel *k)
     nc_kernel_impl(k, "PhyGetLinkState", PhyGetLinkState);
     nc_kernel_impl(k, "PhyInitialize", PhyInitialize);
     nc_kernel_impl(k, "KeBugCheck", KeBugCheck);
-    nc_kernel_impl(k, "KeStallExecutionProcessor", HalNothing);
+    nc_kernel_impl(k, "KeStallExecutionProcessor", KeStallExecutionProcessor);
     nc_kernel_impl(k, "KeSaveFloatingPointState", KeFloatingPointState);
     nc_kernel_impl(k, "KeRestoreFloatingPointState", KeFloatingPointState);
     nc_kernel_impl(k, "KeInitializeDpc", KeInitializeDpc);

@@ -687,14 +687,17 @@ void nc_kernel_frame_chain(NcKernel *k, NcFrame *f, char *buf, size_t len)
     }
 }
 
-/* Rates for the 5 s kernel statistics line (nc_kernel_stats_tick). */
+/* Rates for the 5 s kernel statistics line (nc_kernel_stats_tick): in a
+ * build made to investigate (HAKUX_DIAG) only. */
+#if HAKUX_DIAG
 static uint32_t g_kcount[NC_KORDINAL_MAX];
 static uint64_t g_kcalls, g_sysops, g_sysop_kind[32];
+static void dump_int_samples(NcKernel *k);
+#endif
 static uint64_t g_clock_ticks; /* the clock's interrupts for the time alone (clock_thread) */
 NcSchedStats g_nc_sched;
 
-static void dump_int_samples(NcKernel *k);
-
+#if HAKUX_DIAG
 /* debug: NC_PEEK="va:len,*va:len" logs guest memory with the stats line:
  * hakuX-native-peek, up to 256 bytes each (hex); *va reads the pointer at
  * va and dumps what it points to. */
@@ -866,13 +869,16 @@ static void stats_tick(NcKernel *k)
     memcpy(resume_last, v, sizeof(resume_last));
 #endif
 }
+#endif
 
 static unsigned recent_add(const NcThread *t, unsigned ordinal, uint32_t ret, const uint32_t *args)
 {
+#if HAKUX_DIAG
     g_kcalls++;
     if (ordinal < NC_KORDINAL_MAX) {
         g_kcount[ordinal]++;
     }
+#endif
     unsigned i = g_nrecent++ % RECENT;
     g_recent[i].ordinal = (uint16_t)ordinal;
     g_recent[i].thread = t ? t->id : 0;
@@ -1421,8 +1427,10 @@ static void cpuid(NcFrame *f)
         d = 0x0383F9FF; /* FPU..CMOV, PAT, PSE36, MMX, FXSR, SSE */
         break;
     case 2:
+        /* the cache descriptors an Xbox reports: its L2 is 128 KiB (0x41), not a
+         * desktop Pentium III's 512 (0x43, what was here) */
         a = 0x03020101;
-        d = 0x0C040843;
+        d = 0x0C040841;
         break;
     default:
         break;
@@ -1456,6 +1464,32 @@ static void port_io(NcFrame *f, const uint8_t *insn, unsigned size, bool out)
     } else {
         nc_frame_set_gpr(f, NC_EAX, (eax & ~mask) | (nc_port_in(port, bytes) & mask));
     }
+}
+
+/* An exception without an error code, or a software interrupt, through a
+ * gate of the IDT the title put its own handler in (as Fable does for page
+ * faults, nc_kernel_page_fault): EFLAGS, CS and the EIP to return to pushed
+ * as a ring-0 interrupt gate does, IF cleared. False when the gate is still
+ * the kernel's, or the stack has no room. PC only: Android keeps the stop. */
+bool nc_kernel_trap(NcKernel *k, NcFrame *f, unsigned vector, uint32_t ret_eip)
+{
+#ifndef NC_DESKTOP
+    return false;
+#else
+    const uint8_t *gate = nc_vm_host(k->vm, k->idt_va + 8 * (vector & 0xFF));
+    const uint32_t handler = (nc_rd32(gate + 4) & 0xFFFF0000u) | (nc_rd32(gate) & 0xFFFFu);
+    const uint32_t esp = nc_frame_gpr(f, NC_ESP) - 12;
+    if (handler == k->trap_va || nc_vm_phys(k->vm, esp) == UINT32_MAX || nc_vm_phys(k->vm, esp + 11) == UINT32_MAX) {
+        return false;
+    }
+    nc_vm_wr32(k->vm, esp + 8, nc_frame_eflags(f));
+    nc_vm_wr32(k->vm, esp + 4, nc_frame_cs(f));
+    nc_vm_wr32(k->vm, esp, ret_eip);
+    nc_frame_set_gpr(f, NC_ESP, esp);
+    nc_frame_set_if(f, false);
+    nc_frame_set_eip(f, handler);
+    return true;
+#endif
 }
 
 bool nc_kernel_page_fault(NcKernel *k, NcFrame *f, uint32_t va, bool write)
@@ -1500,6 +1534,7 @@ bool nc_kernel_resident(NcKernel *k, uint32_t va, uint32_t len, bool write)
     return true;
 }
 
+#if HAKUX_DIAG
 /* Guest EIPs at interrupt exits: a sample of where the guest runs (a
  * guest spin shows up as one block). */
 #define INT_SAMPLES 512u
@@ -1547,6 +1582,7 @@ static void dump_int_samples(NcKernel *k)
     }
     memset(g_int_eips, 0, sizeof(g_int_eips));
 }
+#endif
 
 static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size);
 
@@ -1703,10 +1739,12 @@ bool nc_kernel_sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
 static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
 {
     NcKernel *k = opaque;
+#if HAKUX_DIAG
     g_sysop_kind[(unsigned)op & 31]++;
     if ((++g_sysops & 0xFFF) == 0) {
         stats_tick(k);
     }
+#endif
     const uint32_t eip = nc_frame_eip(f);
     const uint8_t *insn = nc_vm_host(k->vm, eip);
     nc_x86mmio_flush(k);
@@ -1720,6 +1758,9 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
         if (insn[1] == 0x2D) {
             debug_service(k, f, eip);
             break;
+        }
+        if (nc_kernel_trap(k, f, insn[1], eip + size)) {
+            break; /* a vector the title took for itself */
         }
         nc_kernel_request_stop(k, f, "int %02xh at %08x", insn[1], eip);
         break;
@@ -1816,17 +1857,51 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
             nc_frame_set_eip(f, eip + 2);
             break;
         }
+        /* what the CPU back end leaves here because a console raises an
+         * exception for it: BOUND past its bounds, AAM by zero */
+        if (insn[0] == 0x62 && (nc_kernel_trap(k, f, 5, eip) ||
+                                nc_seh_fault(k, f, NC_STATUS_ARRAY_BOUNDS_EXCEEDED, eip, 0, 0, 0))) {
+            break;
+        }
+        if (insn[0] == 0xD4 && insn[1] == 0 &&
+            (nc_kernel_trap(k, f, 0, eip) || nc_seh_fault(k, f, NC_STATUS_INTEGER_DIVIDE_BY_ZERO, eip, 0, 0, 0))) {
+            break;
+        }
         nc_kernel_request_stop(k, f, "system op %d at %08x (%02x %02x %02x)", (int)op, eip, insn[0], insn[1],
                                insn[2]);
+        break;
+    case NC_SYSOP_UD2:
+        /* an invalid opcode (UD2, or bytes that are no instruction): the
+         * title's handlers, as on a console; with none, the stop it was */
+        if (!nc_kernel_trap(k, f, 6, eip) && !nc_seh_fault(k, f, NC_STATUS_ILLEGAL_INSTRUCTION, eip, 0, 0, 0)) {
+            nc_kernel_request_stop(k, f, "invalid opcode at %08x (%02x %02x %02x)", eip, insn[0], insn[1], insn[2]);
+        }
+        break;
+    case NC_SYSOP_INT3:
+        /* a breakpoint: the context stays at it (a handler that continues steps over it) */
+        if (!nc_kernel_trap(k, f, 3, eip + size) &&
+            !nc_seh_fault(k, f, NC_STATUS_BREAKPOINT, eip, 3, 0, nc_frame_gpr(f, NC_ECX))) {
+            nc_kernel_request_stop(k, f, "breakpoint at %08x", eip);
+        }
+        break;
+    case NC_SYSOP_INTO:
+        /* with the overflow flag set (the CPU back end runs it otherwise): a
+         * trap, the context after it */
+        if (!nc_kernel_trap(k, f, 4, eip + size) && !nc_seh_fault(k, f, NC_STATUS_INTEGER_OVERFLOW, eip + size, 0, 0, 0)) {
+            nc_kernel_request_stop(k, f, "INTO with overflow at %08x", eip);
+        }
         break;
     case NC_SYSOP_INTERRUPT:
         /* The guest stopped at a block start for an asserted line or the
          * clock; EIP stays. Where it was, sampled, says where the time goes
          * (the on-demand dump lists the busiest). */
+#if HAKUX_DIAG
         int_sample(eip);
+#endif
         nc_frame_clear_interrupt(f);
         nc_ke_update_time(k);
         clock_tick(k);
+        nc_ke_frame_take(k);    /* a frame latency hold asked for (hle_host_frame_wait) */
         break;
     case NC_SYSOP_HOOK:
         if (nc_x86mmio_hook(k, f, eip)) {

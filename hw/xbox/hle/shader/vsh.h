@@ -28,7 +28,9 @@ typedef struct HleVshKey {
     uint16_t int_mask;          /* of those, fetched as signed integers */
     uint16_t cmp_mask;          /* of those, packed 11:11:10 dwords */
     uint8_t flat;               /* SHADEMODE FLAT */
-    uint8_t spec_off;           /* specular off: oD1 / oB1 read as (0, 0, 0, 1) */
+    uint8_t spec_off;           /* bit 0, specular off: oD1 / oB1 read as (0, 0, 0, 1); bit 1,
+                                   SET_LIGHT_CONTROL without ALPHA_FROM_MATERIAL: their
+                                   alpha 1, a program's too */
     uint8_t wbuf;               /* W-buffering: oPos.w to the pixel stage (vW) */
     uint8_t zfree;              /* no depth test: the program's z clips nothing */
     uint8_t fog_table;          /* FOGTABLEMODE other than NONE (a program writing
@@ -39,7 +41,12 @@ typedef struct HleVshKey {
                                    their four-component format (the driver's lacks
                                    vertex support: AMD's for 8 and 16 bits), the
                                    fourth read past them: w is 1 (in the padding too) */
+    uint16_t pt_size;           /* a point list without point parameters
+                                   (SET_POINT_PARAMS_ENABLE off): HLE_VSH_PT_FIXED |
+                                   SET_POINT_SIZE, the size in eighths of a pixel,
+                                   whatever the program leaves in oPts; 0: oPts */
 } HleVshKey;
+#define HLE_VSH_PT_FIXED 0x8000u
 
 /* Parses nslots 4-dword instructions (stopping at the FINAL one) and writes
  * the GLSL into buf. Returns the length, or 0 when a slot does not decode,

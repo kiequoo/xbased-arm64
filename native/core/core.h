@@ -4,6 +4,10 @@
 #ifndef NATIVE_CORE_CORE_H
 #define NATIVE_CORE_CORE_H
 
+/* siginfo's si_code of a SIGFPE the platform's fault handler passes on: a
+ * quotient that doesn't fit, not a divisor of zero (fault_win.c) */
+#define NC_FPE_OVERFLOW 0x4E43
+
 #include "native/core/vm.h"
 #include "native/core/xbe_load.h"
 #include "native/core/xdvdfs.h"

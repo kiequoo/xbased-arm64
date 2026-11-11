@@ -218,6 +218,14 @@ bool nc_page_state_load(NcRd *r, unsigned v)
     if (st.ntables > 1024) {
         return false;
     }
+    /* the directory is a page of RAM, or there is none: its entries are read
+     * through the RAM view at this address */
+    const NcVm *vm = nc_state_kernel()->vm;
+    if (st.pd_pa != UINT32_MAX && ((st.pd_pa & (NC_PAGE - 1)) || (uint64_t)st.pd_pa + NC_PAGE > vm->ram_size)) {
+        nc_log("hakuX-native-state", "paging: the page directory at %08x isn't a page of RAM (a damaged state)",
+               st.pd_pa);
+        return false;
+    }
     for (unsigned i = 0; i < 1024; i++) {
         free(g_pt_applied[i]);
         g_pt_applied[i] = NULL;

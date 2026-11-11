@@ -215,7 +215,14 @@ static uint32_t named(NcKernel *k, const char *name, enum NcObType *type)
             i++;
         }
         if (i == len) {
-            *type = (enum NcObType)nc_vm_rd32(k->vm, node + 8);
+            /* the list is guest memory: a type that is none (the title's
+             * stray write, a damaged state) is no object, not an index past
+             * the kernel's type table */
+            const uint32_t t = nc_vm_rd32(k->vm, node + 8);
+            if (t >= NC_OB_TYPES) {
+                return 0;
+            }
+            *type = (enum NcObType)t;
             return nc_vm_rd32(k->vm, node + 4);
         }
     }

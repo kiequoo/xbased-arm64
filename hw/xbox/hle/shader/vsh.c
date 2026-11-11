@@ -140,10 +140,17 @@ static void out_write(Buf *b, const Nv2aVshOutput *o, const char *val, bool *fog
         break;
     case NV2ART_OUTPUT:
         if (m[0] && (o->index & 15) == 5) {
-            /* oFog: the fog coordinate is x, which takes the most
-             * significant masked component (a ".w" write lands in x) */
+            /* oFog has one component, the fog coordinate: a write under any
+             * mask puts the result's first component there (its x: the
+             * source's first swizzle), not the one the mask names. Need for
+             * Speed Underground writes oFog.w alone and is fogged by it on
+             * the console; a write of two components (.yw of a source
+             * swizzled .yw) takes the first of them, y (xemu's tests on a
+             * console, its pull request 981). The last masked one was read
+             * here: the same for a replicated source, another component for
+             * the rest. */
             *fogw = true;
-            put(b, "    oFog.x = %s.%c;\n", val, m[strlen(m) - 1]);
+            put(b, "    oFog.x = %s.x;\n", val);
         } else if (m[0]) {
             put(b, "    %s.%s = %s.%s;\n", k_out[o->index & 15], m, val, m);
         }
@@ -320,8 +327,13 @@ static void tail(Buf *bp, const HleVshKey *k, bool fogw)
     Buf b = *bp;
     /* specular off (NV2A SPECULAR_ENABLE clear): the pixel stage sees
      * (0, 0, 0, 1) whatever the program wrote */
-    const char *d1 = k->spec_off ? "vec4(0.0, 0.0, 0.0, 1.0)" : "clamp(oD1, 0.0, 1.0)";
-    const char *b1 = k->spec_off ? "vec4(0.0, 0.0, 0.0, 1.0)" : "clamp(oB1, 0.0, 1.0)";
+    /* the specular alpha 1 unless LIGHT_CONTROL takes it from the material,
+     * for a program as for fixed function (nxdk_pgraph_tests' Specular_back
+     * _VS: the console's back faces opaque there) */
+    const char *d1 = k->spec_off & 1 ? "vec4(0.0, 0.0, 0.0, 1.0)" :
+                     k->spec_off & 2 ? "vec4(clamp(oD1.rgb, 0.0, 1.0), 1.0)" : "clamp(oD1, 0.0, 1.0)";
+    const char *b1 = k->spec_off & 1 ? "vec4(0.0, 0.0, 0.0, 1.0)" :
+                     k->spec_off & 2 ? "vec4(clamp(oB1.rgb, 0.0, 1.0), 1.0)" : "clamp(oB1, 0.0, 1.0)";
     put(&b, "  vDiffuse = clamp(oD0, 0.0, 1.0);\n"
             "  vSpecular = %s;\n"
             "  vBack0 = clamp(oB0, 0.0, 1.0);\n"
@@ -336,15 +348,33 @@ static void tail(Buf *bp, const HleVshKey *k, bool fogw)
     } else {
         put(&b, "  vFog = %s;\n", k->fog_table ? "0.0" : "1.0");
     }
-    put(&b, "  gl_PointSize = max(oPts.x, 1.0) * float(max((pc.flags >> 16) & 255u, 1u));\n"
-            /* screen space -> clip space (the NV2A rasterizer's subpixel
+    /* A point's size is the program's oPts only under point parameters;
+     * without them it is SET_POINT_SIZE, as the fixed-function stage's
+     * (xemu's tests on a console, its pull request 2527). A program that
+     * writes no oPts drew one-pixel points whatever the size set. */
+    if (k->pt_size & HLE_VSH_PT_FIXED) {
+        const unsigned e = k->pt_size & 0x1FFu;
+        put(&b, "  gl_PointSize = %u.%03u * float(max((pc.flags >> 16) & 255u, 1u));\n",
+            e < 8 ? 1u : e / 8, e < 8 ? 0u : (e % 8) * 125);
+    } else {
+        put(&b, "  gl_PointSize = max(oPts.x, 1.0) * float(max((pc.flags >> 16) & 255u, 1u));\n");
+    }
+    put(&b, /* screen space -> clip space (the NV2A rasterizer's subpixel
              * placement, ff.h) */
             "  float w = oPos.w;\n"
-            "  if (w == 0.0) w = 1.0;\n"
-            /* the NV2A keeps w finite (magnitude at most 2^64): D3D's XYZRHW
-             * pass-through takes RCP of rhw, and rhw 0 (Otogi's title art)
-             * would make w +inf and drop the primitive */
-            "  if (isinf(w)) w = w > 0.0 ? uintBitsToFloat(0x5F800000u) : uintBitsToFloat(0xDF800000u);\n"
+            /* the NV2A keeps w's magnitude within 2^-64 .. 2^64, its sign
+             * kept (+0 is positive, -0 negative): D3D's XYZRHW pass-through
+             * takes RCP of rhw, and rhw 0 (Otogi's title art) would make w
+             * +inf and drop the primitive; a w of 0 is 2^-64, the vertex far
+             * off the screen along its own direction, not the vertex as it
+             * stands (it was taken as 1: nxdk_pgraph_tests' W param suite, a
+             * quad with w 0 drawn small in a corner where the console fills
+             * half the screen with it) */
+            "  if (!isnan(w)) {\n"
+            "    w = w > 0.0 || floatBitsToUint(w) == 0u ?\n"
+            "        clamp(w, uintBitsToFloat(0x1F800000u), uintBitsToFloat(0x5F800000u)) :\n"
+            "        clamp(w, uintBitsToFloat(0xDF800000u), uintBitsToFloat(0x9F800000u));\n"
+            "  }\n"
             "  vec2 scr = oPos.xy;\n"
             HLE_SUBPIXEL_GLSL("scr")
             HLE_TEXEL_EDGE_GLSL("scr")

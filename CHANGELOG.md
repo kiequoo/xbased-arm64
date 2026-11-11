@@ -1,5 +1,263 @@
 # xbased changelog
 
+## 1.0.104 (2026-11)
+
+### Fixes
+- Graphics chip accuracy for homebrew that drives the chip itself, from the
+  chip test program (nxdk_pgraph_tests): 1103 of its 3556 pictures now
+  match the console's exactly (1091 in 1.0.103). Texture perspective
+  correction can be turned off, linear and vertex fog and pass-through
+  texture coordinates round as the console does, 16-bit float depth
+  clears with tiny values are right, and drawing stops while the program
+  takes the graphics context away.
+
+## 1.0.103 (2026-11)
+
+### Fixes
+- Graphics chip accuracy, from the chip test program (nxdk_pgraph_tests):
+  1091 of its 3556 pictures now match the console's exactly (1017 in
+  1.0.102). What games can see of it:
+  - V16U16 (R16B16) textures are drawn; they were white.
+  - Two-sided fixed-function lighting lights the back faces with the back
+    material and lights' colours.
+  - With separate specular off, the lights' highlights go into the diffuse
+    colour even when specular is disabled, as on the console.
+  - Culling both faces draws nothing (it culled the back ones alone).
+- Homebrew that drives the chip itself: textures with their own border,
+  the signed blend equations, signed texture channels and bump-mapped
+  texel edges now come out as on the console, and a texture rewritten
+  right after a draw that used it no longer shows up in that draw.
+
+## 1.0.102 (2026-11)
+
+### Fixes
+- Depth precision as the console stores it: W-buffered surfaces in the
+  16- and 24-bit depth formats, and (homebrew that drives the chip itself)
+  16-bit depth buffers, keep the depth truncated to the buffer's steps
+  instead of rounded. 1017 of the chip test program's 3556 pictures now
+  match the console's exactly (977 in 1.0.101).
+
+## 1.0.101 (2026-11)
+
+### Fixes
+- Graphics chip accuracy, from the chip test program (nxdk_pgraph_tests):
+  977 of its 3556 pictures now match the console's exactly (803 in 1.0.99).
+  What games can see of it:
+  - Wireframe and point fill modes, and line widths, are drawn as the
+    console draws them (they were always filled, and lines 1 pixel wide).
+  - Two-sided lighting: back faces take their own colours (unlit, none).
+  - The specular alpha is 1 unless the material provides it, with vertex
+    shaders too.
+  - Exponential fog takes the fog parameters' bias.
+  - 2D blits honour their clip rectangle, the blend with a beta factor and
+    the alpha of the X8R8G8B8 surface formats.
+  - Pixel shader dot mappings (signed D3D / GL, HILO hemisphere) and the
+    specular reflection with a constant eye vector are the console's.
+  - W-buffered surfaces with a depth offset (decals) take the console's
+    offset slope.
+- Homebrew that drives the chip itself: float depth buffers, the window
+  clip's eight rectangles (inside or outside), the surface clip, the 2D
+  line object and texel edges now behave as on the console.
+
+## 1.0.100 (2026-11)
+
+### Fixes
+- GTA San Andreas ran at 20 fps at its original frame rate (and no higher
+  than 30 unlocked) since 1.0.98: the fix for Vice City's stutter held back
+  a CPU that needs most of each frame. It now only waits for the screen
+  when it has time to spare. San Andreas is back to 30 fps, and Vice City
+  keeps turning smoothly.
+
+## 1.0.99 (2026-11)
+
+### Fixes
+- Fixed-function lighting: the lit colour's base (the scene ambient and the
+  emission) is made as the console makes it when the material's colours
+  come from the vertices, and each light's ambient takes the vertex colour
+  it is set to. Some lit surfaces were too bright or the wrong tint.
+- Homebrew that drives the graphics chip itself (no D3D) has its vertices
+  placed on the chip's own 1/16-pixel grid: 189 more of the chip test
+  program's pictures now match the console's exactly (803 of 3556).
+
+## 1.0.98 (2026-11)
+
+### Fixes
+- Stutter in games whose world moved unevenly from one frame to the next
+  even with every frame on screen on time: the emulated CPU, much faster
+  than the console's, got so far ahead of the display that the game had to
+  wait for room partway through a frame, and its frames then began at
+  uneven times. GTA Vice City turning the camera judders no more, at the
+  original frame rate, at 60 fps and at 120 fps. A game that finishes a
+  frame while another is still waiting to be shown now waits for the next
+  one to go on screen, at the frame's end, as on the console.
+- The "up to 60" frame limit ran at 59 fps: it now gives exactly 60.
+
+## 1.0.97 (2026-11)
+
+### Fixes
+- Frame pacing on displays with a fixed refresh rate and V-Sync (60 Hz and
+  its multiples, no variable refresh rate): every frame of a 60 fps game is
+  now on screen for exactly one refresh. The console's display keeps time
+  with the monitor's own refreshes, as the graphics driver reports them,
+  and each frame is handed over midway between two of them. Before, a frame
+  was now and then shown twice and the next one never (Burnout 3: once
+  every 45 seconds), and from a game's first second every frame could reach
+  the screen one refresh later than it should.
+- Less delay with V-Sync at 60 Hz: a frame is on screen 8 ms after it is
+  handed over, where it took 15.
+
+## 1.0.96 (2026-11)
+
+### Fixes
+- Frame pacing on Windows: each frame is shown at its own time, a fixed
+  moment after the console's display would have changed to it, instead of
+  whenever it reached the window. A game's frames went on screen unevenly
+  spaced (a 60 fps game's 13 to 20 ms apart where every one should be
+  16.7), which a variable refresh rate display shows as it comes: a
+  constant fine stutter. They are now evenly spaced to within a few
+  hundredths of a millisecond at 60 fps, and within a millisecond at 30 fps
+  and at unlocked frame rates.
+
+## 1.0.95 (2026-11)
+
+The graphics chip is now checked against the chip's own test program
+(nxdk_pgraph_tests), whose pictures are compared with the ones a console
+makes. This update is what it took to run it, and the first rules it
+corrected.
+
+### New
+- Homebrew that drives the graphics chip itself, without the console's
+  graphics library, now runs: programs made with nxdk's pbkit start, draw
+  and are shown, and can read back what they drew, the depth buffer
+  included.
+
+### Fixes
+- Scissor rectangles follow the console's rule: one set in the first slot
+  applies to all eight, and one that covers the whole picture means nothing
+  is cut. A rectangle left over in another slot could cut away everything
+  drawn afterwards.
+- A vertex whose w is 0 is placed as the console places it, far off along
+  its own direction, instead of where it stood.
+- A picture a game writes into a render target reaches it after many
+  different target sizes were used in a session (only the first eight
+  sizes worked, the rest were skipped).
+- A session that goes through more than 8192 different drawing states
+  keeps drawing: the draws of any new one were dropped from there on.
+
+## 1.0.94 (2026-11)
+
+This update comes out of a review of the whole core: the processor's
+translator, the kernel, the devices, savestates and the graphics chip.
+
+### New
+- The graphics chip follows the console more closely in a dozen rules,
+  each taken from tests run on a console rather than from one game:
+  - A texture's colour key is cut out, as sprites drawn over a flat
+    background colour expect.
+  - Textures in the L6V5U5 and L16 formats are drawn (they were skipped).
+  - A flat texture where a cube map is expected, and a cube map where a
+    flat texture is expected, are read as the console reads them instead
+    of as white or as the cube's first face.
+  - Fog whose distance is infinite or not a number follows the fog mode;
+    it could cover the picture with the fog's colour.
+  - Fixed-function specular highlights and spotlight cones use the
+    console's own curve, and reflection maps follow the infinite viewer
+    setting.
+  - A draw without a colour or normal array takes the last vertex of the
+    draw before it, as the console's registers do.
+  - Points drawn through a vertex program have the size the game set.
+  - Blending by the destination's alpha into a render target without
+    alpha, and the alpha such a target is cleared to.
+  - A render state given a value the console rejects keeps the value it
+    had.
+- Games can catch processor exceptions with their own handlers (access
+  violations, divisions by zero, invalid instructions and breakpoints),
+  and a group of rare instructions that used to stop a game now run.
+
+### Fixes
+- Savestates, disc images, game folders, mods and cheat files are read as
+  files that may come from anywhere. A damaged or altered one is refused
+  instead of writing outside xbased's folders or over its own memory.
+- A savestate made with a patch longer than 256 bytes switched on loads
+  again.
+- Values a game hands over (vertex data, texture sizes, long paths,
+  accesses at the edge of a device's registers) no longer reach past the
+  emulator's own buffers.
+- A picture the graphics chip drew is no longer copied back over memory
+  the game has freed and given another use.
+- A long session no longer slows down as the game keeps making textures.
+- Vertex data at odd addresses is drawn right on drivers that are strict
+  about it, and occlusion tests no longer run out of room in scenes that
+  use thousands of them.
+
+### Performance
+- Release builds no longer keep internal statistics while a game runs:
+  about 3 % more speed where the processor is the limit and less
+  processor use everywhere else. The log is shorter for it: the lines of
+  statistics every few seconds are gone, the rest is as before.
+
+## 1.0.93 (2026-11)
+
+### New
+- Add games has an "Other location..." entry at the end of its places. It
+  opens the system's own folder picker (a file picker where one file is
+  asked for), where you can type a network path such as `\\server\games`
+  or browse anywhere the places don't list. An extracted game's folder
+  chosen there goes straight into the library.
+
+## 1.0.92 (2026-11)
+
+### New
+- Extracted games play from their folder. A folder holding a game's
+  `default.xbe` and the rest of its files is read as the disc it came
+  from, and the library finds it like a disc image, with its name, icon
+  and cover. Open the folder (or its `default.xbe`) from the command line
+  too. Network paths such as `\\server\share\game` work as well.
+
+### Fixes
+- Breakdown no longer drops you through the floor of its first room after
+  the opening cutscene. The game copies each area's data from the disc to
+  the hard disk's cache, and xbased answered its writes to the cache as
+  still in progress, which the game took as a failed copy. Only the first
+  16 KB of the area made it, and the room loaded empty. Writes through the
+  hard disk's cache now finish at once, as on the console.
+
+## 1.0.91 (2026-11)
+
+### Fixes
+- Angelic Concert boots instead of staying on a black screen. It gives a
+  background thread that measures the CPU a very high priority, and
+  xbased let that thread run above everything, so the game itself never
+  got to run again. Thread priorities now stay in the range the Xbox
+  kernel allows.
+- AMF Bowling 2004 no longer hangs on its loading screen the first time it
+  loads. While it loads, the game pauses a background thread that copies
+  its files to the hard disk, and that thread could be paused while it was
+  waiting for a lock. xbased still handed it the lock, so the paused thread
+  kept it and the game waited for it for ever. A paused thread now leaves
+  the lock for the others until it runs again, as on the console.
+- America's Army - Rise of a Soldier no longer closes after its intro. The
+  game uses a rare 16-bit form of an instruction that saves the CPU flags
+  on the stack, and xbased ran it on its own stack instead of the game's.
+  That left xbased's stack slightly out of line, and it crashed soon
+  after. Those instructions are now translated properly.
+
+## 1.0.90 (2026-11)
+
+### New
+- Controller shortcuts can use Back plus a button (Back + X, Back + RB and
+  so on) as well as Guide plus a button, for controllers that don't have a
+  Guide button or where it opens something else. Pick them in Settings ›
+  Shortcuts. The game still sees Back pressed, but not the button that goes
+  with it, and Back + Start keeps opening the menu.
+
+### Fixes
+- Aquaman: Battle for Atlantis shows its intro movies instead of a black
+  screen. The game writes each movie frame straight into its frame buffers
+  and leaves the GPU set up for a small texture it drew before, and that
+  small texture is what went on screen. Now a frame buffer the display is
+  reading is shown the way the video mode lays it out.
+
 ## 1.0.89 (2026-11)
 
 ### Fixes

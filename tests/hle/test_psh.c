@@ -103,6 +103,8 @@ static void test_final_fog(void)
     HT_CHECK(strstr(buf, "v1r0 = clamp(v1r0, 0.0, 1.0);") != NULL);
     HT_CHECK(strstr(buf, "(pc.fog.y - vFog) / (pc.fog.y - pc.fog.x)") != NULL);
     HT_CHECK(strstr(buf, "a >= r") != NULL);
+    /* ... of the alpha in eight bits against the reference's */
+    HT_CHECK(strstr(buf, "float a = floor(outc.a * 255.0 + 0.5), r = floor(pc.alpha_ref * 255.0 + 0.5);") != NULL);
     k.fog_abs = 1;                      /* an _ABS fog mode the title pushed */
     HT_CHECK(hle_psh_glsl(&k, buf, sizeof(buf), NULL) > 0);
     HT_CHECK(strstr(buf, "(pc.fog.y - abs(vFog)) / (pc.fog.y - pc.fog.x)") != NULL);
@@ -258,7 +260,7 @@ static void test_bumpenv(void)
     HT_CHECK(strstr(buf, "uvec4 bump;") != NULL);
     HT_CHECK(strstr(buf, "vec2 d = mat2(unpackHalf2x16(pc.bump.x), unpackHalf2x16(pc.bump.y)) * "
                          "sgn8(t0.bg);") != NULL);
-    HT_CHECK(strstr(buf, "t1 = samp(1u, nvproj(vTex1).xy + d);") != NULL);
+    HT_CHECK(strstr(buf, "t1 = sampx(1u, nvproj(vTex1).xy + d, true);") != NULL);
     HT_CHECK(strstr(buf, "vec4 t2 = samp(2u, nvproj(vTex2).xy);") != NULL);
     k.vol = 2;                          /* t1 a volume: r passes through */
     HT_CHECK(hle_psh_glsl(&k, buf, sizeof(buf), &un) > 0);
@@ -270,6 +272,159 @@ static void test_bumpenv(void)
     HT_EQ_U32(un, 0);
     HT_CHECK(strstr(buf, "sgn8(t1.bg);") != NULL);
     HT_CHECK(strstr(buf, "t2.rgb *= clamp(l.x * t1.r + l.y, 0.0, 1.0);") != NULL);
+}
+
+/* A fog coordinate that is infinite, a factor that is no number: by the fog mode */
+static void test_fog_exceptional(void)
+{
+    uint32_t rs[HLE_PS_REGS] = { 0 };
+    rs[HLE_PS_RGB_IN] = IN4(R_T0, R_V0, R_ZERO, R_ZERO);
+    rs[HLE_PS_RGB_OUT] = R_R0 << 4;
+    rs[HLE_PS_COUNT] = 1;
+    rs[HLE_PS_TEXMODES] = 1;
+    HlePshKey k;
+    hle_psh_key(rs, &k);
+    static const struct {
+        uint8_t fog, abs;
+        const char *formula, *rule;
+    } c[] = {
+        /* EXP: unfogged; EXP_ABS: fogged (pc.fog.x: FOG_PARAMS p0 - 1.5) */
+        { 2, 0, "float fogf = pc.fog.x + exp(-vFog * pc.fog.z);", "fogf = isinf(vFog) || isnan(fogf) ? 1.0 :" },
+        { 2, 1, "float fogf = pc.fog.x + exp(-abs(vFog) * pc.fog.z);", "fogf = isinf(vFog) || isnan(fogf) ? 0.0 :" },
+        /* EXP2, EXP2_ABS: fogged */
+        { 3, 0, "float fogf = pc.fog.x + exp(-fd * fd);", "fogf = isinf(vFog) || isnan(fogf) ? 0.0 :" },
+        { 3, 1, "float fogf = pc.fog.x + exp(-fd * fd);", "fogf = isinf(vFog) || isnan(fogf) ? 0.0 :" },
+        /* LINEAR, LINEAR_ABS: unfogged */
+        { 4, 0, "float fogf = (pc.fog.y - vFog) / (pc.fog.y - pc.fog.x);",
+          "fogf = isinf(vFog) || isnan(fogf) ? 1.0 :" },
+        { 4, 1, "float fogf = (pc.fog.y - abs(vFog)) / (pc.fog.y - pc.fog.x);",
+          "fogf = isinf(vFog) || isnan(fogf) ? 1.0 :" },
+    };
+    for (unsigned i = 0; i < sizeof(c) / sizeof(c[0]); i++) {
+        k.fog = c[i].fog;
+        k.fog_abs = c[i].abs;
+        HT_CHECK(hle_psh_glsl(&k, buf, sizeof(buf), NULL) > 0);
+        if (i == 1) {
+            dump("psh_fog_exc");
+        }
+        HT_CHECK(strstr(buf, c[i].formula) != NULL);
+        HT_CHECK(strstr(buf, c[i].rule) != NULL);
+        HT_CHECK(strstr(buf, "clamp(fogf, 0.0, 1.0);") != NULL);
+    }
+    /* a vertex factor (no table mode): as it was, a NaN unfogged */
+    k.fog = 1;
+    k.fog_abs = 0;
+    HT_CHECK(hle_psh_glsl(&k, buf, sizeof(buf), NULL) > 0);
+    HT_CHECK(strstr(buf, "float fogf = isnan(vFog) ? 1.0 : clamp(vFog, 0.0, 1.0);") != NULL);
+    HT_CHECK(strstr(buf, "isinf") == NULL);
+}
+
+/* The colour key: a stage's fetched texel equal to SET_COLOR_KEY_COLOR, by the stage's mode */
+static void test_color_key(void)
+{
+    uint32_t rs[HLE_PS_REGS] = { 0 };
+    rs[HLE_PS_RGB_IN] = IN4(R_T0, R_V0, R_ZERO, R_ZERO);
+    rs[HLE_PS_ALPHA_IN] = IN4(R_T0 | CH_A, R_V0 | CH_A, R_ZERO, R_ZERO);
+    rs[HLE_PS_RGB_OUT] = R_R0 << 4;
+    rs[HLE_PS_ALPHA_OUT] = R_R0 << 4;
+    rs[HLE_PS_COUNT] = 1;
+    /* t0 PROJECT2D, t1 CUBEMAP, t2 PASSTHRU, t3 PROJECT2D */
+    rs[HLE_PS_TEXMODES] = 1 | 3 << 5 | 4 << 10 | 1 << 15;
+    HlePshKey k;
+    hle_psh_key(rs, &k);
+    unsigned un = 99;
+    size_t n = hle_psh_glsl(&k, buf, sizeof(buf), &un);
+    HT_CHECK(n > 0);
+    HT_CHECK(strstr(buf, "ckey") == NULL);              /* no key: the text as it was */
+    /* stage 0 discards on magenta, alpha compared; stage 1 loses its alpha on a key whose alpha
+     * is not compared; stage 2's mode fetches nothing: no test; stage 3 goes to (0, 0, 0, 0) */
+    k.tex_modes |= HLE_PSH_CKEY_BITS(0, 3, false) | HLE_PSH_CKEY_BITS(1, 1, true) |
+                   HLE_PSH_CKEY_BITS(2, 3, false) | HLE_PSH_CKEY_BITS(3, 2, false);
+    k.ckey[0] = 0xFFFF00FFu;
+    k.ckey[1] = 0x00102030u;
+    k.ckey[2] = 0xFF000000u;
+    k.ckey[3] = 0x00000000u;
+    HT_EQ_U32(HLE_PSH_CKEY(&k, 0), 3);
+    HT_EQ_U32(HLE_PSH_CKEY(&k, 1), 1);
+    HT_EQ_U32(HLE_PSH_CKEY_NOALPHA(&k, 1), 1);
+    HT_EQ_U32(HLE_PSH_CKEY_NOALPHA(&k, 0), 0);
+    HT_EQ_U32((k.tex_modes >> 5) & 0x1F, 3);            /* the modes untouched */
+    n = hle_psh_glsl(&k, buf, sizeof(buf), &un);
+    HT_CHECK(n > 0 && n == strlen(buf));
+    dump("psh_color_key");
+    HT_EQ_INT(un, 0);
+    HT_CHECK(strstr(buf, "bool ckey(vec4 t, uint key, uint mask)") != NULL);
+    HT_CHECK(strstr(buf, "uvec4 c = uvec4(clamp(t, 0.0, 1.0) * 255.0 + 0.5);") != NULL);
+    HT_CHECK(strstr(buf, "if (ckey(t0, 0xffff00ffu, 0xffffffffu)) { discard; }") != NULL);
+    HT_CHECK(strstr(buf, "if (ckey(t1, 0x00102030u, 0x00ffffffu)) { t1.a = 0.0; }") != NULL);
+    HT_CHECK(strstr(buf, "ckey(t2,") == NULL);
+    HT_CHECK(strstr(buf, "if (ckey(t3, 0x00000000u, 0xffffffffu)) { t3 = vec4(0.0); }") != NULL);
+    /* the test follows the fetch and comes before the combiners read the texel */
+    const char *fetch = strstr(buf, "vec4 t0 = samp(0u, nvproj(vTex0).xy);");
+    const char *test = strstr(buf, "if (ckey(t0,");
+    const char *comb = strstr(buf, "/* combiner stage 0 */");
+    HT_CHECK(fetch && test && comb && fetch < test && test < comb);
+}
+
+/* A texture of another kind than its stage's mode fetches: a 2D one under the cube modes and
+ * DOT_STR_3D, a cube under PROJECT2D */
+static void test_texture_kind(void)
+{
+    uint32_t rs[HLE_PS_REGS] = { 0 };
+    rs[HLE_PS_RGB_IN] = IN4(R_T0, R_V0, R_ZERO, R_ZERO);
+    rs[HLE_PS_RGB_OUT] = R_R0 << 4;
+    rs[HLE_PS_COUNT] = 1;
+    /* t0 PROJECT2D, t1 CUBEMAP */
+    rs[HLE_PS_TEXMODES] = HLE_PST_PROJECT2D | HLE_PST_CUBEMAP << 5;
+    HlePshKey k;
+    hle_psh_key(rs, &k);
+    unsigned un = 99;
+    HT_CHECK(hle_psh_glsl(&k, buf, sizeof(buf), &un) > 0);
+    HT_CHECK(strstr(buf, "cube2d") == NULL && strstr(buf, "samp2(") == NULL);  /* as it was */
+    HT_CHECK(strstr(buf, "vec4 t0 = samp(0u, nvproj(vTex0).xy);") != NULL);
+    HT_CHECK(strstr(buf, "vec4 t1 = sampc(1u, vTex1.xyz);") != NULL);
+    k.compare |= HLE_PSH_TKIND_BIT(0) | HLE_PSH_TKIND_BIT(1);
+    HT_EQ_U32(HLE_PSH_TKIND(&k, 0), 1);
+    HT_EQ_U32(HLE_PSH_TKIND(&k, 2), 0);
+    HT_CHECK(hle_psh_glsl(&k, buf, sizeof(buf), &un) > 0);
+    dump("psh_kind_cube");
+    HT_EQ_INT(un, 0);
+    /* a cube under PROJECT2D: along (1, t, -s) */
+    HT_CHECK(strstr(buf, "t0 = sampc(0u, normalize(vec3(1.0, p.y, -p.x)));") != NULL);
+    /* a 2D texture under CUBEMAP: the minor coordinates over the major one */
+    HT_CHECK(strstr(buf, "vec2 cube2d(vec3 d)") != NULL);
+    HT_CHECK(strstr(buf, "vec4 t1 = samp2(1u, cube2d(vTex1.xyz));") != NULL);
+
+    /* the dot-product modes: t1 DOTPRODUCT, t2 DOT_RFLCT_DIFF, t3 DOT_RFLCT_SPEC, 2D textures */
+    rs[HLE_PS_TEXMODES] = HLE_PST_PROJECT2D | HLE_PST_DOTPRODUCT << 5 | HLE_PST_DOT_RFLCT_DIFF << 10 |
+                          HLE_PST_DOT_RFLCT_SPEC << 15;
+    hle_psh_key(rs, &k);
+    k.compare |= HLE_PSH_TKIND_BIT(2) | HLE_PSH_TKIND_BIT(3);
+    HT_CHECK(hle_psh_glsl(&k, buf, sizeof(buf), &un) > 0);
+    dump("psh_kind_reflect");
+    HT_CHECK(strstr(buf, "vec4 t2 = samp2(2u, cube2d(vec3(dot1, dot2, dot3)));") != NULL);
+    HT_CHECK(strstr(buf, "t3 = samp2(3u, cube2d(rv));") != NULL);
+    HT_CHECK(strstr(buf, "sampc(2u") == NULL && strstr(buf, "sampc(3u") == NULL);
+
+    /* t3 DOT_STR_3D and DOT_STR_CUBE with a 2D texture */
+    rs[HLE_PS_TEXMODES] = HLE_PST_PROJECT2D | HLE_PST_DOTPRODUCT << 5 | HLE_PST_DOTPRODUCT << 10 |
+                          HLE_PST_DOT_STR_3D << 15;
+    hle_psh_key(rs, &k);
+    HT_CHECK(hle_psh_glsl(&k, buf, sizeof(buf), &un) > 0);
+    HT_CHECK(strstr(buf, "vec4 t3 = samp3(3u, vec3(dot1, dot2, dot3));") != NULL);
+    k.compare |= HLE_PSH_TKIND_BIT(3);
+    HT_CHECK(hle_psh_glsl(&k, buf, sizeof(buf), &un) > 0);
+    dump("psh_kind_str3d");
+    HT_CHECK(strstr(buf, "vec4 t3 = samp2(3u, vec2(dot1, dot2));") != NULL);
+    rs[HLE_PS_TEXMODES] = HLE_PST_PROJECT2D | HLE_PST_DOTPRODUCT << 5 | HLE_PST_DOTPRODUCT << 10 |
+                          HLE_PST_DOT_STR_CUBE << 15;
+    hle_psh_key(rs, &k);
+    k.compare |= HLE_PSH_TKIND_BIT(3);
+    HT_CHECK(hle_psh_glsl(&k, buf, sizeof(buf), &un) > 0);
+    dump("psh_kind_strcube");
+    HT_CHECK(strstr(buf, "vec4 t3 = samp2(3u, cube2d(vec3(dot1, dot2, dot3)));") != NULL);
+    /* the comparison bits of a clip-plane stage are not the kind's: the kind above them */
+    HT_EQ_U32(k.compare & 0xFFFF, 0);
 }
 
 static void test_overflow(void)
@@ -290,6 +445,9 @@ int main(void)
     HT_RUN(test_reflect);
     HT_RUN(test_shadow_project);
     HT_RUN(test_bumpenv);
+    HT_RUN(test_fog_exceptional);
+    HT_RUN(test_color_key);
+    HT_RUN(test_texture_kind);
     HT_RUN(test_overflow);
     HT_DONE();
 }

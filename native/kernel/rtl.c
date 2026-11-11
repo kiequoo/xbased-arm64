@@ -61,13 +61,14 @@ static uint64_t RtlInitAnsiString(NcKernel *k, NcFrame *f, const uint32_t *a)
 /* RtlInitUnicodeString(DestinationString, SourceString) */
 static uint64_t RtlInitUnicodeString(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    uint16_t len = 0;
+    uint32_t n = 0;                     /* 32 bits: counted in 16, a string of 32768 characters never ended */
     if (a[1]) {
         const uint16_t *w = nc_vm_host(k->vm, a[1]);
-        while (w[len / 2]) {
-            len += 2;
+        while (w[n]) {
+            n++;
         }
     }
+    const uint16_t len = (uint16_t)(n * 2);
     str_set(k, a[0], len, a[1] ? len + 2 : 0, a[1]);
     return 0;
 }
@@ -233,6 +234,12 @@ static uint64_t RtlAnsiStringToUnicodeString(NcKernel *k, NcFrame *f, const uint
     uint32_t buf = str_buf(k, a[0]);
     uint16_t max = str_max(k, a[0]);
     if (a[2] & 0xff) {
+        if (n * 2 + 2 > 0xFFFF) {
+            /* longer than a UNICODE_STRING holds: refused, as the kernel
+             * does (the size wrapped to a few bytes and the characters
+             * were written past them, over the pool) */
+            return 0xC00000F0u;         /* STATUS_INVALID_PARAMETER_2 */
+        }
         max = (uint16_t)(n * 2 + 2);
         buf = str_alloc(k, max);
         if (!buf) {
@@ -374,8 +381,9 @@ static uint64_t RtlTimeFieldsToTime(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
     int16_t tf[8];
     memcpy(tf, nc_vm_host(k->vm, a[0]), sizeof(tf));
-    if (tf[0] < 1601 || tf[1] < 1 || tf[1] > 12 || tf[2] < 1 || tf[2] > k_month_days[leap(tf[0])][tf[1] - 1]) {
-        return 0;
+    if (tf[0] < 1601 || tf[1] < 1 || tf[1] > 12 || tf[2] < 1 || tf[2] > k_month_days[leap(tf[0])][tf[1] - 1] ||
+        tf[3] < 0 || tf[3] > 23 || tf[4] < 0 || tf[4] > 59 || tf[5] < 0 || tf[5] > 59 || tf[6] < 0 || tf[6] > 999) {
+        return 0;                       /* no such time (the kernel checks every field) */
     }
     uint64_t days = 0;
     for (int y = 1601; y < tf[0]; y++) {

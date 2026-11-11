@@ -120,7 +120,9 @@ typedef struct HleFfStage {
     uint32_t colorop, colorarg0, colorarg1, colorarg2;
     uint32_t alphaop, alphaarg0, alphaarg1, alphaarg2;
     uint32_t resultarg;
-    uint8_t texture;                  /* a texture is bound to this stage */
+    uint8_t texture;                  /* a texture is bound to this stage; bit 1: one with its
+                                         own border (its reported size in pc.scr[stage],
+                                         cmd.h tex_border; programs only) */
     uint8_t tex_dim;                  /* 2 = 2D, 3 = cube, 4 = volume */
     uint8_t alpha_kill;               /* D3DTSS_ALPHAKILL: texel alpha 0 discards */
     uint8_t unset;                    /* no texture set (D3D's Textures[stage] NULL): an
@@ -144,11 +146,15 @@ typedef struct HleFfPsKey {
                                          fixed-function blend is off): the output and
                                          the target's pixel (uFb, set 2) as two's-
                                          complement bytes, 1 dst + src (ADDSIGNED), 2
-                                         dst - src (REVSUBTRACTSIGNED), saturated */
+                                         dst - src (REVSUBTRACTSIGNED), saturated; 3 and
+                                         4 those of a title without D3D, any factors: the
+                                         target's byte as it is, 0 to 255 (draw.c
+                                         signed_blend) */
     uint8_t fbfetch;                  /* stages (bits) whose texture is the colour target:
                                          its pixel as the earlier draws left it (uFb),
                                          as the NV2A's texture unit reads the memory
                                          the draw renders */
+    uint8_t tex_affine;               /* texture coordinates without perspective (cmd.h) */
 } HleFfPsKey;
 
 /* Push constants (std430 layout, <= 256 bytes: 256 used); HLE_PUSH_GLSL
@@ -285,13 +291,63 @@ static inline const char *hle_push_glsl(void)
 #define HLE_ZNORM_GLSL(z, out) \
     "  precise float " out " = " z " * pc.zscale + " z " * (pc.zscale == uintBitsToFloat(0x33800000u) ||\n" \
     "      pc.zscale == uintBitsToFloat(0x37800000u) ? pc.zscale * pc.zscale : 0.0);\n"
+/* the integer formats store w truncated (nxdk_pgraph_tests' W_buffering: a
+ * step below ours where w's fraction was over a half) */
+#define HLE_WBUF_TRUNC_GLSL \
+    "  if (pc.zscale == uintBitsToFloat(0x37800000u) || pc.zscale == uintBitsToFloat(0x33800000u))\n" \
+    "    wRaw = floor(wRaw);\n"
 /* first in main (derivatives before any discard), stored last */
 #define HLE_WBUF_CALC_GLSL \
     "  float wRaw = vW + uintBitsToFloat(pc.psc[18]) + uintBitsToFloat(pc.psc[19]) *\n" \
     "      max(abs(dFdx(vW)), abs(dFdy(vW)));\n" \
+    HLE_WBUF_TRUNC_GLSL \
     HLE_ZNORM_GLSL("wRaw", "wN") \
     "  float wDepth = clamp(wN, 0.0, 1.0);\n"
 #define HLE_WBUF_STORE_GLSL "  gl_FragDepth = wDepth;\n"
+/* The NV2A's slope term under W-buffering is one number for the polygon:
+ * max |dw| at its first pixel in top-left order (xemu's notes; nxdk_pgraph_tests'
+ * W_buffering prints the same ZSLOPESCALE * slope on every pixel of its floor,
+ * 0x1B9F1 over w from 0xF5 to 0x3A). With the barycentrics (key wbuf 2) the
+ * triangle's corners come back from their screen-space derivatives (the
+ * inverse of the corners' matrix), 1/w is linear on the screen, and
+ * |dw| = |d(1/w)| w^2 at that pixel; degenerate ones keep the pixel's own. */
+#define HLE_WBUF_BARY_EXT_GLSL "#extension GL_EXT_fragment_shader_barycentric : require\n"
+/* the corners' w as they are (their 1/w exact), the pixel's from the
+ * perspective barycentrics */
+#define HLE_WBUF_IN_BARY_GLSL "layout(location = 9) pervertexEXT in float vWv[3];\n"
+#define HLE_WBUF_CALC_BARY_GLSL \
+    "  vec3 bWv = vec3(vWv[0], vWv[1], vWv[2]);\n" \
+    "  float vW = dot(gl_BaryCoordEXT, bWv);\n" \
+    "  float wSl = max(abs(dFdx(vW)), abs(dFdy(vW)));\n" \
+    "  {\n" \
+    "    vec3 bL = gl_BaryCoordNoPerspEXT, bX = dFdxFine(bL), bY = dFdyFine(bL);\n" \
+    "    vec2 bp = gl_FragCoord.xy;\n" \
+    "    mat3 bMi = mat3(bX, bY, bL - bX * bp.x - bY * bp.y);\n" \
+    "    float bdt = determinant(bMi);\n" \
+    "    vec3 rv = 1.0 / bWv;\n" \
+    "    if (abs(bdt) > 1.0e-30 && !isinf(bdt) && !isnan(bdt) && all(greaterThan(bWv, vec3(0.0)))) {\n" \
+    "      mat3 bM = inverse(bMi);\n" \
+    "      vec2 c0 = bM[0].xy, c1 = bM[1].xy, c2 = bM[2].xy;\n" \
+    /* 1/w by its differences from corner 0's, from the w's own (exact: a */ \
+    /* far quad's corners' 1/w are equal to float precision) */ \
+    "      vec2 dr = (bWv.x - bWv.yz) / (bWv.yz * bWv.x);\n" \
+    "      float ra = dot(bX.yz, dr), rb = dot(bY.yz, dr);\n" \
+    "      float yr = 2.0 * floor(ceil(max(min(c0.y, min(c1.y, c2.y)), 0.0) - 0.5) * 0.5) + 0.5;\n" \
+    "      float xl = 1.0e30;\n" \
+    "      if ((c0.y - yr) * (c1.y - yr) <= 0.0 && c0.y != c1.y) xl = min(xl, c0.x + (yr - c0.y) * (c1.x - c0.x) / (c1.y - c0.y));\n" \
+    "      if ((c1.y - yr) * (c2.y - yr) <= 0.0 && c1.y != c2.y) xl = min(xl, c1.x + (yr - c1.y) * (c2.x - c1.x) / (c2.y - c1.y));\n" \
+    "      if ((c2.y - yr) * (c0.y - yr) <= 0.0 && c2.y != c0.y) xl = min(xl, c2.x + (yr - c2.y) * (c0.x - c2.x) / (c0.y - c2.y));\n" \
+    "      if (xl > 1.0e29) xl = min(c0.x, min(c1.x, c2.x));\n" \
+    "      float xr = 2.0 * floor(ceil(max(xl, 0.0) - 0.5) * 0.5) + 0.5;\n" \
+    "      float r0 = rv.x + dot((bMi * vec3(xr, yr, 1.0)).yz, dr);\n" \
+    "      if (r0 > 0.0 && r0 + ra > 0.0 && r0 + rb > 0.0)\n" \
+    "        wSl = max(abs(ra) / (r0 * (r0 + ra)), abs(rb) / (r0 * (r0 + rb)));\n" \
+    "    }\n" \
+    "  }\n" \
+    "  float wRaw = vW + uintBitsToFloat(pc.psc[18]) + uintBitsToFloat(pc.psc[19]) * wSl;\n" \
+    HLE_WBUF_TRUNC_GLSL \
+    HLE_ZNORM_GLSL("wRaw", "wN") \
+    "  float wDepth = clamp(wN, 0.0, 1.0);\n"
 
 /* EQUAL depth passes that do not write (vk/draw.c eq_tol) test LESSEQUAL a
  * step toward the eye, which passes everything in front of the stored depth
@@ -335,6 +391,14 @@ static inline const char *hle_push_glsl(void)
  * covers, Dead or Alive 2's eaves shadows). debug.hakux.snap=trunc: the
  * truncation (HLE_SNAP_TRUNC_FLAG), for A/B. */
 #define HLE_SNAP_TRUNC_FLAG 8192u
+/* pc.flags: a quad list's triangles, under HLE_SNAP_TRUNC_FLAG (a title
+ * without D3D): a bump stage's coordinate on a texel edge (within 1/4096)
+ * takes the texel before it in a quad's first triangle (0, 1, 2), the one
+ * after in its second (0, 2, 3), as the console's do (nxdk_pgraph_tests'
+ * Bump_map rows, the first triangle the one above the quad's 0 - 2
+ * diagonal; psh.c sampx). Other stages' ties as the flag above says: as
+ * a rule for all, Blend_surface and Pixel_shader's lost theirs. */
+#define HLE_QUAD_TIE_FLAG 16384u
 #define HLE_SUBPIXEL_GLSL(v) \
     "  " v " = (pc.flags & 8192u) != 0u ? trunc(" v " * 16.0) / 16.0 : " v " - 0.03125;\n"
 

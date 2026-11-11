@@ -2482,6 +2482,43 @@ static void remote_end(VkCommandBuffer cb, PsFrame *f, VkImage dst, bool shot, u
         shot_write(iw, ih);
         g_ps.shot_want = false;
     }
+    /* when it is due: a frame's first picture (one drawn again for the
+     * overlay over it comes as it is) */
+    {
+        static uint32_t s_due_serial;
+        static LONGLONG s_qpf;
+        const bool first = g_ps.have && g_ps.serial != s_due_serial;
+        s_due_serial = g_ps.serial;
+        LONG64 due = 0;
+        /* this process's clock to the counter's, both read now */
+        struct timespec ts;
+        LARGE_INTEGER c;
+        if (!s_qpf) {
+            LARGE_INTEGER q;
+            QueryPerformanceFrequency(&q);
+            s_qpf = q.QuadPart;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        QueryPerformanceCounter(&c);
+        const LONG64 mono = (LONG64)ts.tv_sec * 1000000000 + ts.tv_nsec;
+        const LONG64 qpc = (LONG64)(c.QuadPart / s_qpf) * 1000000000 + (c.QuadPart % s_qpf) * 1000000000 / s_qpf;
+        if (first && g_ps.f.due_ns) {
+            due = (LONG64)g_ps.f.due_ns + (qpc - mono);
+        }
+        InterlockedExchange64((volatile LONG64 *)&g_rm.sh->src[g_rm.slot].due[g_ps.idx], due);
+        /* the display's vsyncs as the frame has them, for the vblank: with
+         * V-Sync its presents are timed (the lead they keep), without it
+         * they come as before */
+        static uint32_t s_sync_seq;
+        const HleShareSrc *ss = &g_rm.sh->src[g_rm.slot];
+        const uint32_t seq = ss->sync_seq;
+        if (seq != s_sync_seq && ss->sync_ns > 0 && ss->sync_period_ns > 0) {
+            s_sync_seq = seq;
+            hle_host_display_sync((uint64_t)(ss->sync_ns - (qpc - mono)), (uint64_t)ss->sync_period_ns,
+                                  g_vsync && ss->pace_lead_us > 0 ? (uint64_t)ss->pace_lead_us * 1000 : 0);
+        }
+        InterlockedExchange((volatile LONG *)&g_rm.sh->src[g_rm.slot].locked, hle_host_vblank_timed());
+    }
     /* the newest picture, then the frame woken (it takes the newest it finds) */
     InterlockedExchange64((volatile LONG64 *)&g_rm.sh->src[g_rm.slot].latest, (LONG64)((v << 2) | g_ps.idx));
     SetEvent(g_rm.ev);

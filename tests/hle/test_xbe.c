@@ -120,7 +120,8 @@ static void test_lookups(void)
 /* fx_build_xbe() has room for 18 section headers; this moves them to
  * 0x1000 (names after them) so nsec up to HLE_XBE_MAX_SECTIONS + 1 fit.
  * Section i is "S<i>" at 0x11000 + i * 0x1000, the last one "XGRPH". */
-static uint8_t big[0x6000];
+/* the headers at 0x1000, then the names: up to 9 bytes each */
+static uint8_t big[0x1000 + (HLE_XBE_MAX_SECTIONS + 1) * (56 + 9) + 0x100];
 
 static uint32_t build_many_sections(unsigned nsec)
 {
