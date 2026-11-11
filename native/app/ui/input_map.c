@@ -313,6 +313,7 @@ static const struct { const char *v, *label; int code; } k_hkp[] = {
     {"back+y", "Back + Y", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_NORTH},
     {"back+lb", "Back + LB", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
     {"back+rb", "Back + RB", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
+    {"back+start", "Back + Start", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_START},
     {"back+ls", "Back + LS", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_LEFT_STICK},
     {"back+rs", "Back + RS", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_RIGHT_STICK},
     {"back+up", "Back + D-pad up", IM_HKP_BACK_WITH + SDL_GAMEPAD_BUTTON_DPAD_UP},
