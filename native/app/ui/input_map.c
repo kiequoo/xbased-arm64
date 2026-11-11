@@ -256,7 +256,8 @@ void im_hotkey_name(const Config *c, int h, char *out, size_t n)
     char k[24];
     snprintf(k, sizeof(k), "hk.%s", k_hk_name[h]);
     const char *v = cfg_get(c, k);
-    snprintf(out, n, "%s", v && *v ? v : SDL_GetKeyName(k_hk_def[h]));
+    const char *name = v && *v ? v : SDL_GetKeyName(k_hk_def[h]);
+    snprintf(out, n, "%s", *name ? name : "\xe2\x80\x94");  /* em dash when no key assigned */
 }
 
 void im_set_hotkey(Config *c, int h, SDL_Keycode key, SDL_Keymod mod)
