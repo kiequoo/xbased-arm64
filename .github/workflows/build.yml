@@ -71,7 +71,7 @@ jobs:
             -DNC_DEPS=../deps
 
       - name: Build
-        run: cmake --build build --target hakux
+        run: cmake --build build --target xbased
 
       - name: sccache stats
         run: sccache --show-stats
