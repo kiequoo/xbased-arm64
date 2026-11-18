@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — guest RAM as one Vulkan buffer (spec §5.2) and the UMA
+ * xbased HLE GPU — guest RAM as one Vulkan buffer (spec §5.2) and the UMA
  * upload-arena buffer (§5.3). Include only under CONFIG_VULKAN.
  */
 #ifndef HW_XBOX_HLE_VK_GUEST_RAM_H

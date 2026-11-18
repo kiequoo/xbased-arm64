@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the subset of GLib the shared HLE layer uses, so it
+ * xbased native core — the subset of GLib the shared HLE layer uses, so it
  * builds without GLib (native/compat/glib.c). Behavior follows GLib's
  * documented contracts for these calls.
  */

@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Kelvin's DMA contexts: the offsets its methods carry are
+ * xbased HLE GPU — Kelvin's DMA contexts: the offsets its methods carry are
  * offsets inside the DMA objects its context methods name.
  *
  * D3D's objects all start at address 0, so an offset is the address. Code

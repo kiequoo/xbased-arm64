@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — read the running title's XBE headers from guest memory.
+ * xbased HLE GPU — read the running title's XBE headers from guest memory.
  * vCPU thread only.
  */
 #ifndef HW_XBOX_HLE_CORE_XBE_GUEST_H

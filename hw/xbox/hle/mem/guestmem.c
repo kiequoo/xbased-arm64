@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — guest memory from host code.
+ * xbased HLE GPU — guest memory from host code.
  */
 #include "hw/xbox/hle/base.h"
 #include "hw/xbox/hle/mem/guestmem.h"

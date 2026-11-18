@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — the window's pictures handed to another process (Windows).
+ * xbased HLE GPU — the window's pictures handed to another process (Windows).
  *
  * The game's frame (native/app/win_frame.c) owns the one top-level window of
  * a game session and presents to it, with D3D12 and a DXGI swapchain; each

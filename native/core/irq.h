@@ -1,5 +1,5 @@
 /*
- * hakuX native core — interrupt lines.
+ * xbased native core — interrupt lines.
  *
  * Devices set line levels from any host thread (PCI lines are level
  * triggered). An asserted line rings the CPU's doorbell, so the guest leaves

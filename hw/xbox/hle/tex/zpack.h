@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — a depth target's image as the NV2A's words in memory.
+ * xbased HLE GPU — a depth target's image as the NV2A's words in memory.
  *
  * The host copies a depth image out an aspect at a time: its depth as 16-bit
  * words, as 32-bit words with the 24 bits low, or as floats, and its stencil

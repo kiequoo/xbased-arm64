@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the file browser (dash_browse.c): a screen of the
+ * xbased front end — the file browser (dash_browse.c): a screen of the
  * dashboard's own for adding games and picking files, run with a gamepad,
  * the keyboard or the mouse alike. The system's file dialogs it replaces
  * took the mouse or the keyboard only, the gamepad stood still.

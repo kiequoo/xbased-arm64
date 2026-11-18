@@ -1,5 +1,5 @@
 /*
- * hakuX native core, app front end — presenting the HLE GPU's front image.
+ * xbased native core, app front end — presenting the HLE GPU's front image.
  *
  * Once per display refresh the window's thread hands its Android window to
  * the HLE GPU's presenter (hw/xbox/hle/vk/swapchain.h), which draws the
@@ -29,7 +29,7 @@ static bool g_shown;
 static uint64_t g_win_presented, g_win_start_ns, g_last_present_ns, g_seen_presented;
 static float g_fps, g_avg_ms, g_last_ms;
 
-/* debug.hakux.present, for comparisons on the device (read every 64
+/* debug.xbased.present, for comparisons on the device (read every 64
  * refreshes): "fxaa" / "nofxaa", "fsr" / "bilinear" (the upscaling),
  * "noaverage" (a larger frame sampled bilinearly); otherwise the settings. */
 static struct {
@@ -54,7 +54,7 @@ int nc_upscale_from_name(const char *v)
 bool nc_present_init(void)
 {
     hle_disp_gamma_by_consumer(true); /* before the core starts: frames come without it */
-    nc_log("hakuX-app", "present: Vulkan; FXAA %s, upscaling %s", g_fxaa ? "on" : "off",
+    nc_log("xbased-app", "present: Vulkan; FXAA %s, upscaling %s", g_fxaa ? "on" : "off",
            g_upscale == NC_UPSCALE_FSR ? "FSR" : g_upscale == NC_UPSCALE_NEAREST ? "nearest" : "bilinear");
     return true;
 }
@@ -159,7 +159,7 @@ static void debug_poll(void)
         return;
     }
     char v[PROP_VALUE_MAX] = "";
-    hle_prop_get("debug.hakux.present", v);
+    hle_prop_get("debug.xbased.present", v);
     g_dbg.fxaa = strstr(v, "nofxaa") ? 0 : strstr(v, "fxaa") ? 1 : -1;
     g_dbg.upscale = strstr(v, "fsr")        ? NC_UPSCALE_FSR
                     : strstr(v, "nearest")  ? NC_UPSCALE_NEAREST
@@ -169,8 +169,8 @@ static void debug_poll(void)
 }
 
 /* The frame's half size in the window (clip space): letterboxed to the
- * chosen shape, the frame's own (4:3 for 640x480), 4:3, 16:9, or the
- * window's (stretched). */
+ * chosen shape: auto (a TV's for standard definition, HD frames their
+ * own), 4:3, 16:9, or the window's (stretched). */
 static void place(uint32_t fw, uint32_t fh, uint32_t ww, uint32_t wh, float *sx, float *sy)
 {
     const float wa = (float)ww / (float)wh;
@@ -186,12 +186,34 @@ static void place(uint32_t fw, uint32_t fh, uint32_t ww, uint32_t wh, float *sx,
         fa = wa;
         break;
     default:
-        /* A standard-definition frame (640x480, 720x480: under 16:10) from a
-         * console set to widescreen is anamorphic 16:9. */
-        if (g_widescreen && fa < 1.6f) {
-            fa = 16.0f / 9.0f;
+        /* A standard-definition frame (640x480, 720x480, 640x576, 720x576:
+         * under 16:10) is the TV's whole 4:3 picture, whatever its pixel
+         * count (the XDK's video modes: all four are native resolutions of
+         * one picture; 720x480 at its own 3:2 was 12 % too wide, PAL's
+         * 576 lines 6 to 17 % too narrow), or anamorphic 16:9: 16:9 only
+         * for a title that draws it, 4:3 for one that doesn't, whatever
+         * the console's setting. The title's own D3DPRESENTFLAG_WIDESCREEN
+         * (native/kernel/ex.c nc_kernel_av_title_scan: the one choice that
+         * holds at 480p, whose AV mode is the same for both shapes); else,
+         * on a standard-definition output, the AV mode's WSS flag (bit 28,
+         * which D3D sets from it); else the console's setting. A frame
+         * fills its shape: the 10x11 pixel modes
+         * (D3DPRESENTFLAG_10X11PIXELASPECTRATIO, which on a TV leave 32
+         * pixels of black at each side) take the whole of it too. */
+        if (fa < 1.6f) {
+            const uint32_t t = nc_dev_nv2a_av_title(), m = nc_dev_nv2a_av_mode();
+            const bool wide = t ? t == 2 : m && !(m & 0x80000000u) ? (m & 0x10000000u) != 0 : g_widescreen;
+            fa = wide ? 16.0f / 9.0f : 4.0f / 3.0f;
         }
         break;
+    }
+    /* the crop cuts the frame, it doesn't stretch it: the place takes the
+     * shape of what is left (Metal Gear Solid 2's 640 x 448 picture inside
+     * its 480 lines, 16 cut off the top and the bottom: 1.43, not 4:3 with
+     * the picture stretched 7 % taller), and the frame, grown each way by
+     * what is cut off that way (growth), keeps its own */
+    if (g_aspect != NC_ASPECT_STRETCH) {
+        fa *= (640.0f - 2.0f * (float)g_crop_h) / 640.0f * 480.0f / (480.0f - 2.0f * (float)g_crop_v);
     }
     *sx = *sy = 1.0f;
     if (wa > fa) {
@@ -292,7 +314,8 @@ bool nc_present_frame(struct ANativeWindow *win)
     const uint64_t key = (uint64_t)fxaa | (uint64_t)upscale << 1 | (uint64_t)g_dbg.average << 4 |
                          (uint64_t)g_widescreen << 5 | (uint64_t)(uint32_t)g_aspect << 8 |
                          (uint64_t)(uint32_t)(g_overscan + 64) << 16 | (uint64_t)(uint32_t)g_crop_h << 24 |
-                         (uint64_t)(uint32_t)g_crop_v << 32;
+                         (uint64_t)(uint32_t)g_crop_v << 32 | (uint64_t)(nc_dev_nv2a_av_mode() >> 16) << 40 |
+                         (uint64_t)nc_dev_nv2a_av_title() << 56;
 #ifdef NC_DESKTOP
     const bool as_they_come = !nc_dev_nv2a_vblank_locked() || nc_dev_nv2a_vblank_timed();
 #else

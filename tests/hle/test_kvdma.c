@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Kelvin's DMA contexts (hw/xbox/hle/pb/kvdma.c).
+ * xbased HLE GPU — Kelvin's DMA contexts (hw/xbox/hle/pb/kvdma.c).
  */
 #include "hle_test.h"
 

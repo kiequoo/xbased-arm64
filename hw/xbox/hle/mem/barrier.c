@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — first-write barrier and write recorder.
+ * xbased HLE GPU — first-write barrier and write recorder.
  */
 #include "hw/xbox/hle/base.h"
 #include "hw/xbox/hle/hle.h"
@@ -132,7 +132,7 @@ void hle_barrier_init(uint64_t ram_size)
     g_contended = g_new0(uint32_t, (ram_size >> 12) / 32 + 1);
     g_cspan = g_new0(uint32_t, ram_size >> 12);
     g_hot = g_new0(uint8_t, ram_size >> 12);
-    if (!getenv("HAKUX_HLE_NO_CLEAN")) {     /* debug: no cache cleaning (A/B) */
+    if (!getenv("XBASED_HLE_NO_CLEAN")) {     /* debug: no cache cleaning (A/B) */
         g_wseq = g_new0(uint32_t, ram_size >> 12);
         g_cseq = g_new0(uint32_t, ram_size >> 12);
         g_bseq = g_new0(uint32_t, (ram_size >> (12 + WBLOCK_SHIFT)) + 1);
@@ -635,6 +635,13 @@ void hle_barrier_guard_stats(uint64_t *neighbours, uint64_t *hot)
 #define RPT_PAGES   8
 #define RPT_PENDING 256
 #define RPT_WAIT_NS 30000000ll
+/* ... and not past RPT_AHEAD_NS for one the decoder hasn't reached: its
+ * frame still to decode behind the host GPU's (Fable turning its camera at
+ * 4x: 14 to 24 ms a frame), the guest held the whole 30 ms with its vblank
+ * waiting, so a presentation interval of 2 flipped a vblank late, 50 ms
+ * frames every 2 s. Let go, D3D finds the test incomplete and the title asks
+ * again as on the console, its interrupts taken meanwhile. */
+#define RPT_AHEAD_NS 4000000ll
 static struct {
     uint32_t page[RPT_PAGES];           /* pa >> 12 */
     bool shut[RPT_PAGES];               /* without guest access */
@@ -812,7 +819,7 @@ static bool rpt_access(uint32_t pa)
             late = rpt_late((unsigned)pg, frame, &ahead);
             /* the decoder short of a report and waiting on this thread */
             const bool stuck = late && ahead && held && held();
-            if (late && (stuck || hle_now_ns() - t0 > RPT_WAIT_NS)) {
+            if (late && (stuck || hle_now_ns() - t0 > (ahead ? RPT_AHEAD_NS : RPT_WAIT_NS))) {
                 /* the back end won't write them now (stuck), or at all (a
                  * test the decoder dropped): not waited for again */
                 for (unsigned k = 0; k < RPT_PENDING; k++) {
@@ -824,8 +831,9 @@ static bool rpt_access(uint32_t pa)
                 if (stuck) {
                     g_rpt.held++;
                 } else if (g_rpt.timeouts++ < 8) {
-                    hle_log("hakuX-hle-pb", "report gate: page %08x's reports not written in 30 ms",
-                            g_rpt.page[pg] << 12);
+                    hle_log("xbased-hle-pb", "report gate: page %08x's reports not %s in %lld ms",
+                            g_rpt.page[pg] << 12, ahead ? "reached" : "written",
+                            (ahead ? RPT_AHEAD_NS : RPT_WAIT_NS) / 1000000);
                 }
                 late = false;
             }
@@ -1056,7 +1064,7 @@ void hle_mem_first_write(uint64_t ram_addr, unsigned size)
         /* Nothing was ever armed, so no HLE bit should be clean. A trap here
          * means the dirty client is not maintained (Step 1(c)). */
         if (g_st.unarmed++ == 0) {
-            hle_log("hakuX-hle-mem", "barrier: UNARMED trap at pa=%08x", pa);
+            hle_log("xbased-hle-mem", "barrier: UNARMED trap at pa=%08x", pa);
         }
         return;
     }

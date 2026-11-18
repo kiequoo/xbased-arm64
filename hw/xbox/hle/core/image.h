@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — XBE section helpers (the title's D3D library ranges).
+ * xbased HLE GPU — XBE section helpers (the title's D3D library ranges).
  */
 #ifndef HW_XBOX_HLE_CORE_IMAGE_H
 #define HW_XBOX_HLE_CORE_IMAGE_H

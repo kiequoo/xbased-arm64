@@ -1,5 +1,5 @@
 /*
- * hakuX front end — controller mapping (input_map.h).
+ * xbased front end — controller mapping (input_map.h).
  */
 #include "native/app/ui/input_map.h"
 
@@ -365,6 +365,17 @@ static int hkpad_code(const char *v)
     return IM_HKP_NONE;
 }
 
+/* a stick's inverted axes (stick.linvert, stick.rinvert: off, y, x, xy),
+ * the game's over the global one: 1 X, 2 Y */
+static uint8_t invert_bits(const Config *game, const Config *global, const char *key)
+{
+    const char *v = game && cfg_get(game, key) ? cfg_get(game, key) : cfg_get(global, key);
+    if (!v) {
+        return 0;
+    }
+    return (strchr(v, 'x') ? 1 : 0) | (strchr(v, 'y') ? 2 : 0);
+}
+
 void im_resolve(ImMap *m, const Config *global, const Config *game)
 {
     memset(m, 0, sizeof(*m));
@@ -394,6 +405,8 @@ void im_resolve(ImMap *m, const Config *global, const Config *game)
     const Config *ss = game && cfg_get(game, "stick.shape") ? game : global;
     const char *shape = cfg_get(ss, "stick.shape");
     m->stick_round = shape && !strcmp(shape, "round");
+    m->linvert = invert_bits(game, global, "stick.linvert");
+    m->rinvert = invert_bits(game, global, "stick.rinvert");
     const Config *td = game && cfg_get(game, "trigger.deadzone") ? game : global;
     m->trigger_dz = cfg_int(td, "trigger.deadzone", 10) / 100.0f;
     const Config *tf = game && cfg_get(game, "trigger.full") ? game : global;
@@ -411,6 +424,30 @@ static float pad_value(SDL_Gamepad *g, int pad)
     }
     const float v = SDL_GetGamepadAxis(g, (SDL_GamepadAxis)((pad - 1000) / 2)) / 32767.0f;
     return (pad & 1) ? (v < 0 ? -v : 0) : (v > 0 ? v : 0);
+}
+
+/* An original Xbox pad (the Duke, the Controller S) on Linux's xpad driver
+ * reports black and white as BTN_C and BTN_Z, which SDL's gamepad mapping
+ * leaves out; SDL numbers the joystick's buttons in evdev code order (A 0,
+ * B 1, C 2, X 3, Y 4, Z 5), so they are its raw buttons 2 and 5. Read as
+ * well as the mapped ones, on those pads only (#286). */
+static bool duke_bw(SDL_Gamepad *g, bool black)
+{
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (!g || SDL_GetGamepadVendor(g) != 0x045e) {
+        return false;
+    }
+    const Uint16 pr = SDL_GetGamepadProduct(g);
+    if (pr != 0x0202 && pr != 0x0285 && pr != 0x0287 && pr != 0x0289) {
+        return false;
+    }
+    SDL_Joystick *j = SDL_GetGamepadJoystick(g);
+    return j && SDL_GetNumJoystickButtons(j) >= 6 && SDL_GetJoystickButton(j, black ? 2 : 5);
+#else
+    (void)g;
+    (void)black;
+    return false;
+#endif
 }
 
 /* A stick as the Duke gave it. Today's sticks move in a circle: pushed fully
@@ -458,12 +495,13 @@ float im_trigger(float a, float dz, float full)
     return (a - dz) / (full - dz);
 }
 
-static void stick(const ImMap *m, float xpos, float xneg, float ypos, float yneg, int16_t *ox, int16_t *oy)
+static void stick(const ImMap *m, float xpos, float xneg, float ypos, float yneg, uint8_t inv, int16_t *ox,
+                  int16_t *oy)
 {
     float x, y;
     im_stick(xpos - xneg, ypos - yneg, m->deadzone, m->stick_antidz, m->stick_range, m->stick_round, &x, &y);
-    *ox = (int16_t)(x * 32767);
-    *oy = (int16_t)(y * 32767);
+    *ox = (int16_t)((inv & 1 ? -x : x) * 32767);
+    *oy = (int16_t)((inv & 2 ? -y : y) * 32767);
 }
 
 void im_read(const ImMap *m, int p, const bool *keys, SDL_Gamepad *pad, ImPad *out)
@@ -476,7 +514,10 @@ void im_read(const ImMap *m, int p, const bool *keys, SDL_Gamepad *pad, ImPad *o
             const SDL_Scancode sc = SDL_GetScancodeFromKey(k, NULL);
             kv = keys[sc] ? 1.0f : 0.0f;
         }
-        const float pv = pad_value(pad, m->pad[p][i]);
+        float pv = pad_value(pad, m->pad[p][i]);
+        if ((i == IM_BLACK || i == IM_WHITE) && pv < 1 && duke_bw(pad, i == IM_BLACK)) {
+            pv = 1;
+        }
         v[i] = kv > pv ? kv : pv;
     }
     memset(out, 0, sizeof(*out));
@@ -495,6 +536,6 @@ void im_read(const ImMap *m, int p, const bool *keys, SDL_Gamepad *pad, ImPad *o
         }
         out->analog[i] = (uint8_t)(a >= 1 ? 255 : a <= 0.1f ? 0 : a * 255);
     }
-    stick(m, v[IM_LRIGHT], v[IM_LLEFT], v[IM_LUP], v[IM_LDOWN], &out->lx, &out->ly);
-    stick(m, v[IM_RRIGHT], v[IM_RLEFT], v[IM_RUP], v[IM_RDOWN], &out->rx, &out->ry);
+    stick(m, v[IM_LRIGHT], v[IM_LLEFT], v[IM_LUP], v[IM_LDOWN], m->linvert, &out->lx, &out->ly);
+    stick(m, v[IM_RRIGHT], v[IM_RLEFT], v[IM_RUP], v[IM_RDOWN], m->rinvert, &out->rx, &out->ry);
 }

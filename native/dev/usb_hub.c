@@ -1,5 +1,5 @@
 /*
- * hakuX native core — a USB 1.1 hub (USB 1.1 chapter 11): the front panel's,
+ * xbased native core — a USB 1.1 hub (USB 1.1 chapter 11): the front panel's,
  * and the one inside each Xbox controller (gamepad on port 1, memory unit
  * slots on 2-3). Its descriptors and port behaviour are those of the hub the
  * Xbox USB stack is known to enumerate (QEMU's usb-hub, as xemu attaches it):
@@ -52,7 +52,7 @@ static const uint8_t k_cfg_desc[25] = {
     7, 5, 0x81, 0x03, 2, 0, 255,         /* status change: interrupt IN */
 };
 
-static const char *const k_strings[] = {"hakuX", "USB Hub", "1"};
+static const char *const k_strings[] = {"xbased", "USB Hub", "1"};
 
 static int hub_control(NcUsbDev *d, const uint8_t *s, uint8_t *data, int len)
 {

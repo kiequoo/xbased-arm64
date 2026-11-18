@@ -1,5 +1,5 @@
 /*
- * hakuX native core — device MMIO.
+ * xbased native core — device MMIO.
  *
  * Device windows (0xFD000000 NV2A, 0xFE800000 APU, ...) stay unmapped in the
  * guest reservation. A guest access faults; the fault handler decodes the

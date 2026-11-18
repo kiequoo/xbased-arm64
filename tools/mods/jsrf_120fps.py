@@ -38,7 +38,7 @@ assert not any(d[hdr:0x1000]), 'the header page past the headers is not empty in
 
 HEADER = """name: 120 fps
 description: The game at 120 frames a second (on a 120 Hz screen), at its normal speed: it still steps 60 times a second, and every other frame shows everything halfway between two steps. Loading screens stay at 60.
-author: hakuX
+author: xbased
 refresh: 120
 
 # The game steps its logic once a frame (0x123E0). With the vblank at

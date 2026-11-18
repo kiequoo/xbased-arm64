@@ -261,7 +261,8 @@ static void test_r6g5b5(void)
     HT_EQ_U32(hle_tex_sign_xor(0x27, 1, &eff), 0);
     HT_EQ_U32(eff, 0);
     HT_EQ_U32(hle_tex_sign_xor(0x27, 0, &eff), 0);
-    /* signed V and U: two's-complement fields over 15, centred on 0x80; L stays unsigned */
+    /* signed V and U: each field widened by its top bits, that byte read as two's
+     * complement, centred on 0x80 (Bump_env_lum); L stays unsigned */
     static const uint16_t sv[] = {
         0x0000,                 /* 0, 0 */
         0x01EF,                 /* +15, +15 */
@@ -273,22 +274,49 @@ static void test_r6g5b5(void)
     };
     hle_tex_expand_r6g5b5(sv, 7, sx, out);
     HT_EQ_U32(out[0], 0xFF008080u);
-    HT_EQ_U32(out[1], 0xFF00FFFFu);
-    HT_EQ_U32(out[2], 0xFF000101u);
-    HT_EQ_U32(out[3], 0xFF000000u);
-    HT_EQ_U32(out[4], 0xFF007878u);     /* -1 of 15: 8 below the centre */
+    HT_EQ_U32(out[1], 0xFF00FBFBu);     /* +15: 0x7B */
+    HT_EQ_U32(out[2], 0xFF000C0Cu);     /* -15: 0x8C */
+    HT_EQ_U32(out[3], 0xFF000404u);     /* -16: 0x84 */
+    HT_EQ_U32(out[4], 0xFF007F7Fu);     /* -1: 0xFF, one below the centre */
     HT_EQ_U32(out[5], 0xFF008888u);
     HT_EQ_U32(out[6], 0xFFFF8080u);
-    /* a signed L: over 31 */
+    /* a signed L: its 6 bits widened the same way */
     static const uint16_t sl[] = { 0x7C00, 0x8400, 0x8000 };       /* +31, -31, -32 */
     hle_tex_expand_r6g5b5(sl, 3, 0x00800000u, out);
-    HT_EQ_U32(out[0], 0xFFFF0000u);
-    HT_EQ_U32(out[1], 0xFF010000u);
-    HT_EQ_U32(out[2], 0xFF000000u);
+    HT_EQ_U32(out[0], 0xFFFD0000u);
+    HT_EQ_U32(out[1], 0xFF060000u);
+    HT_EQ_U32(out[2], 0xFF020000u);
+    /* the 16-bit formats with signed channels go the same way, as A8R8G8B8 */
+    HT_EQ_U32(hle_tex_sign_xor(0x02, 4 | 8, &eff), 0x00008080u);    /* A1R5G5B5: G, B */
+    HT_EQ_U32(hle_tex_sign_xor(0x05, 1 | 2, &eff), 0x00800000u);    /* R5G6B5: no alpha */
+    static const uint16_t s16[] = { 0x83FF, 0x0210 };   /* a 1, r 0, g -1, b -1; r 0, g -16, b -16 */
+    hle_tex_expand16(0x02, s16, 2, 0x00008080u, out);
+    HT_EQ_U32(out[0], 0xFF007F7Fu);
+    HT_EQ_U32(out[1], 0x00000404u);
+    static const uint16_t s565[] = { 0xFFFF, 0x0000 };
+    hle_tex_expand16(0x05, s565, 2, 0x00800000u, out);
+    HT_EQ_U32(out[0], 0xFF7FFFFFu);     /* r -1, g and b unsigned */
+    HT_EQ_U32(out[1], 0xFF800000u);
+}
+
+/* The NV2A's DXT1 dither (nxdk_pgraph_tests' Texture_DXT plasma_dxt1, block 0: the
+ * console's texels next to the same block decoded plainly) */
+static void test_dxt1_dither(void)
+{
+    /* (90, 207, 49) at (0, 0): (91, 208, 50); (90, 207, 49) at (0, 1): (93, 207, 48) */
+    HT_EQ_U32(hle_tex_dxt1_dither(0xFF5ACF31u, 0, 0), 0xFF5BD032u);
+    HT_EQ_U32(hle_tex_dxt1_dither(0xFF5ACF31u, 0, 1), 0xFF5DCF30u);
+    /* (123, 211, 123) at (3, 0): (120, 209, 125) */
+    HT_EQ_U32(hle_tex_dxt1_dither(0xFF7BD37Bu, 3, 0), 0xFF78D17Du);
+    /* the ends: black and white stay so */
+    HT_EQ_U32(hle_tex_dxt1_dither(0xFF000000u, 1, 2) & 0x00FFFFFFu, 0);
+    HT_EQ_U32(hle_tex_dxt1_dither(0xFFFFFFFFu, 2, 0), 0xFFFFFFFFu);
+    HT_EQ_U32(hle_tex_dxt1_dither(0x00080808u, 2, 1) >> 16 & 0xFF, 0);  /* red 8 at P 6: 6, then 0 */
 }
 
 int main(void)
 {
+    HT_RUN(test_dxt1_dither);
     HT_RUN(test_texture_full_chain);
     HT_RUN(test_dxt1_nonsquare);
     HT_RUN(test_linear_surface);

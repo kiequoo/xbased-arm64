@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — upload arena allocator.
+ * xbased HLE GPU — upload arena allocator.
  */
 #include "hw/xbox/hle/front/arena.h"
 

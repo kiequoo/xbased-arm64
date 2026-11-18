@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the interface's languages (i18n.h).
+ * xbased front end — the interface's languages (i18n.h).
  */
 #include "native/app/ui/i18n.h"
 

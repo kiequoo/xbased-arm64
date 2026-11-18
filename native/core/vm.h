@@ -1,5 +1,5 @@
 /*
- * hakuX native core — guest memory.
+ * xbased native core — guest memory.
  *
  * The guest's 4 GiB address space is a host reservation; guest VA x lives at
  * base + x, and the JIT reaches it through its guest memory base register.
@@ -48,6 +48,10 @@ typedef struct NcVm {
 #define NC_PTE_VALID 1u
 
 bool nc_vm_init(NcVm *vm, uint32_t ram_size);
+/* Windows: the guest's low 4 GiB held as early as the process can (a
+ * game's, before SDL and its window: DLLs that hook every window load at
+ * fixed low addresses, #321); nc_vm_init takes them over. Elsewhere: none. */
+void nc_vm_reserve_early(void);
 
 /* Why nc_vm_init failed, in words for the player (NULL: nothing to tell). */
 extern const char *nc_vm_why;
@@ -107,6 +111,14 @@ extern NcVmDma nc_vm_dma;
 /* Back guest VA [va, va+len) with nothing again (accesses fault). */
 bool nc_vm_unmap(NcVm *vm, uint32_t va, uint32_t len);
 
+/* The title's own protection of its pages (below the contiguous window):
+ * ro, a store to one of [va, va+len)'s mapped pages faults to the title, as
+ * a PAGE_READONLY page's does on the Xbox; off again, they are what write
+ * tracking wants. The other views of the pages keep their access, the
+ * host's (vm->phys) as well. Unmapping a page ends it. */
+void nc_vm_guest_ro(NcVm *vm, uint32_t va, uint32_t len, bool ro);
+bool nc_vm_guest_ro_has(const NcVm *vm, uint32_t va);
+
 /* Physical address behind a guest VA, or UINT32_MAX if unmapped. */
 static inline uint32_t nc_vm_phys(const NcVm *vm, uint32_t va)
 {
@@ -143,6 +155,16 @@ void nc_vm_pin(NcVm *vm, uint32_t pa, bool known, int lock);
  * at one VA, not pinned) gets them moved to free pages elsewhere and is
  * returned. *moved: pages relocated. UINT32_MAX if no window can be freed. */
 uint32_t nc_vm_alloc_phys_compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, uint32_t align, uint32_t *moved);
+/* The same with pages only known moved too (their address went out,
+ * MmGetPhysicalAddress, no lock on them): the console's kernel pins neither,
+ * and with them in the way the allocation fails, a crash for the title.
+ * The last resort, when nothing else gives the window (mm.c contig_alloc,
+ * after the file reads and writes in flight complete): Project Gotham
+ * Racing's 22.6 MiB as a New York race loads, 42.9 MiB free, pages of its
+ * buffers whose addresses it asked for strewn over the 40 MiB at the bottom
+ * of RAM (#239). They stay known. */
+uint32_t nc_vm_alloc_phys_compact_known(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, uint32_t align,
+                                        uint32_t *moved);
 
 /* Contiguous physical pages as the Xbox kernel places them: the highest
  * window in [lo, hi) whose pages are free or can move, the ones that can

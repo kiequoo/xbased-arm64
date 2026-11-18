@@ -1,9 +1,10 @@
 /*
- * hakuX front end — discs and XPR images (xbox_data.h), as the Android
+ * xbased front end — discs and XPR images (xbox_data.h), as the Android
  * app's XboxDisc.kt and XprImage.kt read them.
  */
 #include "native/app/ui/xbox_data.h"
 #include "native/core/chd_image.h"
+#include "native/core/nbd_image.h"
 #include "native/core/fold_image.h"
 
 #include <SDL3/SDL.h>
@@ -110,7 +111,8 @@ typedef struct {
 static bool rd_at(Disc *d, int64_t off, void *buf, size_t n)
 {
     if (d->chd >= 0) {
-        return nc_chd_read(d->chd, buf, n, (uint64_t)(d->base + off));
+        return nc_nbd_is(d->chd) ? nc_nbd_read(d->chd, buf, n, (uint64_t)(d->base + off))
+                                 : nc_chd_read(d->chd, buf, n, (uint64_t)(d->base + off));
     }
 #ifdef _WIN32
     if (_fseeki64(d->f, d->base + off, SEEK_SET) != 0) {
@@ -270,15 +272,15 @@ bool xd_read_game(const char *path, XdGame *g)
         xd_clean_name(dir, g->title, sizeof(g->title));
     }
     Disc d = {NULL, 0, folder ? -1 : open(path, O_RDONLY | O_BINARY)};
-    if (d.chd >= 0 && !nc_chd_attach(d.chd)) {
-        close(d.chd);       /* not a CHD: the file as it is */
+    if (d.chd >= 0 && !nc_chd_attach(d.chd) && !nc_nbd_attach(d.chd)) {
+        close(d.chd);       /* not a CHD or an NBD server's image: the file as it is */
         d.chd = -1;
     }
     if (d.chd < 0 && !(d.f = fopen(folder ? xbe : path, "rb"))) {
         return false;
     }
     if (d.chd >= 0) {
-        g->size = (int64_t)lseek(d.chd, 0, SEEK_END);
+        g->size = nc_nbd_is(d.chd) ? (int64_t)nc_nbd_size(d.chd) : (int64_t)lseek(d.chd, 0, SEEK_END);
     } else {
 #ifdef _WIN32
         _fseeki64(d.f, 0, SEEK_END);
@@ -359,6 +361,7 @@ bool xd_read_game(const char *path, XdGame *g)
     free(x);
     if (d.chd >= 0) {
         nc_chd_detach(d.chd);
+        nc_nbd_detach(d.chd);
         close(d.chd);
     } else {
         fclose(d.f);

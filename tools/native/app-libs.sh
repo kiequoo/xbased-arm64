@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Puts the native core's app libraries (libhakuxcore.so, libSDL3.so and
+# Puts the native core's app libraries (libxbasedcore.so, libSDL3.so and
 # adrenotools' hook libraries from the native build) into the app's jniLibs,
 # stripped, for assembleDebug to pack.
 # They are build outputs (gitignored), refreshed by running this after
-# `cmake --build build/native/core --target hakuxcore`.
+# `cmake --build build/native/core --target xbasedcore`.
 #
 #   tools/native/app-libs.sh [native build dir]
 set -euo pipefail
@@ -27,7 +27,7 @@ if [ -z "$strip" ]; then
 fi
 out="$here/android/app/src/main/jniLibs/arm64-v8a"
 mkdir -p "$out"
-"$strip" -o "$out/libhakuxcore.so" "$build/libhakuxcore.so"
+"$strip" -o "$out/libxbasedcore.so" "$build/libxbasedcore.so"
 "$strip" -o "$out/libSDL3.so" "$build/sdl3/libSDL3.so"
 # adrenotools' hook libraries: custom Vulkan drivers (Turnip) load through
 # them from the app's native library directory.

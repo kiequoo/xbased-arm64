@@ -1,5 +1,5 @@
 /*
- * hakuX native core — SHA-1, HMAC-SHA1, RC4, DES and modular exponentiation
+ * xbased native core — SHA-1, HMAC-SHA1, RC4, DES and modular exponentiation
  * (FIPS 180-1, RFC 2104, FIPS 46-3), written from the specifications.
  */
 #include "native/kernel/xc_crypto.h"
@@ -351,6 +351,102 @@ static void mul_mod(uint32_t *r, const uint32_t *a, const uint32_t *b, const uin
     free(p);
 }
 
+/* An odd modulus (every RSA one): Montgomery products, n^2 word products each
+ * where mul_mod's reduction is a bit-by-bit division of the double-length
+ * product (the disc's security-sector signature, a 2048-bit private
+ * exponent, took 260 - 280 ms of the title's CPU at boot; 15 ms so). */
+static uint32_t mont_inv32(uint32_t m0)
+{
+    uint32_t x = m0;                    /* m0 * x == 1 mod 2^32, Newton: correct to 3, 6, 12, 24, 48 bits */
+    for (int i = 0; i < 5; i++) {
+        x *= 2u - m0 * x;
+    }
+    return (uint32_t)(0u - x);          /* -m0^-1 */
+}
+
+/* t = a * b / R mod m (a, b < m; t of n words); w: scratch of n + 2 words */
+static void mont_mul(uint32_t *t, const uint32_t *a, const uint32_t *b, const uint32_t *m, uint32_t mi,
+                     unsigned n, uint32_t *w)
+{
+    memset(w, 0, (n + 2) * sizeof(uint32_t));
+    for (unsigned i = 0; i < n; i++) {
+        uint64_t c = 0;
+        for (unsigned j = 0; j < n; j++) {
+            const uint64_t s = (uint64_t)w[j] + (uint64_t)a[j] * b[i] + c;
+            w[j] = (uint32_t)s;
+            c = s >> 32;
+        }
+        uint64_t s = (uint64_t)w[n] + c;
+        w[n] = (uint32_t)s;
+        w[n + 1] = (uint32_t)(s >> 32);
+        const uint32_t q = w[0] * mi;
+        s = (uint64_t)w[0] + (uint64_t)q * m[0];
+        c = s >> 32;
+        for (unsigned j = 1; j < n; j++) {
+            s = (uint64_t)w[j] + (uint64_t)q * m[j] + c;
+            w[j - 1] = (uint32_t)s;
+            c = s >> 32;
+        }
+        s = (uint64_t)w[n] + c;
+        w[n - 1] = (uint32_t)s;
+        w[n] = w[n + 1] + (uint32_t)(s >> 32);
+    }
+    /* w[0..n] < 2m: once more m off if it is not under it */
+    bool ge = w[n] != 0;
+    if (!ge) {
+        ge = true;
+        for (int i = (int)n - 1; i >= 0; i--) {
+            if (w[i] != m[i]) {
+                ge = w[i] > m[i];
+                break;
+            }
+        }
+    }
+    if (ge) {
+        uint64_t borrow = 0;
+        for (unsigned i = 0; i < n; i++) {
+            const uint64_t sub = (uint64_t)m[i] + borrow;
+            borrow = w[i] < sub;
+            w[i] = (uint32_t)((uint64_t)w[i] - sub);
+        }
+    }
+    memcpy(t, w, n * sizeof(uint32_t));
+}
+
+/* b^c mod d by Montgomery products (d odd): base and 1 into the form by a
+ * reduction each, then a square (and a product) a bit */
+static void modexp_mont(uint32_t *a, const uint32_t *b, const uint32_t *c, const uint32_t *d, unsigned n)
+{
+    uint32_t *x = calloc(2 * n, sizeof(uint32_t)), *bm = calloc(n, sizeof(uint32_t)),
+             *rm = calloc(n, sizeof(uint32_t)), *w = calloc(n + 2, sizeof(uint32_t)),
+             *br = calloc(n, sizeof(uint32_t)), *one = calloc(n, sizeof(uint32_t));
+    const uint32_t mi = mont_inv32(d[0]);
+    mod_reduce(br, b, n, d, n);                 /* b mod d */
+    memcpy(x + n, br, n * sizeof(uint32_t));    /* b R */
+    mod_reduce(bm, x, 2 * n, d, n);
+    memset(x, 0, 2 * n * sizeof(uint32_t));
+    x[n] = 1;                                   /* R */
+    mod_reduce(rm, x, 2 * n, d, n);
+    int top = (int)n * 32 - 1;
+    while (top >= 0 && !((c[top / 32] >> (top % 32)) & 1)) {
+        top--;
+    }
+    for (int bit = top; bit >= 0; bit--) {
+        mont_mul(rm, rm, rm, d, mi, n, w);
+        if ((c[bit / 32] >> (bit % 32)) & 1) {
+            mont_mul(rm, rm, bm, d, mi, n, w);
+        }
+    }
+    one[0] = 1;
+    mont_mul(a, rm, one, d, mi, n, w);          /* out of the form */
+    free(x);
+    free(bm);
+    free(rm);
+    free(w);
+    free(br);
+    free(one);
+}
+
 bool nc_modexp(uint32_t *a, const uint32_t *b, const uint32_t *c, const uint32_t *d, unsigned n)
 {
     bool nonzero = false;
@@ -359,6 +455,10 @@ bool nc_modexp(uint32_t *a, const uint32_t *b, const uint32_t *c, const uint32_t
     }
     if (!nonzero || !n) {
         return false;
+    }
+    if (d[0] & 1) {
+        modexp_mont(a, b, c, d, n);
+        return true;
     }
     uint32_t *base = calloc(n, sizeof(uint32_t)), *res = calloc(n, sizeof(uint32_t));
     mod_reduce(base, b, n, d, n);

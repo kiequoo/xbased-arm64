@@ -5,7 +5,7 @@ LAST = 'buf'
 
 HEADER = """name: 120 fps
 description: The game at 120 frames a second (on a 120 Hz screen), at its normal speed: it still steps 60 times a second, and every other frame shows the camera and the characters halfway between two steps.
-author: hakuX
+author: xbased
 refresh: 120
 
 # default.xbe steps once a frame; with the vblank at 120 Hz its logic keeps

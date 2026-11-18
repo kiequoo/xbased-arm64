@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the guest CPU (FEXCore, fork branch hakuX).
+ * xbased native core — the guest CPU (FEXCore, fork branch hakuX).
  *
  * C interface to the JIT for the rest of the core. One CPU runs the guest;
  * privileged and system instructions come back through a system-op callback
@@ -207,7 +207,7 @@ void nc_cpu_fault_note_write(int write);
 uintptr_t nc_cpu_context_pc(const void *ucontext);
 bool nc_cpu_in_code(NcCpu *cpu, uintptr_t pc);
 NcCpu *nc_cpu_current(void);
-/* The profile (HAKUX_PROF) from now, for secs seconds. */
+/* The profile (XBASED_PROF) from now, for secs seconds. */
 void nc_cpu_prof_start(unsigned secs);
 /* Builds made with NC_CPU_DIAG (the tests' cputest; never a release): the
  * translation buffer's size, to reach its flush with a small program. */

@@ -1,5 +1,5 @@
 /*
- * hakuX native core — CHD disc images (chd_image.h).
+ * xbased native core — CHD disc images (chd_image.h).
  *
  * libchdr reads the file through callbacks over the descriptor (pread, so
  * no shared file position); each image's hunk reads go one at a time under
@@ -143,7 +143,7 @@ static bool cd_track(Chd *c, const chd_header *h)
     } else if (!strcmp(type, "MODE2_RAW")) {
         off = 24;                        /* and form 1's subheader 8 */
     } else {
-        nc_log("hakuX-native", "disc: CHD image of a CD whose first track is %s, not data", type[0] ? type : "unknown");
+        nc_log("xbased-native", "disc: CHD image of a CD whose first track is %s, not data", type[0] ? type : "unknown");
         return false;
     }
     const uint64_t units = h->logicalbytes / CD_FRAME_SIZE;
@@ -170,7 +170,7 @@ bool nc_chd_attach(int fd)
     }
     if (!c) {
         pthread_mutex_unlock(&g_mu);
-        nc_log("hakuX-native", "disc: too many CHD images open");
+        nc_log("xbased-native", "disc: too many CHD images open");
         return false;
     }
     memset(c, 0, sizeof(*c));
@@ -178,7 +178,7 @@ bool nc_chd_attach(int fd)
     const chd_error e = chd_open_core_file_callbacks(&k_cb, c, CHD_OPEN_READ, NULL, &c->chd);
     const chd_header *h = e == CHDERR_NONE ? chd_get_header(c->chd) : NULL;
     if (!h || !h->hunkbytes) {
-        nc_log("hakuX-native", "disc: CHD image unreadable (%s)", chd_error_string(e));
+        nc_log("xbased-native", "disc: CHD image unreadable (%s)", chd_error_string(e));
         if (e == CHDERR_NONE) {
             chd_close(c->chd);
         }
@@ -195,7 +195,7 @@ bool nc_chd_attach(int fd)
         c->cached[i] = -1;
     }
     pthread_mutex_unlock(&g_mu);
-    nc_log("hakuX-native", "disc: CHD image%s, %llu MiB in %u-byte hunks", cd ? " (a CD's, chdman createcd)" : "",
+    nc_log("xbased-native", "disc: CHD image%s, %llu MiB in %u-byte hunks", cd ? " (a CD's, chdman createcd)" : "",
            (unsigned long long)(c->size >> 20), c->hunk_bytes);
     return true;
 }
@@ -271,7 +271,7 @@ bool nc_chd_read(int fd, void *buf, size_t len, uint64_t off)
         take = off + take > c->size ? c->size - off : take;
         const uint8_t *h = hunk(c, n);
         if (!h) {
-            nc_log("hakuX-native", "disc: CHD hunk %llu unreadable", (unsigned long long)n);
+            nc_log("xbased-native", "disc: CHD hunk %llu unreadable", (unsigned long long)n);
             ok = false;
             break;
         }

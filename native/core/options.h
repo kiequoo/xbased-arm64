@@ -1,11 +1,11 @@
 /*
- * hakuX native core — a run's options, the arguments a front end passes on
+ * xbased native core — a run's options, the arguments a front end passes on
  * (the app's NativeCoreActivity.getArguments, xboxrun's command line):
  *
  *   uncap            every frame presented at once, without waiting for
- *                    vblank (the HLE GPU's HAKUX_HLE_UNCAP)
+ *                    vblank (the HLE GPU's XBASED_HLE_UNCAP)
  *   fpscap=N         uncapped, at most N frames a second (60, 120: the
- *                    HLE GPU's HAKUX_HLE_FPSCAP; 0 or absent, no limit)
+ *                    HLE GPU's XBASED_HLE_FPSCAP; 0 or absent, no limit)
  *   xcheat=FILE|ON  a cheat file (.etm, .xbtf: core/xcheat.h) run before the
  *                    title, its options on as the 1s and 0s say
  *   relaunch         a title's reboot into another of its XBEs
@@ -13,7 +13,10 @@
  *   mods=FILE        the run's mods and cheats (native/core/mods.h)
  *   version=NAME     the core's version, recorded in savestates
  *   scale=N          the render scale
- *   asyncpipe=0|1    asynchronous shader compilation (on when absent)
+ *   shaders=hybrid|async|sync   new shaders (NcShaderMode): drawn by the
+ *                    interpreters while they build (the default), their draws
+ *                    skipped meanwhile, or waited for
+ *   asyncpipe=0|1    the older switch: 1 is shaders=async
  *   prebuild=0|1     the cached shaders built before the game (on)
  *   pads=MASK        the players with a controller plugged in (hex, bit n
  *                    player n + 1; default player 1)
@@ -36,8 +39,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* How a draw whose shaders are new is drawn (shaders=): by the interpreter
+ * shaders while its own are built (hle/vk/draw.c, where the device links
+ * pipeline libraries; else as NC_SHADERS_SYNC), skipped until they are, or
+ * after waiting for them */
+typedef enum { NC_SHADERS_HYBRID, NC_SHADERS_ASYNC, NC_SHADERS_SYNC } NcShaderMode;
+
 typedef struct NcOptions {
-    bool uncap, async_pipe, prebuild;
+    bool uncap, prebuild;
+    int shaders;                        /* NcShaderMode */
     int fps_cap;                /* uncapped: frames a second at most (0: none) */
     int64_t video;              /* -1: the core's default */
     int av_pack;                /* NC_AV_PACK_* */

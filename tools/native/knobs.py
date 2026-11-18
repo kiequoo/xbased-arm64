@@ -1,6 +1,6 @@
 """The core's knobs, from its source: every environment variable it reads
-(getenv, the app passes them through debug.hakux.env) and every
-debug.hakux.* system property, with where each is read and the comment that
+(getenv, the app passes them through debug.xbased.env) and every
+debug.xbased.* system property, with where each is read and the comment that
 says what it does (the nearest one naming it, else the one just above).
 
 Usage: python knobs.py [--md]   (--md: a Markdown table)
@@ -14,7 +14,7 @@ import sys
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 DIRS = ["native", os.path.join("hw", "xbox", "hle")]
 ENV = re.compile(r'getenv(?:_int_clamped)?\(\s*"([A-Z0-9_]+)"')
-PROP = re.compile(r'"(debug\.hakux\.[a-z0-9_.]+)"')
+PROP = re.compile(r'"(debug\.xbased\.[a-z0-9_.]+)"')
 
 
 def is_comment(line):
@@ -35,11 +35,11 @@ def comment_for(lines, i, name):
     """The comment that explains name: the closest comment line in the file
     naming it (above first: a header's, a block's), else the comment block
     just above the line that reads it."""
-    short = name.split(".")[-1] if name.startswith("debug.hakux.") else name
+    short = name.split(".")[-1] if name.startswith("debug.xbased.") else name
     for order in (range(i, -1, -1), range(i + 1, len(lines))):
         for j in order:
             line = lines[j]
-            if (name in line or (short != name and "debug.hakux." + short in line)) and is_comment(line):
+            if (name in line or (short != name and "debug.xbased." + short in line)) and is_comment(line):
                 text = clean(line)
                 if len(text) > len(name) + 3:
                     return text
@@ -81,7 +81,7 @@ def main():
     keys = sorted(found, key=lambda k: (k[0] != "prop", k[1]))
     nprop = sum(1 for k in keys if k[0] == "prop")
     if args.md:
-        print("%d debug.hakux properties, %d environment variables.\n" % (nprop, len(keys) - nprop))
+        print("%d debug.xbased properties, %d environment variables.\n" % (nprop, len(keys) - nprop))
         print("| Knob | Kind | Read at | What |\n|---|---|---|---|")
         for k in keys:
             e = found[k]

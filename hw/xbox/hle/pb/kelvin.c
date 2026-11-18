@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — push-buffer mode's Kelvin (class 0x97) register shadow.
+ * xbased HLE GPU — push-buffer mode's Kelvin (class 0x97) register shadow.
  *
  * The decoder hands every Kelvin method here, and the registers are kept as
  * the NV2A holds them, with a bit per register written. A draw takes its
@@ -25,7 +25,7 @@
 enum {
     RS_ZFUNC = 57, RS_ALPHAFUNC = 58, RS_ALPHABLENDENABLE = 59, RS_ALPHATESTENABLE = 60,
     RS_ALPHAREF = 61, RS_SRCBLEND = 62, RS_DESTBLEND = 63, RS_ZWRITEENABLE = 64,
-    RS_SHADEMODE = 66, RS_COLORWRITEENABLE = 67, RS_STENCILZFAIL = 68,
+    RS_DITHERENABLE = 65, RS_SHADEMODE = 66, RS_COLORWRITEENABLE = 67, RS_STENCILZFAIL = 68,
     RS_STENCILPASS = 69, RS_STENCILFUNC = 70, RS_STENCILREF = 71, RS_STENCILMASK = 72,
     RS_STENCILWRITEMASK = 73, RS_BLENDOP = 74, RS_BLENDCOLOR = 75,
     RS_ZSLOPESCALE = 77, RS_ZOFFSET = 78, RS_POINTOFFSETENABLE = 79,
@@ -36,7 +36,14 @@ enum {
     RS_FRONTFACE = 146, RS_CULLMODE = 147, RS_SHADOWFUNC = 156,
     /* not D3D's: the NV2A's polygon modes and line width as pushed (vk/draw.c) */
     RS_NV_FRONTMODE = 160, RS_NV_BACKMODE = 161, RS_NV_LINEWIDTH = 162, RS_NV_TWOSIDE = 163,
-    RS_NV_LIGHTCTL = 164,
+    RS_NV_LIGHTCTL = 164, RS_NV_SMOOTHCTL = 165,
+    RS_NV_FOGK0 = 166, RS_NV_FOGK1 = 167,   /* SET_FOG_PARAMS' first two, as pushed */
+    RS_NV_FOGMODE = 168,                    /* SET_FOG_MODE, as pushed */
+    RS_NV_CLIPMIN = 169, RS_NV_CLIPMAX = 170,   /* SET_CLIP_MIN / MAX (float bits) */
+    RS_NV_ZMMCTL = 171,                     /* SET_ZMIN_MAX_CONTROL */
+    RS_NV_SMOOTHEN = 172,                   /* SET_LINE / POLY_SMOOTH_ENABLE (bits 0, 1) */
+    RS_NV_SURFCF = 173,                     /* SET_SURFACE_FORMAT's colour format (bits 3:0) */
+    RS_NV_LOGICOP = 150,                    /* SET_LOGIC_OP (bits 15:0) with bit 16 SET_LOGIC_OP_ENABLE */
     RS_NV_EYEVEC = 82,                  /* .. 84: SET_EYE_VECTOR (DOT_RFLCT_SPEC_CONST) */
 };
 enum {
@@ -45,6 +52,7 @@ enum {
     TSS_COLORKEYOP, TSS_COLORSIGN, TSS_ALPHAKILL,
     TSS_BUMPENVMAT00 = 22,              /* .. 11, then LSCALE, LOFFSET */
     TSS_BORDERCOLOR = 29, TSS_COLORKEYCOLOR = 30,
+    TSS_NV_CYLWRAP = 31,                /* SET_TEXTURE_ADDRESS's cylinder wrap: bit 0 u, 1 v, 2 p, 3 q */
 };
 
 static struct {
@@ -133,6 +141,16 @@ void hle_kelvin_method(uint32_t m, uint32_t v)
     if (__builtin_expect(!g_state_read_ready, 0)) {
         state_read_init();
     }
+    /* SET_LINE_WIDTH has 9 bits (1/8 pixel): a wider word is not taken
+     * (nxdk_pgraph_tests' Line_width 64.0 and FFFFFFFF draw the width before) */
+    if (m == 0x0380 && v > 0x1FF) {
+        return;
+    }
+    /* (SET_POINT_SIZE likewise: envytools' hwtest, class 0x97, an error and the
+     * size before kept) */
+    if (m == 0x043C && v > 0x1FF) {
+        return;
+    }
     uint32_t i = m >> 2;
     if ((g_kv.r[i] != v || !W(m)) && (g_state_read[i >> 5] >> (i & 31) & 1)) {
         g_kv.sgen++;                    /* a first write counts: hle_kelvin_state reads W() */
@@ -160,6 +178,8 @@ static void tss(uint32_t *t, unsigned s)
     t[TSS_ADDRESSU] = addr & 0xF;
     t[TSS_ADDRESSV] = (addr >> 8) & 0xF;
     t[TSS_ADDRESSW] = (addr >> 16) & 0xF;
+    t[TSS_NV_CYLWRAP] = ((addr >> 4) & 0xF ? 1u : 0u) | ((addr >> 12) & 0xF ? 2u : 0u) |
+                        ((addr >> 20) & 0xF ? 4u : 0u) | ((addr >> 24) & 0xF ? 8u : 0u);
     /* MIN: 1 nearest, 2 linear, 3-6 {nearest, linear} x mip {nearest, linear},
      * 7 convolution; MAG: 1 nearest, 2 linear, 4 convolution */
     static const uint8_t k_min[8][2] = { { 1, 0 }, { 1, 0 }, { 2, 0 }, { 1, 1 },
@@ -167,6 +187,12 @@ static void tss(uint32_t *t, unsigned s)
     unsigned min = (filt >> 16) & 7, aniso = (ctl0 >> 4) & 3;
     t[TSS_MAGFILTER] = (filt >> 24) & 0xF;
     t[TSS_MINFILTER] = aniso && k_min[min][0] == 2 ? 3 : k_min[min][0];
+    /* the convolution filters (MIN 7, MAG 4: D3D's QUINCUNX and GAUSSIANCUBIC, the
+     * antialiased surfaces' swap filter): 7 kept, the kernel (bits 15:13, 1 quincunx,
+     * 2 Gaussian) in bits 4-6 (vk/draw.c, psh.c nvconv) */
+    if (min == 7 || ((filt >> 24) & 0xF) == 4) {
+        t[TSS_MINFILTER] = (min == 7 ? 7u : t[TSS_MINFILTER]) | ((filt >> 13) & 7u) << 4;
+    }
     t[TSS_MIPFILTER] = k_min[min][1];
     t[TSS_MAXANISOTROPY] = 1u << aniso;
     int32_t lod = (int32_t)(filt << 19) >> 19;          /* signed 5.8 */
@@ -204,12 +230,15 @@ static const struct { uint16_t m, rs; } k_rs_map[] = {
     { 0x0334, RS_WIREFRAMEOFFSETENABLE }, { 0x0338, RS_SOLIDOFFSETENABLE },
     { 0x0384, RS_ZSLOPESCALE }, { 0x0388, RS_ZOFFSET }, { 0x02A4, RS_FOGENABLE },
     { 0x038C, RS_NV_FRONTMODE }, { 0x0390, RS_NV_BACKMODE }, { 0x0380, RS_NV_LINEWIDTH },
-    { 0x17C4, RS_NV_TWOSIDE }, { 0x0294, RS_NV_LIGHTCTL },
+    { 0x17C4, RS_NV_TWOSIDE }, { 0x0294, RS_NV_LIGHTCTL }, { 0x1D7C, RS_NV_SMOOTHCTL },
+    { 0x09C0, RS_NV_FOGK0 }, { 0x09C4, RS_NV_FOGK1 }, { 0x029C, RS_NV_FOGMODE },
+    { 0x0394, RS_NV_CLIPMIN }, { 0x0398, RS_NV_CLIPMAX },
     { 0x181C, RS_NV_EYEVEC }, { 0x1820, RS_NV_EYEVEC + 1 }, { 0x1824, RS_NV_EYEVEC + 2 },
     { 0x03B8, RS_SPECULARENABLE },
     /* SET_SHADOW_COMPARE_FUNC (D3DCMP_*: NEVER put Fable's whole world in
      * shadow), SET_POINT_SMOOTH_ENABLE (point sprites) */
     { 0x1E6C, RS_SHADOWFUNC }, { 0x031C, RS_POINTSPRITEENABLE },
+    { 0x0310, RS_DITHERENABLE },        /* SET_DITHER_ENABLE (vk/draw.c dither_mode) */
 };
 
 void hle_kelvin_state(HleCmdState *st)
@@ -304,6 +333,18 @@ void hle_kelvin_state(HleCmdState *st)
     }
     if (W(0x1D78)) {                    /* SET_ZMIN_MAX_CONTROL: ZCLAMP_EN (bits 4..7) CLAMP */
         st->zclamp = ((R(0x1D78) >> 4) & 0xF) == 1;
+    }
+    if (W(0x1D78) || W(0x0290)) {       /* (and CONTROL0's Z_PERSPECTIVE: the range is w's then) */
+        rs[RS_NV_ZMMCTL] = (R(0x1D78) & 0xFFFu) | ((R(0x0290) & 0x10000u) ? 0x1000u : 0u);
+    }
+    if (W(0x0320) || W(0x0324)) {       /* SET_LINE_SMOOTH_ENABLE, SET_POLY_SMOOTH_ENABLE */
+        rs[RS_NV_SMOOTHEN] = (R(0x0320) ? 1u : 0u) | (R(0x0324) ? 2u : 0u);
+    }
+    {   /* (D3DRS_LOGICOP: vk/draw.c) */
+        rs[RS_NV_LOGICOP] = R(0x17BC) ? 0x10000u | (R(0x17C0) & 0xFFFFu) : 0;
+    }
+    if (W(0x0208)) {
+        rs[RS_NV_SURFCF] = R(0x0208) & 0xFu;
     }
 }
 

@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the game library (library.c): the game folders'
+ * xbased front end — the game library (library.c): the game folders'
  * disc images, their titles and icons (cached), and box art downloaded
  * from the libretro thumbnails (Microsoft - Xbox, Named_Boxarts).
  */
@@ -55,6 +55,16 @@ UiTex *lib_cover(LibGame *g);
 void lib_fetch_cover(LibGame *g);
 void lib_fetch_all_covers(void);
 const char *lib_fetch_status(void);   /* NULL: idle */
+/* The cover picker (the UI's thread): box art names for g, best first,
+ * those that fit the game or (query not empty) have the words typed;
+ * -1 while the list is still being read, -2 when it couldn't be. */
+void lib_cover_picker_open(void);
+int lib_cover_candidates(const LibGame *g, const char *query, const char **out, int max);
+/* A name's picture: its texture once fetched (NULL meanwhile, fetched on a
+ * thread; *failed when it couldn't be). */
+UiTex *lib_cover_preview(const char *name, bool *failed);
+/* g's cover set to a name's fetched picture: false if it isn't here yet. */
+bool lib_set_cover_name(LibGame *g, const char *name);
 void lib_poll(void);
 void lib_shutdown(void);
 /* A PNG (or JPEG) file as a texture, NULL if it can't be read. */

@@ -1,5 +1,5 @@
 /*
- * hakuX front end — controller mapping (input_map.c): which key and which
+ * xbased front end — controller mapping (input_map.c): which key and which
  * gamepad button or axis drive each of the Duke's inputs, per player, as
  * the settings files keep it ("map.p1.a=Space|b0"), the devices players get
  * ("pad.p2=auto|keyboard|none|pad2"), and the keyboard shortcuts.
@@ -70,6 +70,7 @@ typedef struct ImMap {
     float stick_antidz;         /* stick.antidz: the least a stick out of its dead zone gives, 0..1 */
     float stick_range;          /* stick.range: the output's scale, 1 = the stick's own */
     bool stick_round;           /* stick.shape=round: the stick's circle kept, not the Duke's square */
+    uint8_t linvert, rinvert;   /* stick.linvert, stick.rinvert: the axes turned over, 1 X, 2 Y */
     float trigger_dz;           /* trigger.deadzone: travel ignored at the start, 0..1 */
     float trigger_full;         /* trigger.full: the travel that is already a full press */
     bool rumble;

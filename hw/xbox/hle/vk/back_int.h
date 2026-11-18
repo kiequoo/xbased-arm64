@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — back-end internals shared by the vk/ sources (CONFIG_VULKAN
+ * xbased HLE GPU — back-end internals shared by the vk/ sources (CONFIG_VULKAN
  * only).
  */
 #ifndef HW_XBOX_HLE_VK_BACK_INT_H
@@ -95,6 +95,9 @@ void hle_surf_rec_end(void);
 void hle_img_barrier(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect,
                      VkImageLayout from, VkImageLayout to);
 void hle_surf_transition(VkCommandBuffer cb, HleVkSurf *s, VkImageLayout to);
+/* A transfer into level of s's own levels (an owner, pb/pbdraw.c mips_of_targets:
+ * a level's target copied in): that level written, sampled from then on */
+void hle_surf_level_dst(VkCommandBuffer cb, HleVkSurf *s, uint32_t level);
 /* gamma.c: the swap's copy through the gamma ramp of src's top left sw x sh
  * pixels; false = not done (blit) */
 bool hle_gamma_pass(VkCommandBuffer cb, unsigned slot, const uint8_t ramp[3][256],
@@ -146,6 +149,17 @@ void hle_draw_cmd_state_part(const HleCmdStatePart *p);
 void hle_draw_cmd_tex(const HleCmdTex *c, VkCommandBuffer cb);
 void hle_draw_cmd_draw(const HleCmdDraw *c, VkCommandBuffer cb, uint32_t rt_id,
                        uint32_t ds_id, const HleCmdViewport *vp);
+/* The look-ahead (draw.c): a draw of the records to come, its key taken alone
+ * (nothing recorded: its pipeline built ahead when new); the render thread's
+ * state kept across the records' own (begin / end; resume: from the state the
+ * last look-ahead ended with). back.c hle_back_ahead: the records published
+ * since the last look (or after the current one), through those. */
+void hle_draw_dry(const HleCmdDraw *c, uint32_t rt_id, uint32_t ds_id, const HleCmdViewport *vp);
+void hle_draw_ahead_begin(bool resume);
+void hle_draw_ahead_end(void);
+/* a texture the records ahead define, as the dry runs will find it */
+void hle_draw_ahead_tex(const HleCmdTex *c);
+void hle_back_ahead(void);
 /* A recording starts (back.c cb_get, outside any pass). */
 void hle_draw_rec_begin(VkCommandBuffer cb);
 /* It is frame slot's (its last submission has completed): the per-slot push
@@ -186,8 +200,8 @@ extern unsigned g_hle_zeq;
  * (the depth's: zbar). */
 void hle_draw_fb_bind(VkCommandBuffer cb, HleVkSurf *rt, HleVkSurf *ds, VkImageView zv,
                       bool zbar);
-extern bool g_hle_fbbar_off;            /* debug (debug.hakux.fbbar=0): no barrier */
-/* debug (debug.hakux.gpucut): 1 (frag) draws scissored to one pixel, 2 (draw)
+extern bool g_hle_fbbar_off;            /* debug (debug.xbased.fbbar=0): no barrier */
+/* debug (debug.xbased.gpucut): 1 (frag) draws scissored to one pixel, 2 (draw)
  * the state recorded and no draw, 3 (pass) neither: the passes alone, 4 (tri)
  * draws of 3 vertices scissored to one pixel */
 extern int g_hle_gpucut;

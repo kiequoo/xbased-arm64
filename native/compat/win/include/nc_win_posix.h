@@ -1,5 +1,5 @@
 /*
- * hakuX on Windows — the POSIX the core uses that MinGW-w64 doesn't have.
+ * xbased on Windows — the POSIX the core uses that MinGW-w64 doesn't have.
  *
  * Included first in every translation unit of the Windows build (win.cmake,
  * -include). It doesn't pull in <windows.h>: the core's names (ERROR, OUT,

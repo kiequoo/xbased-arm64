@@ -1,5 +1,5 @@
 /*
- * hakuX native core — interrupt objects and interrupt delivery.
+ * xbased native core — interrupt objects and interrupt delivery.
  *
  * KINTERRUPT (nxdk xboxkrnl.h, CC0): ServiceRoutine 0x00, ServiceContext 0x04,
  * BusInterruptLevel 0x08, Irql 0x0C, Connected 0x10, ShareVector 0x11,
@@ -71,7 +71,7 @@ static uint64_t KeConnectInterrupt(NcKernel *k, NcFrame *f, const uint32_t *a)
     i[KI_CONNECTED] = 1;
     k->irq_obj[level] = a[0];
     nc_irq_enable(level, true);
-    nc_log("hakuX-native", "ke: interrupt connected: level %u, irql %u, routine %08x", level,
+    nc_log("xbased-native", "ke: interrupt connected: level %u, irql %u, routine %08x", level,
            nc_vm_rd32(k->vm, a[0] + KI_IRQL), nc_vm_rd32(k->vm, a[0] + KI_ROUTINE));
     return 1;
 }
@@ -128,7 +128,7 @@ void nc_intr_isr_line_set(uint8_t line)
 
 static void hold_note(NcKernel *k, uint32_t lines, uint8_t why)
 {
-    if (!HAKUX_DIAG) {
+    if (!XBASED_DIAG) {
         return;                         /* (a build's made to investigate) */
     }
     for (unsigned l = 0; l < NC_IRQ_LINES; l++) {
@@ -151,7 +151,7 @@ static void hold_note(NcKernel *k, uint32_t lines, uint8_t why)
 
 static void hold_report(unsigned l)
 {
-    if (!HAKUX_DIAG) {
+    if (!XBASED_DIAG) {
         return;
     }
     const uint64_t rise = nc_irq_rise_ns(l);
@@ -172,7 +172,7 @@ static void hold_report(unsigned l)
             if (d1 > d0) {
                 snprintf(dl, sizeof(dl), ", waited for a host CPU %.1f ms", (d1 - d0) / 1e6);
             }
-            nc_log("hakuX-native-irq", "line %u delivered %.1f ms after it rose: %u refusals, first %s "
+            nc_log("xbased-native-irq", "line %u delivered %.1f ms after it rose: %u refusals, first %s "
                    "(IRQL %u, ISR line %d, thread t%u); the guest CPU's thread ran %.1f ms of it%s",
                    l, lat / 1e6, same ? g_hold[l].refusals : 0,
                    same ? k_hold[g_hold[l].why] : "none: no kernel entry meanwhile", same ? g_hold[l].irql : 0,

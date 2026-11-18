@@ -1,5 +1,5 @@
 /*
- * hakuX front end — settings files (config.c). One option a line, as the
+ * xbased front end — settings files (config.c). One option a line, as the
  * command line takes them ("scale=2", "uncap", "mod=60fps"); '#' comments.
  * xbased.ini holds the global ones, games/<TITLE ID>.<version>.ini a game's
  * (the game's override the global, the command line both).
@@ -43,8 +43,17 @@ void cfg_remove_value(Config *c, const char *key, const char *val);
 
 /* Where the emulator keeps its data (xbased.ini, hdd, states, games/,
  * covers/): beside the executable (Windows, or a portable.txt there), else
- * the user's data folder (Linux: ~/.local/share/hakuX). Ends in a separator. */
+ * the user's data folder (Linux: ~/.local/share/xbased). Ends in a separator. */
 const char *cfg_data_dir(void);
+/* The global settings' file: xbased.ini in the data folder, or the one the
+ * command line named (-c, --config: XBASED_CONFIG, which the game's process
+ * and the runs after it inherit). */
+const char *cfg_global_path(void);
+/* The hard disk's cache partitions (X, Y and Z: Partition3 to 5 and their
+ * heads, raw-partition3 to 5.bin) emptied, as a console's cache cleared:
+ * the titles copy their files from the disc there again (#308). hdd: the
+ * hard disk's folder, NULL the data folder's. The files removed, or -1. */
+int cfg_clear_game_cache(const char *hdd);
 /* Beside the executable (fonts, mods). */
 const char *cfg_exe_dir(void);
 /* Runs a helper program (curl, tar) to its end, with no window of its own

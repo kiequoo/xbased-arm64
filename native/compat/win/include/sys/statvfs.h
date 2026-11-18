@@ -1,4 +1,4 @@
-/* hakuX on Windows: statvfs on GetDiskFreeSpaceEx (compat/win/win.c). */
+/* xbased on Windows: statvfs on GetDiskFreeSpaceEx (compat/win/win.c). */
 #ifndef NC_WIN_STATVFS_H
 #define NC_WIN_STATVFS_H
 typedef unsigned long long fsblkcnt_t;

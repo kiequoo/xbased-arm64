@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — first-write barrier (spec §4.10; P2 Decision 5): the
+ * xbased HLE GPU — first-write barrier (spec §4.10; P2 Decision 5): the
  * guest's first store to a page the HLE cleaned waits for the GPU work that
  * reads it.
  */
@@ -99,7 +99,7 @@ void hle_mem_mark_written(uint32_t pa, uint32_t len);
 void hle_mem_mark_landed(uint32_t pa, uint32_t len);
 /* Writes reported to [pa, pa + len)'s pages (first-write faults, host
  * writes), summed, and those of its first and last pages: a range written
- * since an earlier look has a larger sum (0: not counted, HAKUX_HLE_NO_CLEAN). */
+ * since an earlier look has a larger sum (0: not counted, XBASED_HLE_NO_CLEAN). */
 uint64_t hle_mem_wseq_sum(uint32_t pa, uint32_t len, uint32_t *first, uint32_t *last);
 /* ... the same counted by blocks of 64 pages over the range (a coarse look:
  * unchanged, no page of it was written) */

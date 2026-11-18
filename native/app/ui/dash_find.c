@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the Games screen's search, filters, order and view
+ * xbased front end — the Games screen's search, filters, order and view
  * (dash_int.h): a screen of rows (the search, a publisher, a year, a
  * region, the order, the view, favorites and the last played first) with
  * an on-screen keyboard for the search, so a gamepad types as well as the
@@ -321,23 +321,33 @@ static int years(int *out, int max)
 /* the on-screen keyboard: four rows of ten, then Space, Delete and Done */
 static const char *const k_rows[4] = {"1234567890", "QWERTYUIOP", "ASDFGHJKL'", "ZXCVBNM-:&"};
 
-static void type(const char *s)
+void dash_text_type(char *buf, size_t cap, const char *s)
 {
-    if (strlen(F.q) + strlen(s) < sizeof(F.q)) {
-        strcat(F.q, s);
+    if (strlen(buf) + strlen(s) < cap) {
+        strcat(buf, s);
     }
 }
 
-static void rub_out(void)
+void dash_text_rub_out(char *buf)
 {
-    size_t n = strlen(F.q);
+    size_t n = strlen(buf);
     if (!n) {
         return;
     }
     do {
         n--;    /* a whole UTF-8 character */
-    } while (n > 0 && ((unsigned char)F.q[n] & 0xC0) == 0x80);
-    F.q[n] = 0;
+    } while (n > 0 && ((unsigned char)buf[n] & 0xC0) == 0x80);
+    buf[n] = 0;
+}
+
+static void type(const char *s)
+{
+    dash_text_type(F.q, sizeof(F.q), s);
+}
+
+static void rub_out(void)
+{
+    dash_text_rub_out(F.q);
 }
 
 static void edit(bool on)
@@ -359,8 +369,9 @@ static int wide_of(int kx)
     return kx >= 7 ? 2 : kx >= 4 ? 1 : 0;
 }
 
-/* the keyboard at (x, y), keys of ks; the input was the screen's */
-static void osk(float x, float y, float ks, const In *in)
+/* the keyboard at (x, y), keys of ks; the input was the screen's; its keys
+ * type into buf (cap), Done sets *done */
+bool dash_osk(float x, float y, float ks, const In *in, char *buf, size_t cap)
 {
     const float gap = 6;
     if (in->left) {
@@ -408,14 +419,13 @@ static void osk(float x, float y, float ks, const In *in)
     }
     if (pressed >= 0 && pressed < 40) {
         const char s[2] = {k_rows[pressed / 10][pressed % 10], 0};
-        type(s);
+        dash_text_type(buf, cap, s);
     } else if (pressed == 40) {
-        type(" ");
+        dash_text_type(buf, cap, " ");
     } else if (pressed == 41) {
-        rub_out();
-    } else if (pressed == 42) {
-        edit(false);
+        dash_text_rub_out(buf);
     }
+    return pressed == 42;
 }
 
 void dash_find_open(bool typing)
@@ -552,7 +562,9 @@ void scr_find(void)
             in.mx = in.my = -1;
             in.pad = D.in.pad;
         }
-        osk(kx, ly, ks, &in);
+        if (dash_osk(kx, ly, ks, &in, F.q, sizeof(F.q))) {
+            edit(false);
+        }
         float y = ly + 5 * (ks + 6) + 18;
         for (int i = 0; i < n && i < 4 && y < H - 130; i++, y += 30) {
             ui_text_fit(kx, y, res[i]->g.title, 22, UI_FONT_REGULAR, i ? UI_GREY : UI_WHITE, UI_ALIGN_LEFT,

@@ -1,5 +1,5 @@
 /*
- * hakuX native core — interrupt lines, behind a mask like the PIC's: a line
+ * xbased native core — interrupt lines, behind a mask like the PIC's: a line
  * nobody has enabled (no interrupt connected to it) can be asserted by its
  * device but is not pending for the CPU and doesn't wake an idle wait.
  */
@@ -52,7 +52,7 @@ static void latency_note(unsigned line, uint64_t lat)
             logged = 0;
         }
         if (logged++ < 10) {
-            nc_log("hakuX-native-irq", "line %u taken %.1f ms after it rose", line, lat / 1e6);
+            nc_log("xbased-native-irq", "line %u taken %.1f ms after it rose", line, lat / 1e6);
         }
     }
 }
@@ -203,7 +203,7 @@ void nc_irq_set(unsigned line, bool level)
         trace_left--;
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
-        nc_log("hakuX-native-irq", "%ld.%06ld line %u %s", (long)ts.tv_sec, ts.tv_nsec / 1000, line, level ? "up" : "down");
+        nc_log("xbased-native-irq", "%ld.%06ld line %u %s", (long)ts.tv_sec, ts.tv_nsec / 1000, line, level ? "up" : "down");
     }
     pthread_once(&g_once, init_cv);
     if (!level) {

@@ -1,5 +1,5 @@
 /*
- * hakuX native core — setjmp/longjmp for the fault scopes (kernel.h).
+ * xbased native core — setjmp/longjmp for the fault scopes (kernel.h).
  *
  * Bionic's _setjmp disables SME's ZA state on every call (__arm_za_disable)
  * where the CPU has SME, which made it 14% of the guest thread when every

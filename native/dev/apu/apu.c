@@ -18,7 +18,7 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
-/* hakuX native core: the device on the core's MMIO window (0xFE800000) and
+/* xbased native core: the device on the core's MMIO window (0xFE800000) and
  * interrupt line 5, its frame thread, and its settings. */
 
 #include "native/dev/apu/apu_int.h"
@@ -26,7 +26,7 @@
 #include "native/core/vm.h"
 #include "native/dev/dev.h"
 
-/* HAKUX_APU_STATS=1 -> 1 Hz hakuX-apu line (audio evidence) */
+/* XBASED_APU_STATS=1 -> 1 Hz xbased-apu line (audio evidence) */
 static bool g_apu_stats;
 static int g_apu_fifo_min = INT_MAX, g_apu_fifo_max;
 extern uint32_t g_vp_oob_clamps;
@@ -333,7 +333,7 @@ static void throttle(MCPXAPUState *d)
     const int asked = apu_out_asked_max();
     if (asked > d->monitor.device_buffer_bytes) {
         monitor_fit(d, asked);
-        nc_log("hakuX-apu", "output callbacks of %d frames: %d to %d frames kept queued",
+        nc_log("xbased-apu", "output callbacks of %d frames: %d to %d frames kept queued",
                asked / (2 * g_apu_out_channels), d->monitor.queued_bytes_low / (2 * g_apu_out_channels),
                d->monitor.queued_bytes_high / (2 * g_apu_out_channels));
     }
@@ -403,7 +403,7 @@ static void stuck_check(MCPXAPUState *d, int64_t now_ms)
     d->stuck.logged &= now;
     if (fresh) {
         d->stuck.logged |= fresh;
-        nc_log("hakuX-apu", "stuck: %s%s%s for a second | FECTL %08x (method %04x %08x) ISTS %08x IEN %08x "
+        nc_log("xbased-apu", "stuck: %s%s%s for a second | FECTL %08x (method %04x %08x) ISTS %08x IEN %08x "
                             "SECTL %08x, VOICE_OFFs waiting: %s",
                fresh & STUCK_TRAP ? "the FE trapped" : "", fresh == (STUCK_TRAP | STUCK_IRQ) ? ", " : "",
                fresh & STUCK_IRQ ? "the interrupt up, not acknowledged" : "", fectl,
@@ -448,7 +448,7 @@ static void se_frame(MCPXAPUState *d)
         if (g_apu_stats) {
             uint32_t cb, short_cb;
             apu_out_stats(&cb, &short_cb);
-            nc_log("hakuX-apu", "frames=%d util=%.2f fifo=%d-%d short=%u cb=%u vp_oob=%u held: skipped=%u "
+            nc_log("xbased-apu", "frames=%d util=%.2f fifo=%d-%d short=%u cb=%u vp_oob=%u held: skipped=%u "
                                 "run=%u waited=%u (max %u us)",
                    d->frame_count, t, g_apu_fifo_min == INT_MAX ? 0 : g_apu_fifo_min,
                    g_apu_fifo_max, short_cb, cb, apu_ld(&g_vp_oob_clamps), apu_xchg(&g_vp_held_skips, 0),
@@ -562,7 +562,7 @@ static void monitor_fit(MCPXAPUState *d, int drain_bytes)
 
 static void monitor_init(MCPXAPUState *d)
 {
-    const char *st = getenv("HAKUX_APU_STATS");
+    const char *st = getenv("XBASED_APU_STATS");
     g_apu_stats = st && atoi(st) != 0;
     d->monitor.queued_bytes_low = 0;
     d->monitor.queued_bytes_high = 0;
@@ -730,7 +730,7 @@ static void *apu_trace_thread(void *arg)
     MCPXAPUState *d = arg;
     for (;;) {
         sleep(2);
-        nc_log("hakuX-native-apu",
+        nc_log("xbased-native-apu",
                "ien %08x ists %08x fectl %08x sectl %08x fenaddr %08x | 2d %04x/%04x 3d %04x/%04x mp %04x/%04x",
                d->regs[NV_PAPU_IEN], d->regs[NV_PAPU_ISTS], d->regs[NV_PAPU_FECTL], d->regs[NV_PAPU_SECTL],
                d->regs[NV_PAPU_FENADDR], d->regs[NV_PAPU_TVL2D], d->regs[NV_PAPU_CVL2D], d->regs[NV_PAPU_TVL3D],
@@ -752,7 +752,7 @@ static void *apu_trace_thread(void *arg)
                     h = apu_rd32(vp + NV_PAVS_VOICE_TAR_PITCH_LINK) & NV_PAVS_VOICE_TAR_PITCH_LINK_NEXT_VOICE_HANDLE;
                 }
             }
-            nc_log("hakuX-native-apu", "voices on the lists: 2d %u (%u active) 3d %u (%u active) mp %u (%u active)",
+            nc_log("xbased-native-apu", "voices on the lists: 2d %u (%u active) 3d %u (%u active) mp %u (%u active)",
                    n[0], act[0], n[1], act[1], n[2], act[2]);
         }
         /* The 2D list's head voice, whole (NV_PAVS_*: 0x80 bytes). */
@@ -765,7 +765,7 @@ static void *apu_trace_thread(void *arg)
             for (unsigned i = 0; i < NV_PAVS_SIZE; i += 4) {
                 n += snprintf(line + n, sizeof(line) - (size_t)n, " %08x", apu_rd32(p + i));
             }
-            nc_log("hakuX-native-apu", "%s", line);
+            nc_log("xbased-native-apu", "%s", line);
         }
     }
     return NULL;

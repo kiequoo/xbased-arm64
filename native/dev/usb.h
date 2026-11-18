@@ -1,5 +1,5 @@
 /*
- * hakuX native core — USB devices behind the OHCI controller (ohci.c).
+ * xbased native core — USB devices behind the OHCI controller (ohci.c).
  *
  * A device answers its standard requests from descriptor tables (usb.c);
  * class and vendor requests go to its control callback, other endpoints to
@@ -84,6 +84,8 @@ void nc_usb_hub_port_changed(NcUsbDev *hub, unsigned port);
 
 /* xid.c: an Xbox gamepad (Duke) for player 0-3, and its input. */
 NcUsbDev *nc_xid_gamepad_new(unsigned player);
+/* Every gamepad's next poll reports (a savestate's load: xid.c sends only changes) */
+void nc_xid_resend(void);
 typedef struct NcPadState {
     uint16_t buttons;      /* NC_PAD_* digital buttons */
     uint8_t analog[8];     /* A, B, X, Y, black, white, left trigger, right trigger */

@@ -31,7 +31,7 @@ assert logo == ORG and logo + logo_size <= base + hdr, (hex(logo), hex(logo_size
 
 HEADER = """name: 120 fps
 description: The game at 120 frames a second (on a 120 Hz screen) and its normal speed: characters, vehicles, objects and the first-person arms are drawn between the game's 30 updates a second (particles and effects still move 30 times a second). Use it instead of the 60 fps mod, not with it.
-author: hakuX
+author: xbased
 refresh: 120
 
 # Halo's frame limiter (0xBB5D0) waits 60 / F vblanks a frame, F being the

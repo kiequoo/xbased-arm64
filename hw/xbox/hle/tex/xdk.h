@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — the Xbox D3D8 (XDK) resource header encoding the NV2A's
+ * xbased HLE GPU — the Xbox D3D8 (XDK) resource header encoding the NV2A's
  * texture registers share: the Format and Size words, the format codes.
  * Reference: XDK d3d8types/d3d8 headers as documented by Cxbx-Reloaded
  * XbD3D8Types.h.

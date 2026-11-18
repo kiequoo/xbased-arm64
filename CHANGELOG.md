@@ -1,5 +1,255 @@
 # xbased changelog
 
+## 1.1.15 (2026-11)
+
+### Fixes
+- TOCA Race Driver 3 (and other games with DirectSound): no more random
+  crashes to the menu in the middle of a race. A sound that had just
+  finished could be reported to the game once more after it had let go of
+  it.
+
+## 1.1.14 (2026-11)
+
+### Fixes
+- Forza Motorsport: the sky no longer smears into white streaks in a corner
+  of the screen, since 1.1.0.
+- Fable: the pond's water is smooth again, without the fine bright lines
+  or the grid of squares it showed since 1.1.0.
+
+## 1.1.13 (2026-11)
+
+### Fixes
+- TOCA Race Driver 3: entering World Tour no longer crashes to a black
+  screen. The game checks where its data files sit on the disc and, on
+  images where they were moved, dropped the event World Tour starts with.
+
+## 1.1.12 (2026-11)
+
+### Fixes
+- Fable: the boy's hair came out bald at the crown, a hard white halo stood
+  round whoever he could talk to and the light looked washed out, since
+  1.1.0. Both are back as 1.0.104 drew them.
+- Games that turn on dithering into a 16-bit picture (Fable's sky) no longer
+  show the light in rings at resolutions above 1x.
+
+## 1.1.11 (2026-11)
+
+### Interface
+- Every option has a short description under the list, in all 11
+  languages. In the in-game menu it also says when a change takes effect:
+  right away, when you go back to the game, or the next time it starts.
+- Long descriptions scroll on their own instead of being cut, and they show
+  as plain text under the list, without the dark box.
+- A game's settings are in sections (video, audio, system) and have their
+  own volume, audio output, background mute, frame rate counter, V-Sync
+  and limit for unlocked games.
+- About has a Check for updates button.
+- The Remove (X) hint only shows on the game folder and file rows.
+- With the interface in 4:3, the in-game menu no longer squeezes the game's
+  picture.
+- Long option names and values get cut less, the tabs fit at 4:3 and in
+  longer languages, and Japanese and Chinese text wraps properly.
+
+## 1.1.10 (2026-11)
+
+### Fixes
+- OutRun 2006: Coast 2 Coast closed as a race loaded on some AMD GPUs
+  (older GCN ones such as the Vega 3, with AMD's driver). The driver itself
+  crashes building one of the game's shaders. xbased now remembers a shader
+  that crashed the driver and doesn't build it again on that GPU and driver,
+  so after one more close the game goes on, maybe missing that one effect.
+
+## 1.1.9 (2026-11)
+
+### Fixes
+- The Nightmare Before Christmas: Oogie's Revenge: the game froze after its
+  first cutscene, and sometimes on a black screen right at the intro. The
+  timers it creates by the thousand were never freed and filled the memory,
+  and its level loading took a read still in progress as finished. Both
+  fixed: it now reaches the first level.
+- Games that create many timers no longer slowly fill the console's memory.
+
+## 1.1.8 (2026-11)
+
+### Fixes
+- Project Gotham Racing: the game froze on the loading screen of a New York
+  quick race. It asks for a 22.6 MiB block there, and with enough
+  memory free it was split by pages xbased never moved. They now move when
+  nothing else makes room, once the file copies in progress are done.
+
+## 1.1.7 (2026-11)
+
+### Fixes
+- Games wouldn't start while some programs ran in the background (a
+  clipboard manager, others that hook every window): "The game's program
+  (default.xbe) can't be loaded". Their DLL took the addresses where the
+  game's code goes. xbased now holds those addresses from the start, so
+  those programs can stay open.
+- Shin Sangoku Musou 3 (Japan, Asia): the screen went black as a battle
+  started. The game reads a little past the top of its stack there, which
+  the console allows.
+
+## 1.1.6 (2026-11)
+
+### New
+- **Invert the sticks** (Settings > Controls, and per game in its Controls
+  screen): the right or the left stick turned over vertically,
+  horizontally or both, for games with a camera that turns the other way
+  and no option of their own (Jaws, Red Ninja).
+- **xbased's own pointer**: a bigger green pointer in the dashboard's style,
+  sharp at any display scale, on the dashboard, the in-game menu and over
+  the game.
+- **Clear the game cache** (Settings > System, and per game): off by
+  default. Games copy files from the disc to the cache partitions (X, Y and
+  Z) and keep using that copy, so a translated or modded file could go on
+  showing the old one. It can clear them before each start or once now.
+  Saves aren't touched.
+- With a gamepad, the Settings tabs show LB and RB at their ends (they
+  switch tabs), and the Back button is called Back as on the original
+  controller.
+
+### Fixes
+- The mouse in games: the pointer never showed in the in-game menu and its
+  options couldn't be clicked. It now shows as the mouse moves, there and
+  over the game, and hides again after 3 still seconds.
+- AMD graphics: if the driver crashes while it links a shader from the
+  parts xbased builds ahead (an RX 6600 on driver 26.11 at Halo 2's start,
+  on fast precision too), xbased builds them whole for that GPU and driver
+  from the next start, as on cards without that feature.
+
+## 1.1.5 (2026-11)
+
+### New
+- **Cover picker** (a game's Choose cover image): the box art that best
+  fits the game from libretro-thumbnails, with a preview of each one before
+  you pick it, a search to find another by name (keyboard or the on-screen
+  one) and, as before, a picture file of your own.
+
+### Fixes
+- AMD graphics: things drawn at the same depth as what's under them went
+  missing, such as Dead to Rights II's menu text.
+- Covers found automatically: the file's name decides between two
+  editions that share a title (Dead or Alive Ultimate's two discs), the
+  disc's own region comes first, and alphas, betas and demos come last.
+
+## 1.1.4 (2026-11)
+
+### Fixes
+- Lighter texture reads on Intel graphics: every texture read also asked
+  for the texture's size, which only a stage that clamps to its edge needs.
+  On Intel GPUs that query costs as much as the read itself, so games at
+  higher internal resolutions kept the GPU at its limit (Midnight Club 3 at
+  3x on Intel UHD, just under its 30 fps). Both precisions.
+- Fast precision: cube maps read as in 1.0.104.
+- The executable's file properties show its real version again (1.1.3's said
+  1.1.2).
+
+## 1.1.3 (2026-11)
+
+### Fixes
+- **Fast precision is as light as the older versions again.** Its pixel
+  shaders still did per-pixel work added for the exact mode (rounding every
+  step to the console's bytes, holding coordinates on texel edges, a pass
+  per sample on antialiased surfaces), which made full-screen effects up to
+  half again as expensive. At higher internal resolutions on integrated and
+  older GPUs that was the difference between full speed and half
+  (Midnight Club 3 at 3x). Fast now costs the same as 1.0.104 or less.
+- Fast precision: stray lines over Vice City's buildings.
+- Log lines and environment variables say xbased (`XBASED_*`; the older
+  `HAKUX_*` names still work). For LAN play every machine needs 1.1.3.
+
+## 1.1.2 (2026-11)
+
+### New
+- **GPU precision** (Settings › System, or per game): **Exact** draws with
+  the console graphics chip's own arithmetic, the closest to a real Xbox and
+  the heaviest on the GPU; **Fast** uses plain float shaders, as xbased did
+  up to 1.0.94, much lighter on the GPU. **Automatic**, the
+  default, picks Fast on AMD Polaris and Vega cards and Vega integrated
+  graphics (their driver crashed building the exact shaders), on CPUs of 4
+  threads or fewer, and from the next run on a GPU that crashed building a
+  shader, took too long to build the exact ones or could not keep up with
+  them; Exact everywhere else. The setting's help shows what Automatic
+  chose last and why.
+- **Cached shaders built before the game** is on by default, in both
+  precisions.
+
+### Fixes
+- No more shader stutter on GPUs without pipeline libraries (AMD's Windows
+  driver, older Intel drivers): the hybrid mode can't run there and fell
+  back to synchronous builds, pausing the game for every new shader; it now
+  builds them in the background.
+- On CPUs with few threads, shader builds no longer take time from the
+  game: they run below its threads and only on the threads it leaves free.
+
+## 1.1.1 (2026-11)
+
+### New
+- **Online mode**, per game (Mods & patches): the game runs as the console
+  does for playing online (Insignia, XLink Kai, System Link), at its
+  original frame rate and speed, without patches, mods or cheats, and fast
+  forward does nothing. Insignia bans players who use them.
+- **Interface in 4:3** (Settings › Interface): the menus in a centered 4:3
+  area, for bezels and frame shaders over a 4:3 picture.
+- **Import saves from a folder** (Memory, Tab): saves copied from an Xbox or
+  from xemu, re-signed with the keys of xemu's own files (and, for saves
+  locked to another console, that console's eeprom.bin in the folder). The
+  import from xemu also finds more games' signatures.
+- **Discs from an NBD server**: `nbd://host:port/export` as the disc, the way
+  GDOX serves a physical disc from a supported drive.
+- **Command line**: `-h` / `--help`, `-c` / `--config FILE` for another
+  settings file, `-i` / `--input FILE` for the disc.
+- The game window keeps its place and size for the next game (Windows).
+
+### Fixes
+- Original Xbox controllers on Linux: the black and white buttons work.
+- Alt+Tab out of a game no longer leaves Alt held (the F keys did nothing
+  and Enter alone switched to full screen).
+- The CRT TV and arcade filters' scanlines without moiré in bright areas.
+
+## 1.1.0 (2026-11)
+
+### New
+- **Hybrid shader compilation**, the new default: a shader a game hasn't
+  used before is drawn at once by interpreter shaders while its own is
+  built in the background, so games no longer stutter while shaders
+  compile, even on a first run with an empty cache. Settings › System ›
+  New shaders also offers the asynchronous and synchronous modes. Updating
+  switches every install to hybrid once; your choice after that stays.
+- **Aspect ratio Auto**: 16:9 for games that render in widescreen, 4:3 for
+  the rest, and save states remember each game's shape.
+- **Screenshots and save state thumbnails as JPEG**, much smaller files.
+- xbased.exe's file properties show the real version.
+
+### Graphics
+- Graphics chip accuracy, from the chip test program (nxdk_pgraph_tests):
+  2959 of its 3556 pictures now match the console's exactly (1103 in
+  1.0.104). One accurate base for every game, Direct3D titles included:
+  lighting, vertex programs, fog and depth computed with the chip's own
+  arithmetic; lines, points, outlines and smoothed edges; W-buffering;
+  texture filtering, DXT, YUV, bump and shadow map sampling; multisampling,
+  anisotropic filtering, logic ops and polygon stipple.
+- Halo's water shows its reflections, Blade II's shadows are dark again,
+  Hitman: Blood Money's shadows and the outline around the character's
+  head are fixed, and the Insignia setup assistant no longer stays on a
+  black screen.
+- Performance on par with the fastest versions while more accurate.
+
+### Frame pacing
+- Smoother 30 fps games and driving in GTA: Vice City; Halo's PAL release
+  paced at its own 50 Hz.
+- Prince of Persia: Warrior Within keeps its own frame rate and no longer
+  crashes unlocked; its frame rate setting shows Original (locked), and a
+  60 fps patch still works.
+- The mouse pointer hides over the game, and the picture crop cuts instead
+  of stretching.
+
+### Games
+- Maximum Chase no longer crashes when the first chase begins.
+- Rainbow Six: Lockdown no longer crashes while loading after the intro.
+- Save states keep the screen shape they were made with (load a state
+  made with an older version after starting the game once).
+
 ## 1.0.104 (2026-11)
 
 ### Fixes

@@ -33,6 +33,10 @@ above:
   The rest of native/dev/apu (apu_base.h, out.c, state.c, vp/mix_inline.h,
   vp/resample.*) is hakuX's own.
 - native/kernel/xboxkrnl.exe.def comes from nxdk: CC0-1.0.
+- native/cpu/rsqrt_p3.h: its RSQRTSS table is njuffa's measurement on Stack
+  Overflow, CC BY-SA 4.0, distributed here under GPL-3.0-or-later as
+  Creative Commons' compatibility list allows
+  (licenses/rsqrtss-table.license.txt).
 - The window presenter's shaders (hw/xbox/hle/vk/swapchain.c): its FXAA is
   FXAA 3.11 Quality (Timothy Lottes) as PCSX2's fxaa.fx tunes it, GNU
   General Public License, version 3 or later; its upscaler is AMD

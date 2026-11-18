@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Kelvin's immediate vertex data (hw/xbox/hle/pb/vimm.c):
+ * xbased HLE GPU — Kelvin's immediate vertex data (hw/xbox/hle/pb/vimm.c):
  * every method number, the ones that are none between two that are, and what
  * each form writes.
  */
@@ -283,14 +283,18 @@ static void test_element(void)
     /* OpenGL's byte order: as they come; three of them, alpha 1 */
     HT_CHECK(hle_vimm_element(0x34, bgra, v));
     HT_CHECK(v[0] == 0x33 / 255.0f && v[1] == 0x66 / 255.0f && v[2] == 1.0f && v[3] == 1.0f);
-    /* normalised shorts: over 32767, -32768 no further than -1 */
+    /* normalised shorts: (2x + 1) / 65535, the console's (nxdk_vsh_tests'
+     * Vertex Data Array Format S1: 0 is 1 / 65535, -32767 -65533 / 65535) */
     const int16_t s2[2] = { 32767, -32768 };
     HT_EQ_U32(hle_vimm_element_bytes(0x21), 4);
     HT_CHECK(hle_vimm_element(0x21, (const uint8_t *)s2, v));
     HT_CHECK(v[0] == 1.0f && v[1] == -1.0f && v[2] == 0.0f && v[3] == 1.0f);
     const int16_t s1[1] = { -16384 };
     HT_CHECK(hle_vimm_element(0x11, (const uint8_t *)s1, v));
-    HT_CHECK(v[0] == -16384.0f / 32767.0f);
+    HT_CHECK(v[0] == -32767.0f / 65535.0f);
+    const int16_t s0[1] = { 0 };
+    HT_CHECK(hle_vimm_element(0x11, (const uint8_t *)s0, v));
+    HT_CHECK(v[0] == 1.0f / 65535.0f);
     /* shorts as they are */
     const int16_t k2[2] = { -300, 4096 };
     HT_CHECK(hle_vimm_element(0x25, (const uint8_t *)k2, v));

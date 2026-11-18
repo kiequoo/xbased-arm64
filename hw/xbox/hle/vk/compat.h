@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Vulkan 1.3's entry points on drivers below it (vk/compat.c).
+ * xbased HLE GPU — Vulkan 1.3's entry points on drivers below it (vk/compat.c).
  */
 #ifndef HW_XBOX_HLE_VK_COMPAT_H
 #define HW_XBOX_HLE_VK_COMPAT_H

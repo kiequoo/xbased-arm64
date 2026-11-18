@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the console's settings kept in two places (console_cfg.c):
+ * xbased front end — the console's settings kept in two places (console_cfg.c):
  * the app's (xbased.ini's lang= and video=, a game's file over them) and the
  * console's EEPROM (<hdd>/eeprom.bin: its language and video flags), which a
  * title, the Xbox dashboard or a hand (an EEPROM editor) may change.

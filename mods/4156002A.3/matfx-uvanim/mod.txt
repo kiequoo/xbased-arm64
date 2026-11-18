@@ -1,6 +1,6 @@
 name: Animated water and lights
 description: The world's animated textures move: the sewers' water and light caustics, the waterfall, the Volga and the rivers, the embers, the fans. Their materials carry RenderWare's MatFX UV transform, but no world sector of the game's data enables the MatFX pipeline (its 0x120 chunk), so they were drawn still on every emulator and port.
-author: crazyriddler (the analysis and the fix, Finest Hour Remastered e56c378); hakuX port
+author: crazyriddler (the analysis and the fix, Finest Hour Remastered e56c378); xbased port
 
 # Call of Duty: Finest Hour, the PAL release (version 3).
 #

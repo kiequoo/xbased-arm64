@@ -1,5 +1,5 @@
 /*
- * hakuX native core — a faulting x86-64 instruction run against a buffer
+ * xbased native core — a faulting x86-64 instruction run against a buffer
  * (x64emu.h).
  *
  * The instruction is encoded again with its memory operand RIP-relative to

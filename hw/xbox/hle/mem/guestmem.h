@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — guest RAM from host code (physical addresses).
+ * xbased HLE GPU — guest RAM from host code (physical addresses).
  */
 #ifndef HW_XBOX_HLE_MEM_GUESTMEM_H
 #define HW_XBOX_HLE_MEM_GUESTMEM_H

@@ -80,6 +80,12 @@ static void test_attr_kinds(void)
     HT_CHECK(strstr(buf, "int v4p = int(v4_in.x | (v4_in.y << 16u));") != NULL);
     HT_CHECK(strstr(buf, "vec4 v3 = vec4(v3_in);") != NULL);
     HT_CHECK(strstr(buf, "bitfieldExtract(v4p, 22, 10)") != NULL);
+    /* a "3W" array (size 7, D3D's FLOAT2H): x, y and w, z 0 */
+    HleVshKey k3 = { .in_mask = 0x19 | (1u << (16 + 3)), .int_mask = 0x08, .cmp_mask = 0x10 };
+    HT_CHECK(hle_vsh_glsl(&k_prog[0][0], NSLOTS, &k3, buf, sizeof(buf)) > 0);
+    dump("vsh_3w");
+    HT_CHECK(strstr(buf, "v3 = vec4(v3.xy, 0.0, v3.z);") != NULL);
+    HT_CHECK(strstr(buf, "v0 = vec4(v0.xy, 0.0, v0.z);") == NULL);
 }
 
 /* a program without a FINAL instruction is rejected */
@@ -128,25 +134,50 @@ static void test_overflow(void)
 static void test_point_size(void)
 {
     HleVshKey k = { .in_mask = 1 };
-    HT_CHECK(hle_vsh_glsl_wrap(&k, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
+    HT_CHECK(hle_vsh_glsl_wrap(&k, false, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
     HT_CHECK(strstr(buf, "gl_PointSize = max(oPts.x, 1.0) * float(max((pc.flags >> 16) & 255u, 1u));") != NULL);
     k.pt_size = HLE_VSH_PT_FIXED | 34;              /* 4.25 pixels */
-    HT_CHECK(hle_vsh_glsl_wrap(&k, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
+    HT_CHECK(hle_vsh_glsl_wrap(&k, false, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
     HT_CHECK(strstr(buf, "gl_PointSize = 4.250 * float(max((pc.flags >> 16) & 255u, 1u));") != NULL);
     HT_CHECK(strstr(buf, "oPts.x, 1.0") == NULL);
     k.pt_size = HLE_VSH_PT_FIXED | 0x1FF;           /* the most: 63.875 */
-    HT_CHECK(hle_vsh_glsl_wrap(&k, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
+    HT_CHECK(hle_vsh_glsl_wrap(&k, false, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
     HT_CHECK(strstr(buf, "gl_PointSize = 63.875 * ") != NULL);
     k.pt_size = HLE_VSH_PT_FIXED | 3;               /* under a pixel: one */
-    HT_CHECK(hle_vsh_glsl_wrap(&k, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
+    HT_CHECK(hle_vsh_glsl_wrap(&k, false, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
     HT_CHECK(strstr(buf, "gl_PointSize = 1.000 * ") != NULL);
     k.pt_size = HLE_VSH_PT_FIXED;
-    HT_CHECK(hle_vsh_glsl_wrap(&k, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
+    HT_CHECK(hle_vsh_glsl_wrap(&k, false, "  oPos = v0;\n", false, buf, sizeof(buf)) > 0);
     HT_CHECK(strstr(buf, "gl_PointSize = 1.000 * ") != NULL);
+}
+
+/* HLE_VSH_XF: the operations by the transform unit's arithmetic; its stand-in
+ * (HLE_VSH_XF_FAST): in plain floats, the unit's library left out, the
+ * outputs the pixel stage takes from the exact form written all the same */
+static void test_xf_fast(void)
+{
+    HleVshKey k = { .in_mask = (1u << 0) | (1u << 3) | (1u << 4), .spec_off = HLE_VSH_XF };
+    HT_CHECK(hle_vsh_glsl(&k_prog[0][0], NSLOTS, &k, buf, sizeof(buf)) > 0);
+    dump("vsh_xf");
+    HT_CHECK(strstr(buf, "xrcp4((R1.wwww).x)") != NULL);
+    HT_CHECK(strstr(buf, "xdp4(v0.xyzw, c[100].xyzw)") != NULL);
+    HT_CHECK(strstr(buf, "xadd(xmul(oPos.xyzw, R1.xxxx), c[59].xyzw)") != NULL);
+    HT_CHECK(strstr(buf, "uint xfm(uint a, uint b)") != NULL);
+    k.spec_off = HLE_VSH_XF | HLE_VSH_XF_FAST;
+    HT_CHECK(hle_vsh_glsl(&k_prog[0][0], NSLOTS, &k, buf, sizeof(buf)) > 0);
+    dump("vsh_xf_fast");
+    HT_CHECK(strstr(buf, "rcp4((R1.wwww).x)") != NULL);
+    HT_CHECK(strstr(buf, "mulz(oPos.xyzz, c[58].xyzz)") != NULL);
+    HT_CHECK(strstr(buf, "(mulz(oPos.xyzw, R1.xxxx) + c[59].xyzw)") != NULL);
+    HT_CHECK(strstr(buf, "xrcp4(") == NULL && strstr(buf, "xmul(") == NULL && strstr(buf, "xdp4(") == NULL);
+    HT_CHECK(strstr(buf, "uint xfm(uint a, uint b)") == NULL);
+    HT_CHECK(strstr(buf, "layout(location = 12) out vec4 vTexP0;") != NULL);
+    HT_CHECK(strstr(buf, "vZs = oPos.z;") != NULL);
 }
 
 int main(void)
 {
+    HT_RUN(test_xf_fast);
     HT_RUN(test_point_size);
     HT_RUN(test_program);
     HT_RUN(test_attr_kinds);

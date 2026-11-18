@@ -1,5 +1,5 @@
 /*
- * hakuX native core — logging to stderr and the Android log.
+ * xbased native core — logging to stderr and the Android log.
  */
 #include "native/core/nc.h"
 
@@ -29,7 +29,7 @@ void nc_dump_line(int fd, const char *line, size_t len)
         write(fd, line, len);
         return;
     }
-    char tag[64] = "hakuX-native";
+    char tag[64] = "xbased-native";
     const char *colon = memchr(line, ':', len);
     if (colon && (size_t)(colon - line) < sizeof(tag)) {
         memcpy(tag, line, (size_t)(colon - line));

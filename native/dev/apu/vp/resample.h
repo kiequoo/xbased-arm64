@@ -1,5 +1,5 @@
 /*
- * hakuX native core: libsamplerate's float-to-short conversion, the one
+ * xbased native core: libsamplerate's float-to-short conversion, the one
  * part of its API the APU uses (the VP's own mix, vp.c). The voices'
  * resampler is vp.c's voice_resample.
  */

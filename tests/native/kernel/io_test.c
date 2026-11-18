@@ -56,6 +56,8 @@ void nc_ke_clear_event(NcKernel *k, uint32_t event) { (void)k; (void)event; }
 void nc_ke_init_event(NcKernel *k, uint32_t event, unsigned type, bool signaled) { (void)k; (void)event; (void)type; (void)signaled; }
 uint32_t nc_ke_set_event(NcKernel *k, uint32_t event) { (void)k; (void)event; return 0; }
 void nc_ke_wake(NcKernel *k, NcThread *t, uint32_t status) { (void)k; (void)t; (void)status; }
+bool nc_ke_object_waited(NcKernel *k, uint32_t object) { (void)k; (void)object; return false; }
+void nc_timer_forget(NcKernel *k, uint32_t timer) { (void)k; (void)timer; }
 void nc_ke_port_queue(NcKernel *k, uint32_t port, uint32_t key, uint32_t ctx, uint32_t status, uint32_t info)
 {
     (void)k; (void)port; (void)key; (void)ctx; (void)status; (void)info;
@@ -80,6 +82,10 @@ void nc_vm_pin(NcVm *vm, uint32_t pa, bool known, int lock) { (void)vm; (void)pa
 uint32_t nc_vm_alloc_phys_high(NcVm *vm, uint32_t len) { (void)vm; (void)len; return UINT32_MAX; }
 /* the disc's other image formats (xdvdfs.c): none here */
 bool nc_chd_attach(int fd) { (void)fd; return false; }
+bool nc_nbd_attach(int fd) { (void)fd; return false; }
+void nc_nbd_detach(int fd) { (void)fd; }
+bool nc_nbd_is(int fd) { (void)fd; return false; }
+bool nc_nbd_read(int fd, void *buf, size_t len, uint64_t off) { (void)fd; (void)buf; (void)len; (void)off; return false; }
 void nc_chd_detach(int fd) { (void)fd; }
 bool nc_chd_is(int fd) { (void)fd; return false; }
 bool nc_chd_read(int fd, void *buf, size_t len, uint64_t off) { (void)fd; (void)buf; (void)len; (void)off; return false; }

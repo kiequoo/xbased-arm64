@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — synchronization2's stages and accesses as Vulkan 1.0's
+ * xbased HLE GPU — synchronization2's stages and accesses as Vulkan 1.0's
  * (vk/compat.c, for drivers without synchronization2). Pure: the host tests
  * include it with the Khronos headers alone.
  */

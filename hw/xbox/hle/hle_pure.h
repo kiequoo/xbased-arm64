@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — portability header for "pure" modules.
+ * xbased HLE GPU — portability header for "pure" modules.
  *
  * Pure modules build both in the HLE library and in the standalone host
  * test harness (tests/hle, which defines HLE_HOST_TEST). They include this

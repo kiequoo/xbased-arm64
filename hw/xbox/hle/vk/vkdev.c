@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Vulkan instance/device, floor + plus capability tiers.
+ * xbased HLE GPU — Vulkan instance/device, floor + plus capability tiers.
  */
 #if defined(NC_DESKTOP) && !defined(_WIN32)
 #include <SDL3/SDL_vulkan.h>
@@ -9,6 +9,7 @@
 #include "hw/xbox/hle/hle.h"
 #include "hw/xbox/hle/host.h"
 #include "hw/xbox/hle/vk/vkdev.h"
+#include "hw/xbox/hle/vk/precision.h"
 #include "hw/xbox/hle/shader/glsl_compile.h"
 #include "hw/xbox/hle/vk/back.h"
 #include "hw/xbox/hle/vk/batch.h"
@@ -52,7 +53,7 @@ void hle_vk_lose(VkResult r, const char *what)
     }
     char why[160];
     snprintf(why, sizeof(why), "stopped responding (%s in %s)", hle_vk_result_text(r), what);
-    hle_log("hakuX-hle-back", "FATAL: the GPU %s: nothing more is drawn", why);
+    hle_log("xbased-hle-back", "FATAL: the GPU %s: nothing more is drawn", why);
     hle_tl_lose();
     hle_host_gpu_lost(why);
 }
@@ -73,7 +74,7 @@ bool hle_vk_check(VkResult r, const char *what)
     }
     static unsigned s_said;
     if (__atomic_fetch_add(&s_said, 1, __ATOMIC_RELAXED) < 16) {
-        hle_log("hakuX-hle-back", "vk: %s: %s", what, hle_vk_result_text(r));
+        hle_log("xbased-hle-back", "vk: %s: %s", what, hle_vk_result_text(r));
     }
     return false;
 }
@@ -147,7 +148,7 @@ typedef struct HleLegacyVattrFeatures {
 #define HLE_STYPE_LEGACY_VATTR_FEATURES ((VkStructureType)1000495000)
 #define HLE_LEGACY_VATTR_EXT "VK_EXT_legacy_vertex_attributes"
 
-/* debug.hakux.caps (else HAKUX_HLE_CAPS), read at device creation: "-name"
+/* debug.xbased.caps (else XBASED_HLE_CAPS), read at device creation: "-name"
  * turns a capability off, so its substitute runs (what other vendors'
  * drivers lack), e.g. "-bc,-vids,-push"; "-vk13" makes a 1.3 device a 1.1 one
  * (an instance of 1.1) */
@@ -157,14 +158,14 @@ static void caps_read(void)
 {
     g_caps_v[0] = 0;
 #if defined(__ANDROID__) || defined(_WIN32) || defined(NC_DESKTOP)
-    hle_prop_get("debug.hakux.caps", g_caps_v);
+    hle_prop_get("debug.xbased.caps", g_caps_v);
 #endif
-    if (!g_caps_v[0] && getenv("HAKUX_HLE_CAPS")) {
-        snprintf(g_caps_v, sizeof(g_caps_v), "%s", getenv("HAKUX_HLE_CAPS"));
+    if (!g_caps_v[0] && getenv("XBASED_HLE_CAPS")) {
+        snprintf(g_caps_v, sizeof(g_caps_v), "%s", getenv("XBASED_HLE_CAPS"));
     }
 }
 
-/* "-name" is in debug.hakux.caps */
+/* "-name" is in debug.xbased.caps */
 static bool caps_off(const char *name)
 {
     size_t n = strlen(name);
@@ -193,6 +194,7 @@ static void caps_override(HleCaps *c)
         { "fbfetch", offsetof(HleCaps, fbfetch) },   { "vk13", offsetof(HleCaps, vk13) },
         { "dynrender", offsetof(HleCaps, dyn_render) }, { "sync2", offsetof(HleCaps, sync2) },
         { "eds1", offsetof(HleCaps, eds1) },         { "eds2", offsetof(HleCaps, eds2) },
+        { "i64", offsetof(HleCaps, i64) },           { "f64", offsetof(HleCaps, f64) },
     };
     for (char *save = NULL, *t = strtok_r(v, ", ", &save); t; t = strtok_r(NULL, ", ", &save)) {
         const char *name = *t == '-' ? t + 1 : t;
@@ -201,11 +203,11 @@ static void caps_override(HleCaps *c)
             i++;
         }
         if (*t != '-' || i == ARRAY_SIZE(k_caps)) {
-            hle_log("hakuX-hle-back", "caps: \"%s\" ignored (\"-name\" turns one off)", t);
+            hle_log("xbased-hle-back", "caps: \"%s\" ignored (\"-name\" turns one off)", t);
             continue;
         }
         *(bool *)((char *)c + k_caps[i].off) = false;
-        hle_log("hakuX-hle-back", "caps: %s off (debug)", name);
+        hle_log("xbased-hle-back", "caps: %s off (debug)", name);
     }
 }
 
@@ -239,7 +241,7 @@ int hle_vk_init(void)
         if (gipa) {
             volkInitializeCustom(gipa);
         } else if (volkInitialize() != VK_SUCCESS) {
-            hle_log("hakuX-hle-back", "vk: volkInitialize failed");
+            hle_log("xbased-hle-back", "vk: volkInitialize failed");
             return -1;
         }
     }
@@ -250,7 +252,7 @@ int hle_vk_init(void)
     const bool force11 = caps_off("vk13");
     VkApplicationInfo app = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pApplicationName = "hakuX-hle",
+        .pApplicationName = "xbased-hle",
         .apiVersion = force11 ? VK_API_VERSION_1_1 : VK_API_VERSION_1_3,
     };
     /* the window's surface (vk/swapchain.c): where the loader has it */
@@ -289,18 +291,18 @@ int hle_vk_init(void)
         .enabledExtensionCount = nix, .ppEnabledExtensionNames = iexts,
     };
     if (vkCreateInstance(&ici, NULL, &v->inst) != VK_SUCCESS) {
-        hle_log("hakuX-hle-back", "vk: vkCreateInstance failed");
+        hle_log("xbased-hle-back", "vk: vkCreateInstance failed");
         snprintf(g_hle_unavailable, sizeof(g_hle_unavailable), "%s", k_no_vulkan);
         return -1;
     }
     volkLoadInstanceOnly(v->inst);
 #ifdef NC_DESKTOP
     /* a PC may have several: a discrete GPU first, then an integrated one
-     * (HAKUX_GPU=N picks the Nth as the loader lists them) */
+     * (XBASED_GPU=N picks the Nth as the loader lists them) */
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(v->inst, &n, NULL);
     if (!n) {
-        hle_log("hakuX-hle-back", "vk: no physical device");
+        hle_log("xbased-hle-back", "vk: no physical device");
         snprintf(g_hle_unavailable, sizeof(g_hle_unavailable), "%s", k_no_vulkan);
         return -1;
     }
@@ -309,7 +311,7 @@ int hle_vk_init(void)
         uint32_t na = n > 16 ? 16 : n;
         vkEnumeratePhysicalDevices(v->inst, &na, all);
         int best = -1, best_rank = -1;
-        const char *pick = getenv("HAKUX_GPU");
+        const char *pick = getenv("XBASED_GPU");
         for (uint32_t i = 0; i < na; i++) {
             VkPhysicalDeviceProperties p;
             vkGetPhysicalDeviceProperties(all[i], &p);
@@ -318,7 +320,7 @@ int hle_vk_init(void)
                              : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 3
                              : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU    ? 2
                                                                                       : 1;
-            hle_log("hakuX-hle-back", "vk: GPU %u: %s (type %d)", i, p.deviceName, p.deviceType);
+            hle_log("xbased-hle-back", "vk: GPU %u: %s (type %d)", i, p.deviceName, p.deviceType);
             if (rank > best_rank) {
                 best = (int)i;
                 best_rank = rank;
@@ -330,7 +332,7 @@ int hle_vk_init(void)
     uint32_t n = 1;
     vkEnumeratePhysicalDevices(v->inst, &n, &v->phys);
     if (!n) {
-        hle_log("hakuX-hle-back", "vk: no physical device");
+        hle_log("xbased-hle-back", "vk: no physical device");
         return -1;
     }
 #endif
@@ -351,7 +353,7 @@ int hle_vk_init(void)
         }
     }
     for (uint32_t i = 0; i < nq; i++) {
-        hle_log("hakuX-hle-back", "vk: queue family %u: flags %x, %u queues%s", i, qf[i].queueFlags,
+        hle_log("xbased-hle-back", "vk: queue family %u: flags %x, %u queues%s", i, qf[i].queueFlags,
                 qf[i].queueCount, i == v->qfam ? " (used)" : "");
     }
 
@@ -394,7 +396,7 @@ int hle_vk_init(void)
     bool e_eds1 = has_ext(ext, ne, VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
     bool e_pcc = has_ext(ext, ne, VK_EXT_PIPELINE_CREATION_CACHE_CONTROL_EXTENSION_NAME);
     if (api < VK_API_VERSION_1_1) {     /* no vkGetPhysicalDeviceFeatures2 */
-        hle_log("hakuX-hle-back", "vk: \"%s\" is a Vulkan 1.0 device", v->props.deviceName);
+        hle_log("xbased-hle-back", "vk: \"%s\" is a Vulkan 1.0 device", v->props.deviceName);
         snprintf(g_hle_unavailable, sizeof(g_hle_unavailable), "%s lacks vulkan1.1",
                  v->props.deviceName);
         vkDestroyInstance(v->inst, NULL);
@@ -409,7 +411,7 @@ int hle_vk_init(void)
         for (uint32_t i = 0; i < mp.memoryTypeCount && o < (int)sizeof(mt) - 12; i++) {
             o += snprintf(mt + o, sizeof(mt) - (size_t)o, " %u:%x", i, mp.memoryTypes[i].propertyFlags);
         }
-        hle_log("hakuX-hle-back", "vk: memory: host_ptr=%d dma_buf=%d fd=%d ahb=%d, types%s",
+        hle_log("xbased-hle-back", "vk: memory: host_ptr=%d dma_buf=%d fd=%d ahb=%d, types%s",
                 has_ext(ext, ne, "VK_EXT_external_memory_host"),
                 has_ext(ext, ne, "VK_EXT_external_memory_dma_buf"),
                 has_ext(ext, ne, "VK_KHR_external_memory_fd"), e_ahb, mt);
@@ -526,7 +528,11 @@ int hle_vk_init(void)
     c->floor_ok = true;
     need(c, v->qfam != UINT32_MAX, "graphics queue");
     c->wide_lines = q.features.wideLines;
+    c->logic_op = q.features.logicOp;
     c->fill_lines = q.features.fillModeNonSolid;
+    c->gs = q.features.geometryShader;
+    c->f64 = q.features.shaderFloat64;
+    c->i64 = q.features.shaderInt64;
     need(c, q.features.largePoints, "largePoints");
     c->depth_clamp = q.features.depthClamp;
     need(c, ok_tl, "timelineSemaphore");
@@ -601,15 +607,24 @@ int hle_vk_init(void)
     c->maint5 = has_ext(ext, ne, "VK_KHR_maintenance5");
     /* local read is dynamic rendering's: 1.3 devices only */
     c->local_read = v13 && e_lr && q_lr.dynamicRenderingLocalRead;
-    c->fbfetch = c->local_read && !getenv("HAKUX_HLE_NO_FBFETCH");
-    c->bary = e_bary && q_bary.fragmentShaderBarycentric && !getenv("HAKUX_HLE_NO_BARY");
-    if (e_drect && !getenv("HAKUX_HLE_NO_DISCARD_RECTS")) {
+    c->fbfetch = c->local_read && !getenv("XBASED_HLE_NO_FBFETCH");
+    c->bary = e_bary && q_bary.fragmentShaderBarycentric && !getenv("XBASED_HLE_NO_BARY");
+    if (e_drect && !getenv("XBASED_HLE_NO_DISCARD_RECTS")) {
         VkPhysicalDeviceDiscardRectanglePropertiesEXT dp = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DISCARD_RECTANGLE_PROPERTIES_EXT };
         VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                            .pNext = &dp };
         vkGetPhysicalDeviceProperties2(v->phys, &p2);
         c->discard = dp.maxDiscardRectangles >= 8;
+    }
+    if (has_ext(ext, ne, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME)) {
+        VkPhysicalDeviceConservativeRasterizationPropertiesEXT cp = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONSERVATIVE_RASTERIZATION_PROPERTIES_EXT };
+        VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                           .pNext = &cp };
+        vkGetPhysicalDeviceProperties2(v->phys, &p2);
+        c->conserv = true;
+        c->conserv_extra = cp.maxExtraPrimitiveOverestimationSize;
     }
     c->exec_props = has_ext(ext, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
     c->aniso = q.features.samplerAnisotropy;
@@ -639,7 +654,7 @@ int hle_vk_init(void)
         need(c, q.features.shaderSampledImageArrayDynamicIndexing, "sampledImageDynamicIndexing");
     }
     if (!c->floor_ok) {
-        hle_log("hakuX-hle-back", "vk: floor not met on \"%s\": missing %s",
+        hle_log("xbased-hle-back", "vk: floor not met on \"%s\": missing %s",
                 v->props.deviceName, c->missing);
         snprintf(g_hle_unavailable, sizeof(g_hle_unavailable), "%s lacks %s", v->props.deviceName,
                  c->missing);
@@ -653,6 +668,14 @@ int hle_vk_init(void)
     const bool u_vids = e_vids && q_vids.vertexInputDynamicState;
     const bool u_eds2 = v13 ? e_eds2 && q_eds2.extendedDynamicState2 : c->eds2;
     const bool u_pv = e_pv && q_pv.provokingVertexLast;
+    if (u_pv && !caps_off("pv")) {
+        VkPhysicalDeviceProvokingVertexPropertiesEXT pp = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_PROPERTIES_EXT };
+        VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                           .pNext = &pp };
+        vkGetPhysicalDeviceProperties2(v->phys, &p2);
+        c->pv_last = pp.provokingVertexModePerPipeline;
+    }
     const bool u_dce = e_dce && q_dce.depthClipEnable;
     const bool u_iu8 = (e_iu8x || e_iu8k) && q_iu8.indexTypeUint8;
     const bool u_4444 = c->x4444 && e_4444 && q_4444.formatA4R4G4B4;
@@ -720,6 +743,9 @@ int hle_vk_init(void)
         .sType = q_pcc.sType, .pipelineCreationCacheControl = VK_TRUE };
     f.features.wideLines = c->wide_lines;
     f.features.fillModeNonSolid = c->fill_lines;
+    f.features.geometryShader = c->gs;
+    f.features.shaderFloat64 = c->f64;
+    f.features.shaderInt64 = c->i64;
     f.features.largePoints = VK_TRUE;
     f.features.depthClamp = c->depth_clamp;
     f.features.shaderSampledImageArrayDynamicIndexing = !c->bindless;
@@ -805,6 +831,9 @@ int hle_vk_init(void)
     if (c->discard) {
         exts[nx++] = VK_EXT_DISCARD_RECTANGLES_EXTENSION_NAME;
     }
+    if (c->conserv) {
+        exts[nx++] = VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME;
+    }
     if (c->swapchain) {
         exts[nx++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     }
@@ -824,7 +853,7 @@ int hle_vk_init(void)
         .enabledExtensionCount = nx, .ppEnabledExtensionNames = exts };
     VkResult r = vkCreateDevice(v->phys, &dci, NULL, &v->dev);
     if (r != VK_SUCCESS) {
-        hle_log("hakuX-hle-back", "vk: vkCreateDevice failed (%d)", r);
+        hle_log("xbased-hle-back", "vk: vkCreateDevice failed (%d)", r);
         vkDestroyInstance(v->inst, NULL);
         v->inst = VK_NULL_HANDLE;
         v->dev = VK_NULL_HANDLE;
@@ -837,7 +866,7 @@ int hle_vk_init(void)
     v->t.vkGetDeviceQueue(v->dev, v->qfam, 0, &v->queue);
     v->get_ahb_props = c->ahb ? (PFN_vkGetAndroidHardwareBufferPropertiesANDROID)
         vkGetDeviceProcAddr(v->dev, "vkGetAndroidHardwareBufferPropertiesANDROID") : NULL;
-    hle_log("hakuX-hle-back", "vk: device \"%s\" api %u.%u.%u driver 0x%x floor=ok "
+    hle_log("xbased-hle-back", "vk: device \"%s\" api %u.%u.%u driver 0x%x floor=ok "
             "plus: gpl=%d eds3=%d dbuf=%d m5=%d sscaled=%d local_read=%d fbfetch=%d cache_control=%d "
             "swapchain=%d legacy_vattr=%d",
             v->props.deviceName, VK_API_VERSION_MAJOR(v->props.apiVersion),
@@ -845,12 +874,13 @@ int hle_vk_init(void)
             VK_API_VERSION_PATCH(v->props.apiVersion), v->props.driverVersion,
             c->gpl, c->eds3, c->descriptor_buffer, c->maint5, c->sscaled,
             c->local_read, c->fbfetch, c->cache_control, c->swapchain, c->legacy_vattr);
-    hle_log("hakuX-hle-back", "vk: bc=%d vids=%d push=%d push_desc=%d cbc=%d cbc_any=%d "
+    hle_log("xbased-hle-back", "vk: bc=%d vids=%d push=%d push_desc=%d cbc=%d cbc_any=%d "
             "x4444=%d d24s8=%d bda=%d ahb=%d vk13=%d dyn_render=%d sync2=%d eds1=%d eds2=%d "
             "bindless=%d depth_clamp=%d (0: the substitute runs)", c->bc, c->vids, c->push,
             c->push_desc, c->cbc, c->cbc_any, c->x4444, c->d24s8, c->bda, c->ahb, c->vk13,
             c->dyn_render, c->sync2, c->eds1, c->eds2, c->bindless, c->depth_clamp);
     hle_quirks_init(v->phys);           /* what this driver needs worked around */
+    hle_precision_init(v->phys);        /* exact or fast shaders (precision.h) */
     return 0;
 }
 

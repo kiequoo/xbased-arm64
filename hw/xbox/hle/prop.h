@@ -1,5 +1,5 @@
 /*
- * hakuX HLE — the debug properties (debug.hakux.*): every read goes through
+ * xbased HLE — the debug properties (debug.xbased.*): every read goes through
  * hle_prop_get, and the on-demand ones that act on a new value through
  * hle_prop_new. For the latter, the value seen at the first poll is the
  * baseline, an empty one included (a property reset to '' before a run);
@@ -15,13 +15,13 @@
 #include <sys/system_properties.h>
 
 /* A debug property's value in v (empty when unset) and its length. With
- * HAKUX_NO_PROPS=1 none is read, each as if unset: a run that mustn't depend
+ * XBASED_NO_PROPS=1 none is read, each as if unset: a run that mustn't depend
  * on what was left set on the device (they persist across runs). */
 static inline int hle_prop_get(const char *name, char v[PROP_VALUE_MAX])
 {
     static int off = -1;
     if (off < 0) {
-        const char *e = getenv("HAKUX_NO_PROPS");
+        const char *e = getenv("XBASED_NO_PROPS");
         off = e && e[0] == '1';
     }
     v[0] = 0;

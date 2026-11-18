@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — what the host core gives the HLE: the guest CPU's
+ * xbased HLE GPU — what the host core gives the HLE: the guest CPU's
  * registers at a probe, guest memory, write tracking of guest RAM, the
  * JIT, the GPU device and configuration. The native core implements it
  * (native/hle/host_native.c). Nothing else outside hw/xbox/hle is included by
@@ -8,11 +8,11 @@
 #ifndef HW_XBOX_HLE_HOST_H
 #define HW_XBOX_HLE_HOST_H
 
-/* HAKUX_DIAG: 1 in a build made to investigate (the run's statistics, traces
+/* XBASED_DIAG: 1 in a build made to investigate (the run's statistics, traces
  * and monitor compiled in), 0 in every other (the build system's
  * definition; 0 where there is none). */
-#ifndef HAKUX_DIAG
-#define HAKUX_DIAG 0
+#ifndef XBASED_DIAG
+#define XBASED_DIAG 0
 #endif
 
 #include <stdbool.h>
@@ -122,6 +122,15 @@ bool hle_host_vblank_timed(void);
  * GPU makes one (the value only). Any thread. */
 uint32_t hle_host_gpu_reg(uint32_t off);
 void hle_host_gpu_reg_set(uint32_t off, uint32_t v);
+/* PTIMER's time now, both words as the guest reads them: a finished
+ * visibility test's time stamp (the XDK's GetVisibilityTestResult: the GPU's
+ * nanosecond count at completion, for timing the work between two tests;
+ * xemu's constant 0x0011223344556677 read as no time passing). Any thread. */
+uint64_t hle_host_ptimer(void);
+/* The word of a plain register (not PTIMER's time), to be read atomically
+ * where a call per read costs (the decoder's per-method test); NULL with no
+ * registers. */
+const uint32_t *hle_host_gpu_reg_ptr(uint32_t off);
 /* The bits of mask set to bits', atomically (fields the guest's writes
  * change too: PGRAPH_SURFACE's flip counters). */
 void hle_host_gpu_reg_mask(uint32_t off, uint32_t mask, uint32_t bits);
@@ -130,7 +139,7 @@ void hle_host_gpu_reg_mask(uint32_t off, uint32_t mask, uint32_t bits);
 void hle_host_gpu_irq_update(void);
 /* debug: the GPU event trace (push-buffer mode): the host records the
  * guest's interrupt handshake, the HLE its traps and flips; a dump logs the
- * last events (hakuX-native-trace). Any thread. */
+ * last events (xbased-native-trace). Any thread. */
 enum {
     HLE_GTR_VBLANK = 1,     /* vblank raised (value: count, | 1 << 31 an early one) */
     HLE_GTR_PCRTC_CLR,      /* the guest cleared PCRTC_INTR (value written) */
@@ -150,7 +159,7 @@ enum {
     HLE_GTR_IRQL,           /* a thread set the IRQL (value: new | old << 8 | thread << 16 |
                                1 KfRaiseIrql, 2 KfLowerIrql, 3 KeRaiseIrqlToDpcLevel << 24) */
 };
-#if HAKUX_DIAG
+#if XBASED_DIAG
 void hle_host_gpu_trace(unsigned kind, uint32_t value);
 /* The trace's position now (for a dump around it later). */
 uint32_t hle_host_gpu_trace_mark(void);
@@ -158,7 +167,7 @@ uint32_t hle_host_gpu_trace_mark(void);
  * or to now. */
 void hle_host_gpu_trace_dump(const char *why, uint32_t mark);
 #else
-/* (the trace is a build's made to investigate, HAKUX_DIAG: nothing kept) */
+/* (the trace is a build's made to investigate, XBASED_DIAG: nothing kept) */
 static inline void hle_host_gpu_trace(unsigned kind, uint32_t value)
 {
     (void)kind;

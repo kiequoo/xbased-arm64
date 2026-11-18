@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — own Vulkan instance/device (spec §5.1, D7).
+ * xbased HLE GPU — own Vulkan instance/device (spec §5.1, D7).
  * Include only under CONFIG_VULKAN.
  */
 #ifndef HW_XBOX_HLE_VK_VKDEV_H
@@ -53,7 +53,7 @@ typedef struct HleCaps {
     bool floor_ok;
     char missing[256];          /* floor features absent (comma list) */
     /* What the other vendors' drivers lack (Mali, Xclipse, PowerVR), each with a
-     * substitute; all true on Adreno. debug.hakux.caps / HAKUX_HLE_CAPS turns them
+     * substitute; all true on Adreno. debug.xbased.caps / XBASED_HLE_CAPS turns them
      * off by name ("-bc,-vids,..."): any device runs the substitutes. */
     bool bc;                    /* BC1-3 sampled: DXT uploaded as is, else decoded to
                                    A8R8G8B8 on the way into the arena (pb/pbres.c) */
@@ -103,15 +103,26 @@ typedef struct HleCaps {
                                    combiner stages that sample the bound colour target
                                    read it as an input attachment (vk/draw.c
                                    hle_draw_fb_stages) */
+    bool f64;                   /* shaderFloat64: the pixel stage's depth words (psh.c nvzword) */
+    bool i64;                   /* shaderInt64: those words in integers where they can be (psh.c nvzfast) */
     bool bary;                  /* VK_KHR_fragment_shader_barycentric: a W-buffered
                                    polygon's offset slope at its first pixel (ff.h
                                    HLE_WBUF_CALC_BARY_GLSL) */
     bool exec_props, aniso;
     bool host_query_reset, occl_precise;        /* visibility tests */
+    bool logic_op;              /* logicOp: SET_LOGIC_OP's operations (vk/draw.c HLE_BLEND_LOGIC) */
     bool wide_lines;            /* enabled when present: lines as wide as the NV2A's
                                    SET_LINE_WIDTH (Turnip on the Adreno 650 has none) */
+    bool gs;                    /* geometryShader: the NV2A's own line pixels for titles
+                                   without D3D (ff.h HLE_NVLINE) */
     bool fill_lines;            /* fillModeNonSolid: SET_FRONT / BACK_POLYGON_MODE's
                                    lines and points */
+    bool pv_last;               /* VK_EXT_provoking_vertex's last vertex, per pipeline: a
+                                   smooth strip's and fan's corners in the NV2A's order
+                                   (vk/draw.c pipeline_build, pb/pbdraw.c draw) */
+    bool conserv;               /* VK_EXT_conservative_rasterization, overestimating: the
+                                   NV2A's smoothed polygons (vk/draw.c HLE_TOPO_CONSERV) */
+    float conserv_extra;        /* .. and how much further out it can go (pixels) */
     bool discard;               /* VK_EXT_discard_rectangles, 8 of them: the NV2A's window
                                    clip (vk/draw.c, HleCmdViewport.wmode) */
     bool cache_control;         /* pipelineCreationCacheControl: a pipeline asked of the

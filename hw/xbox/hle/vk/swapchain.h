@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — the window's presenter (vk/swapchain.c): the front frame
+ * xbased HLE GPU — the window's presenter (vk/swapchain.c): the front frame
  * drawn into an Android window through a Vulkan swapchain.
  */
 #ifndef HW_XBOX_HLE_VK_SWAPCHAIN_H

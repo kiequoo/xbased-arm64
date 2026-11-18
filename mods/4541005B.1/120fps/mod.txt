@@ -1,6 +1,6 @@
 name: 120 fps
 description: The game at 120 frames a second (on a 120 Hz screen) instead of 60, at its normal speed: its frame period is 1/120 s, and its movies keep their time.
-author: hakuX
+author: xbased
 refresh: 120
 
 [default.xbe]

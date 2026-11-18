@@ -1,5 +1,5 @@
 /*
- * hakuX native core — guest-write tracking for the HLE layer.
+ * xbased native core — guest-write tracking for the HLE layer.
  *
  * The HLE layer asks whether the guest CPU wrote guest RAM since it last
  * looked (host.h, hle_host_mem_*), and needs to hear about the first
@@ -234,7 +234,7 @@ static void dev_watch(uint32_t start, uint32_t length, void *ra0, void *ra1)
     logged++;
     Dl_info di;
     const uintptr_t base = dladdr((void *)dev_watch, &di) ? (uintptr_t)di.dli_fbase : 0;
-    nc_log("hakuX-native-watch", "device write to pa %08x, %u bytes, from +%lx +%lx",
+    nc_log("xbased-native-watch", "device write to pa %08x, %u bytes, from +%lx +%lx",
            start, length, (unsigned long)((uintptr_t)ra0 - base),
            (unsigned long)((uintptr_t)ra1 - base));
 }
@@ -305,7 +305,7 @@ static bool watch_on(void)
         on = s && sscanf(s, "%x:%x:%u", &g_wlo, &g_whi, &g_wdelay) >= 2 && g_whi;
         g_whi += g_wlo;
         if (on) {
-            nc_log("hakuX-native-watch", "stores to pa %08x..%08x, from %u s", g_wlo, g_whi, g_wdelay);
+            nc_log("xbased-native-watch", "stores to pa %08x..%08x, from %u s", g_wlo, g_whi, g_wdelay);
         }
     }
     return on;
@@ -331,7 +331,7 @@ static bool watch_armed(void)
     }
     if (now - t0 >= (uint64_t)g_wdelay * 1000000000ull) {
         armed = true;
-        nc_log("hakuX-native-watch", "armed");
+        nc_log("xbased-native-watch", "armed");
     }
     return armed;
 }
@@ -346,9 +346,9 @@ void nc_hle_watch_store(uint32_t va, uint32_t pa, uint32_t eip, uint32_t len)
     static unsigned logged;
     if (logged++ < 300) {
         if (len) {
-            nc_log("hakuX-native-watch", "host store to %08x (pa %08x), %u bytes", va, pa, len);
+            nc_log("xbased-native-watch", "host store to %08x (pa %08x), %u bytes", va, pa, len);
         } else {
-            nc_log("hakuX-native-watch", "guest store to %08x (pa %08x) at eip %08x", va, pa, eip);
+            nc_log("xbased-native-watch", "guest store to %08x (pa %08x) at eip %08x", va, pa, eip);
         }
     }
 }
@@ -478,6 +478,9 @@ bool nc_hle_dirty_fault(const siginfo_t *info, void *ucontext)
         hle_mem_stale_access_rw(pa, !known || store);
         return true;
     }
+    if (nc_vm_guest_ro_has(g_vm, (uint32_t)guest)) {
+        return false; /* a store to a page the title made read-only: its own fault (core.c) */
+    }
     const uint8_t wp = __atomic_load_n(&g_vm->wp[pa / NC_PAGE], __ATOMIC_ACQUIRE);
     if (!wp) {
         /* Nobody holds the page protected now. Between the store's fault and
@@ -497,7 +500,7 @@ bool nc_hle_dirty_fault(const siginfo_t *info, void *ucontext)
         }
         static unsigned s_logged;
         if (s_logged++ < 8) {
-            nc_log("hakuX-native-watch", "write fault at guest %08x (pa %08x), a page tracking "
+            nc_log("xbased-native-watch", "write fault at guest %08x (pa %08x), a page tracking "
                    "doesn't hold protected", (uint32_t)guest, pa);
         }
         return false;

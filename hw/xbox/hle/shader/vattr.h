@@ -1,9 +1,10 @@
 /*
- * hakuX HLE GPU — NV2A vertex attribute formats (pure).
+ * xbased HLE GPU — NV2A vertex attribute formats (pure).
  *
  * An attribute format byte is the low byte of NV097_SET_VERTEX_DATA_ARRAY_FORMAT
  * (and the Xbox D3DVSDT_* value): bits 0-3 type, bits 4-7 component count
- * (0 = attribute disabled, 7 = three components, "3W").
+ * (0 = attribute disabled, 7 = three components to x, y and w, "3W": D3D's
+ * FLOAT2H, (x, y, 0, w); the vertex stage moves the third, vsh.h in_mask).
  */
 #ifndef HW_XBOX_HLE_SHADER_VATTR_H
 #define HW_XBOX_HLE_SHADER_VATTR_H

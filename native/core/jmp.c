@@ -1,5 +1,5 @@
 /*
- * hakuX native core — setjmp/longjmp for the fault scopes (jmp.h).
+ * xbased native core — setjmp/longjmp for the fault scopes (jmp.h).
  * Layout: x18-x30 at 0..0x60, sp at 0x68, d8-d15 at 0x70..0xA8.
  */
 #include "native/core/jmp.h"

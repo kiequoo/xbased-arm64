@@ -1,5 +1,5 @@
 /*
- * hakuX native core — page tables for titles that keep their own.
+ * xbased native core — page tables for titles that keep their own.
  *
  * The core maps guest memory itself (core/vm.c) and titles never see page
  * tables, except one that reads CR3 and edits entries through the 0xF0000000
@@ -39,7 +39,7 @@ uint32_t nc_paging_cr3(NcKernel *k)
     if (g_pd_pa == UINT32_MAX) {
         const uint32_t pa = nc_vm_alloc_phys(k->vm, NC_PAGE, 0, k->vm->ram_size);
         if (pa == UINT32_MAX) {
-            nc_log("hakuX-native", "paging: no page for the page directory");
+            nc_log("xbased-native", "paging: no page for the page directory");
             return 0;
         }
         memset(k->vm->ram + pa, 0, NC_PAGE);
@@ -50,7 +50,7 @@ uint32_t nc_paging_cr3(NcKernel *k)
             nc_wr32(k->vm->ram + pa + 4 * (0x200 + i), pde);
             g_pd_applied[0x200 + i] = pde;
         }
-        nc_log("hakuX-native", "paging: the title reads CR3; page directory at pa %08x", pa);
+        nc_log("xbased-native", "paging: the title reads CR3; page directory at pa %08x", pa);
     }
     return g_pd_pa;
 }
@@ -67,7 +67,7 @@ static void map_page(NcKernel *k, uint32_t va, uint32_t pa, uint32_t len)
     if ((uint64_t)pa + len > k->vm->ram_size) {
         static unsigned s_warned;
         if (s_warned++ < 8) {
-            nc_log("hakuX-native", "paging: %08x -> pa %08x is outside RAM: left unmapped", va, pa);
+            nc_log("xbased-native", "paging: %08x -> pa %08x is outside RAM: left unmapped", va, pa);
         }
         return;
     }
@@ -222,7 +222,7 @@ bool nc_page_state_load(NcRd *r, unsigned v)
      * through the RAM view at this address */
     const NcVm *vm = nc_state_kernel()->vm;
     if (st.pd_pa != UINT32_MAX && ((st.pd_pa & (NC_PAGE - 1)) || (uint64_t)st.pd_pa + NC_PAGE > vm->ram_size)) {
-        nc_log("hakuX-native-state", "paging: the page directory at %08x isn't a page of RAM (a damaged state)",
+        nc_log("xbased-native-state", "paging: the page directory at %08x isn't a page of RAM (a damaged state)",
                st.pd_pa);
         return false;
     }

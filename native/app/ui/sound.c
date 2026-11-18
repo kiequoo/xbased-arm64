@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the dashboard's sounds (sound.h). Each a few hundred
+ * xbased front end — the dashboard's sounds (sound.h). Each a few hundred
  * ms of float stereo at 48 kHz: sine sweeps with a soft attack, an
  * exponential tail and a short echo, a filtered-noise whoosh for a launch.
  */

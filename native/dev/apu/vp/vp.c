@@ -49,16 +49,16 @@
 
 /* Skip per-voice DECODE + SVF/HRTF/mix for mathematically-silent voices.
  * Defaulted here so non-CMake / host-test builds still compile; the CMake
- * HAKUX_DEFS block sets the shipping value (default 0). When 0, every guarded
+ * XBASED_DEFS block sets the shipping value (default 0). When 0, every guarded
  * block below is a compile-time no-op -> byte-identical to today. */
-#ifndef HAKUX_AUDIO_SKIP_MUTED
-#define HAKUX_AUDIO_SKIP_MUTED 0
+#ifndef XBASED_AUDIO_SKIP_MUTED
+#define XBASED_AUDIO_SKIP_MUTED 0
 #endif
 
 #if PERF_LOG
 
 #include <stdatomic.h>
-#define VP_SILENT_LOG(...) nc_log("hakuX-vp", __VA_ARGS__)
+#define VP_SILENT_LOG(...) nc_log("xbased-vp", __VA_ARGS__)
 
 static struct {
     atomic_uint_least64_t calls;          /* active calls reaching the eval point */
@@ -67,7 +67,7 @@ static struct {
     atomic_uint_least64_t silent_samples; /* 32 per silent call */
     atomic_uint_least64_t ea0_calls;      /* sub-counter: ea_value==0 alone */
     atomic_uint_least64_t allvol_calls;   /* sub-counter: all 8 vol==0xFFF alone */
-    atomic_uint_least64_t skipped_voices; /* HAKUX_AUDIO_SKIP_MUTED: voices that
+    atomic_uint_least64_t skipped_voices; /* XBASED_AUDIO_SKIP_MUTED: voices that
                                            * took the decode+SVF/HRTF/mix skip.
                                            * 0 when the flag is off; ~=allvolmax
                                            * when on (confirms the gate fires). */
@@ -323,7 +323,7 @@ static inline uint32_t voice_get_mask_nolock(MCPXAPUState *d, uint8_t *c,
     return (raw & mask) >> ctz32(mask);
 }
 
-#if HAKUX_AUDIO_SKIP_MUTED
+#if XBASED_AUDIO_SKIP_MUTED
 /* True iff every route's target gain is ZERO THIS frame, i.e. all 8 mixbin
  * volumes are 0xFFF (silent even under the amplitude LFO; voice_process also
  * needs the last frame's gains at zero, as they ramp). This is the hoisted
@@ -369,7 +369,7 @@ static inline bool voice_all_vols_maxed(MCPXAPUState *d, uint8_t *c,
     }
     return true;
 }
-#endif /* HAKUX_AUDIO_SKIP_MUTED */
+#endif /* XBASED_AUDIO_SKIP_MUTED */
 
 static inline void voice_set_mask_nolock(MCPXAPUState *d, uint8_t *c,
                                          uint16_t voice_handle, uint64_t offset,
@@ -1139,7 +1139,7 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
             /* the trap's method and argument stay for its handler (fe_method) */
             static unsigned s_kept;
             if (s_kept++ < 16) {
-                nc_log("hakuX-apu", "method %04x (%08x) while trapped: the trap's %04x (%08x) kept",
+                nc_log("xbased-apu", "method %04x (%08x) while trapped: the trap's %04x (%08x) kept",
                                     (unsigned)addr, (unsigned)val, d->regs[NV_PAPU_FEDECMETH],
                                     d->regs[NV_PAPU_FEDECPARAM]);
             }
@@ -1182,7 +1182,7 @@ void mcpx_apu_vp_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
     }
 }
 
-/* hakuX: VP addresses are guest controlled. With AHB guest RAM an
+/* xbased: VP addresses are guest controlled. With AHB guest RAM an
  * out-of-range read faults instead of reading adjacent heap (Phase 0
  * finding); clamp and count. */
 uint32_t g_vp_oob_clamps;
@@ -1565,7 +1565,7 @@ static int voice_get_samples(MCPXAPUState *d, uint8_t *c, uint32_t v,
     int sample_count = 0;
     for (; (sample_count < num_samples_requested) && (cbo <= ebo);
          sample_count++, cbo++) {
-#if HAKUX_AUDIO_SKIP_MUTED
+#if XBASED_AUDIO_SKIP_MUTED
         /* Muted voice: skip the per-sample int->float DECODE (adpcm_decode /
          * ldXX / host-RAM reads) and write silence instead. `continue` jumps to
          * the for-header's update step, so sample_count++ and cbo++ STILL run,
@@ -1914,7 +1914,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
     assert(ea_value >= 0.0f);
     assert(ea_value <= 1.0f);
 
-#if HAKUX_AUDIO_SKIP_MUTED
+#if XBASED_AUDIO_SKIP_MUTED
     /* Hoisted silence predicate: read the 8 mixbin vols BEFORE the resample
      * block so a muted voice can skip decode (in voice_get_samples, via
      * cb_skip_decode) and filters/mix (early-return below). The resampler
@@ -1933,8 +1933,8 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
     bool multipass = voice_get_mask_nolock(d, c, v, NV_PAVS_VOICE_CFG_FMT,
                                     NV_PAVS_VOICE_CFG_FMT_MULTIPASS);
 
-#if !defined(HAKUX_AUDIO_NO_PROCESS) || !HAKUX_AUDIO_NO_PROCESS
-#if HAKUX_AUDIO_SKIP_MUTED
+#if !defined(XBASED_AUDIO_NO_PROCESS) || !XBASED_AUDIO_NO_PROCESS
+#if XBASED_AUDIO_SKIP_MUTED
     /* the per-voice skip decision for voice_get_samples (through
      * voice_resample -> voice_fill_block), for this frame's resample only.
      * Multipass voices have no decode loop. */
@@ -1957,7 +1957,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
         return;
     }
 #else
-    /* HAKUX_AUDIO_NO_PROCESS=1: skip the expensive sample-production +
+    /* XBASED_AUDIO_NO_PROCESS=1: skip the expensive sample-production +
      * mixing path. Envelopes above still advance guest-observable
      * PAR_STATE / CUR_ECNT / level registers, and mcpx_apu_vp_frame's
      * outer voice-list walk (the v1 deadlock site) is untouched, so the
@@ -2071,7 +2071,7 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
     // FIXME: If phase negations means to flip the signal upside down
     //        we should modify volume of bin6 and bin7 here.
 
-#if HAKUX_AUDIO_SKIP_MUTED
+#if XBASED_AUDIO_SKIP_MUTED
     /* Muted voice: the resample above already advanced CBO/SSL/SSLA_DONE/
      * loop/voice_off bit-exactly. Every route is at FFFh (silent even under
      * the amplitude LFO) and ended the last frame silent, so the filters and
@@ -2320,18 +2320,30 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
     }
 
     if (mon_vp) {
-        /* For VP mon, simply mix all voices together here, selecting the
-         * maximal gain of any of the voice's routes, sample by sample, as the
-         * overall gain for this voice; a 3D voice with an HRTF entry plays its
-         * two ears.
+        /* For VP mon, all voices mixed together here. Stereo: a voice's
+         * speaker mixbins (DirectSound's 0-5: FL FR C LFE BL BR) folded into
+         * the front pair as the console's own downmix does (the XDK's
+         * multichannel white paper: the LFE dropped, the centre and the
+         * surrounds into the front speakers at reduced volume), so a mono
+         * voice panned by its mixbin volumes stays where the title put it
+         * (one gain on both sides centred every panned DirectSound, XACT and
+         * DLS voice). The louder side is held at the voice's loudest route,
+         * as it was, so routes adding up never play louder than before.
+         * A 3D voice with an HRTF entry plays its two ears, and a voice in
+         * none of the speaker bins (a submix, an effect's send: the DSP's,
+         * not run here) its channels at its loudest route's gain.
          *
          * Routes into a bin a multipass voice reads are left out: they are
          * mixed into the bin instead, and that sub-mix is mixed in here when
          * the multipass voice is processed. MON_VP is not how the hardware
          * works anyway (the DSP mixes the bins), so DirectSound compatibility
          * is enough. */
+        static const float k_fold[6][2] = { { 1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.70710678f, 0.70710678f },
+                                            { 0.0f, 0.0f }, { 0.70710678f, 0.0f }, { 0.0f, 0.70710678f } };
         float g[NUM_SAMPLES_PER_FRAME] = { 0 };
         float gb[NUM_SAMPLES_PER_FRAME];
+        float fg[NUM_SAMPLES_PER_FRAME][2] = { { 0 } }, fs[NUM_SAMPLES_PER_FRAME][2] = { { 0 } };
+        bool folded = false;
         for (int b = 0; b < 8; b++) {
             if (!live[b] || (mp_bins & (1u << bin[b]))) {
                 continue;
@@ -2340,12 +2352,32 @@ static void voice_process(MCPXAPUState *d, uint8_t *c,
             for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
                 g[i] = fmaxf(g[i], gb[i]);
             }
+            if (!spatial && bin[b] <= 5) {
+                const float wl = k_fold[bin[b]][0], wr = k_fold[bin[b]][1];
+                folded = true;
+                for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
+                    const float a = gb[i] * src[b][i];
+                    fg[i][0] += wl * gb[i];
+                    fg[i][1] += wr * gb[i];
+                    fs[i][0] += wl * a;
+                    fs[i][1] += wr * a;
+                }
+            }
         }
         const float *left = spatial ? ear_buf[0] : channel_buf[0];
         const float *right = spatial ? ear_buf[1] : channel_buf[channels - 1];
-        for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
-            sample_buf[i][0] += g[i] * left[i];
-            sample_buf[i][1] += g[i] * right[i];
+        if (folded) {
+            for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
+                const float m = fmaxf(fg[i][0], fg[i][1]);
+                const float k = m > g[i] ? g[i] / m : 1.0f;
+                sample_buf[i][0] += k * fs[i][0];
+                sample_buf[i][1] += k * fs[i][1];
+            }
+        } else {
+            for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
+                sample_buf[i][0] += g[i] * left[i];
+                sample_buf[i][1] += g[i] * right[i];
+            }
         }
         if (g_apu_out_channels == 6) {
             /* 5.1: each of the voice's speaker mixbins (DirectSound's 0-5:
@@ -2538,7 +2570,7 @@ static void *voice_worker_thread(void *arg)
 #define HELD_SPIN_US 50                 /* then slept for, HELD_NAP_US at a time */
 #define HELD_NAP_US 100
 #define HELD_STUCK_FRAMES 1500          /* a second of GP frames */
-/* HAKUX_APU_STATS: frames a voice was left out; holds waited out, the
+/* XBASED_APU_STATS: frames a voice was left out; holds waited out, the
  * longest of those (us); the longest run of frames a voice was left out */
 uint32_t g_vp_held_skips, g_vp_held_waits, g_vp_held_wait_max_us, g_vp_held_run_max;
 
@@ -2585,7 +2617,7 @@ static VoiceTake voice_take(MCPXAPUState *d, uint8_t *c, uint16_t v)
         if (!got) {
             apu_inc(&g_vp_held_skips);
             if (*held < UINT16_MAX && ++*held == HELD_STUCK_FRAMES) {
-                nc_log("hakuX-apu", "stuck: voice %u held by the guest (its VOICE_LOCK) for a second, "
+                nc_log("xbased-apu", "stuck: voice %u held by the guest (its VOICE_LOCK) for a second, "
                                     "left out of the frames since; FECTL %08x ISTS %08x",
                        v, apu_ld(&d->regs[NV_PAPU_FECTL]), apu_ld(&d->regs[NV_PAPU_ISTS]));
             }
@@ -2773,7 +2805,7 @@ static void voice_work_init(MCPXAPUState *d)
         num_workers = mcpx_apu_default_vp_worker_count();
     }
     vwd->num_workers = MAX(1, MIN(num_workers, MAX_VOICE_WORKERS));
-    nc_log("hakuX-apu", "voices: %d share%s (the frame thread%s)", vwd->num_workers, vwd->num_workers > 1 ? "s" : "",
+    nc_log("xbased-apu", "voices: %d share%s (the frame thread%s)", vwd->num_workers, vwd->num_workers > 1 ? "s" : "",
            vwd->num_workers > 1 ? " and helpers" : " alone");
     vwd->workers = calloc(vwd->num_workers, sizeof(VoiceWorker));
     vwd->workers_should_exit = false;
@@ -2815,6 +2847,23 @@ static void voice_work_finalize(MCPXAPUState *d)
     vwd->workers = NULL;
 }
 
+/* Voice v on one of the SE's lists now (their links as the guest's methods
+ * left them) */
+static bool voice_listed(MCPXAPUState *d, uint16_t v)
+{
+    for (int l = 0; l < 3; l++) {
+        uint32_t h = d->regs[voice_list_regs[l].top];
+        for (int s = 0; s < MCPX_HW_MAX_VOICES && h < MCPX_HW_MAX_VOICES; s++) {
+            if (h == v) {
+                return true;
+            }
+            h = voice_get_mask(d, h, NV_PAVS_VOICE_TAR_PITCH_LINK,
+                               NV_PAVS_VOICE_TAR_PITCH_LINK_NEXT_VOICE_HANDLE);
+        }
+    }
+    return false;
+}
+
 /* The SE reports the idle voices on its lists to the FE, one trap at a time:
  * on the hardware a pass reports each of them, in list order, and the guest
  * releases those it wants gone. Here a frame reports one, the next after the
@@ -2842,6 +2891,21 @@ static void idle_report(MCPXAPUState *d, const uint16_t *idle, unsigned n)
      * the guest's methods run on its CPU meanwhile); only tried: the walk
      * holds the voice locks of its batch, which a guest write may be waiting
      * on (a voice not reported now is in a later frame: it stays listed) */
+    /* (and only a voice still on a list and still idle: the walk read the
+     * lists earlier in the frame, and the guest's methods may have taken one
+     * off since, under this lock now. The hardware reports the voices it finds
+     * there. DirectSound's handler of a voice it has already released reads
+     * its voice from a slot now empty: TOCA Race Driver 3 died mid race, a
+     * read of 0x64 at 002ABCD3, #344) */
+    for (unsigned t = 0; t < n && (!voice_listed(d, idle[k]) ||
+                                   voice_get_mask(d, idle[k], NV_PAVS_VOICE_PAR_STATE,
+                                                  NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE)); t++) {
+        k = k + 1 < n ? k + 1 : 0;
+        if (t + 1 == n) {
+            apu_spin_unlock(&d->vp.fe_spin);
+            return;
+        }
+    }
     if ((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) != NV_PAPU_FECTL_FEMETHMODE_TRAPPED) {
         fe_method(d, SE2FE_IDLE_VOICE, idle[k]);
         off_notify_now(d, idle[k]);     /* its VOICE_OFF's, with the trap (voice_off) */
@@ -3041,5 +3105,5 @@ void mcpx_apu_vp_restore_hrtf(MCPXAPUState *d)
         }
         entries += any;
     }
-    nc_log("hakuX-native-state", "apu: %u HRTF entries hold coefficients", entries);
+    nc_log("xbased-native-state", "apu: %u HRTF entries hold coefficients", entries);
 }

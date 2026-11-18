@@ -1,5 +1,5 @@
 /*
- * hakuX front end — a game's shortcut on the desktop (shortcut.c): xbased
+ * xbased front end — a game's shortcut on the desktop (shortcut.c): xbased
  * with the game's file as its argument, which boots it straight away.
  */
 #ifndef NATIVE_APP_UI_SHORTCUT_H

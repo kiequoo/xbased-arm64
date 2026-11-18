@@ -1,6 +1,6 @@
 name: 60 fps
 description: Stages at 60 frames a second, the game at its normal speed: the camera and the models are drawn between the game's 30 steps a second (effects still move 30 times a second).
-author: hakuX
+author: xbased
 
 # Otogi 2's update steps once per frame (its clock counts frames). The
 # stage loop at 0x4BA50 runs the game timers and the update (0x114F0,

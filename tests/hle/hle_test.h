@@ -1,4 +1,4 @@
-/* Minimal assertion harness for hakuX HLE host tests. */
+/* Minimal assertion harness for xbased HLE host tests. */
 #ifndef TESTS_HLE_HLE_TEST_H
 #define TESTS_HLE_HLE_TEST_H
 

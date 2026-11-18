@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — on-disk shader and pipeline caches (P3 Task 13).
+ * xbased HLE GPU — on-disk shader and pipeline caches (P3 Task 13).
  * - SPIR-V: <base>/hle_spirv/<title id>.pack, the title's shaders in one file,
  *   each keyed by the GLSL's fnv64 with its length and a second hash so a
  *   collision reads as a miss; legacy.pack, the loose files of before
@@ -76,7 +76,7 @@ void hle_pcache_init(void)
         g_autofree char *shared = g_strdup_printf("%shle_pipeline_cache.bin", base);
         struct stat sb;
         if (stat(shared, &sb) == 0 && remove(shared) == 0) {
-            hle_log("hakuX-hle-pipe", "the shared pipeline cache removed (%lld bytes): one per "
+            hle_log("xbased-hle-pipe", "the shared pipeline cache removed (%lld bytes): one per "
                     "title now", (long long)sb.st_size);
         }
     }
@@ -88,7 +88,7 @@ void hle_pcache_init(void)
         ci.pInitialData = NULL;
         T.vkCreatePipelineCache(g_hvk.dev, &ci, NULL, &g_pc.cache);
     }
-    hle_log("hakuX-hle-pipe", "pipeline cache %s: %zu bytes", g_pc.blob ? g_pc.blob : "(none)",
+    hle_log("xbased-hle-pipe", "pipeline cache %s: %zu bytes", g_pc.blob ? g_pc.blob : "(none)",
             data ? (size_t)len : 0);
     g_free(data);
     g_pc.last_save = g_get_monotonic_time();
@@ -133,7 +133,7 @@ static void write_blob(void)
     if (buf) {
         const int64_t t2 = g_get_monotonic_time();
         g_file_set_contents(g_pc.blob, buf, n, NULL);   /* temp file + rename */
-        hle_log("hakuX-hle-pipe", "pipeline cache saved: %zu bytes (merged in %.1f ms, "
+        hle_log("xbased-hle-pipe", "pipeline cache saved: %zu bytes (merged in %.1f ms, "
                 "serialized in %.1f ms, written in %.1f ms), spirv hits=%llu misses=%llu", n,
                 (t1 - t0) / 1000.0, (t2 - t1) / 1000.0, (g_get_monotonic_time() - t2) / 1000.0,
                 (unsigned long long)g_pc.spv_hits, (unsigned long long)g_pc.spv_misses);
@@ -180,6 +180,11 @@ void hle_pcache_save(bool force)
     }
     g_pc.saved = g_pc.added;
     g_pc.last_save = now;
+}
+
+void hle_pcache_save_soon(void)
+{
+    g_pc.last_save = 0;
 }
 
 void hle_pcache_destroy(void)
@@ -341,7 +346,7 @@ static void pack_open(Pack *p, const char *path)
             fclose(w);
         }
         if (n && good != n) {
-            hle_log("hakuX-hle-pipe", "spirv pack %s: %zu bytes past its last whole record cut off",
+            hle_log("xbased-hle-pipe", "spirv pack %s: %zu bytes past its last whole record cut off",
                     path, (size_t)(n - good));
         }
     }
@@ -414,7 +419,7 @@ static void spv_migrate(const char *dir)
     }
     closedir(d);
     if (moved) {
-        hle_log("hakuX-hle-pipe", "spirv: %u loose files (%zu bytes) packed into %s", moved, bytes,
+        hle_log("xbased-hle-pipe", "spirv: %u loose files (%zu bytes) packed into %s", moved, bytes,
                 g_legacy_pack.path);
     }
 }
@@ -430,7 +435,7 @@ static void spv_packs_open(void)
     pack_open(&g_legacy_pack, legacy);
     spv_migrate(g_pc.dir);
     pack_open(&g_title_pack, title);
-    hle_log("hakuX-hle-pipe", "spirv packs: %s %zu shaders, legacy %zu", title, g_title_pack.n,
+    hle_log("xbased-hle-pipe", "spirv packs: %s %zu shaders, legacy %zu", title, g_title_pack.n,
             g_legacy_pack.n);
 }
 

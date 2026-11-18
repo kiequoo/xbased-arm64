@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — threads, events and timers over pthreads (thread.h).
+ * xbased HLE GPU — threads, events and timers over pthreads (thread.h).
  */
 #include "hw/xbox/hle/util/thread.h"
 

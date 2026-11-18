@@ -1,5 +1,5 @@
 /*
- * hakuX native core — xbased's own RSA-2048 key for the discs' security
+ * xbased native core — xbased's own RSA-2048 key for the discs' security
  * sectors (xc.c nc_xc_security_sector): the modulus is the kernel's
  * XePublicKeyData, the private exponent signs the sectors the DVD drive
  * hands out. Not the console's key (a disc image has no security sector of

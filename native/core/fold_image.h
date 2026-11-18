@@ -1,5 +1,5 @@
 /*
- * hakuX native core — a game folder as a disc (fold_image.c): an extracted
+ * xbased native core — a game folder as a disc (fold_image.c): an extracted
  * game (its default.xbe and the files beside it) read as the XDVDFS image
  * they would make, its directory tables built in memory and each file's
  * sectors read from the file itself.

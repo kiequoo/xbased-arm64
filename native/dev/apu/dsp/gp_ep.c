@@ -64,7 +64,7 @@ static void scatter_gather_rw(MCPXAPUState *d, uint64_t sge_base,
             bytes_to_copy = len;
         }
 
-        /* hakuX: the page's address is the guest table's; a piece past RAM
+        /* xbased: the page's address is the guest table's; a piece past RAM
          * is skipped (a read leaves those bytes as they were) */
         const bool in_ram = APU_CHECK(paddr + bytes_to_copy <= d->ram_size);
         if (in_ram && dir) {
@@ -122,7 +122,7 @@ static uint32_t circular_scatter_gather_rw(MCPXAPUState *d, uint64_t sge_base,
                                            uint32_t base, uint32_t end,
                                            uint32_t cur, size_t len, bool dir)
 {
-    /* hakuX: the FIFO's registers are the guest's; with cur outside
+    /* xbased: the FIFO's registers are the guest's; with cur outside
      * [base, end) nothing could be copied (end == cur: forever) */
     if (!APU_CHECK(base <= cur && cur < end)) {
         return cur;
@@ -203,7 +203,7 @@ static bool ep_sink_samples(MCPXAPUState *d, uint8_t *ptr, size_t len)
         return false;
     } else if ((d->monitor.point == MCPX_APU_DEBUG_MON_EP) ||
         (d->monitor.point == MCPX_APU_DEBUG_MON_GP_OR_EP)) {
-        /* hakuX: len is the DMA's, from the guest's DSP code */
+        /* xbased: len is the DMA's, from the guest's DSP code */
         if (APU_CHECK(len == sizeof(d->monitor.frame_buf))) {
             memcpy(d->monitor.frame_buf, ptr, len);
         }
@@ -324,7 +324,7 @@ uint64_t mcpx_apu_gp_read(void *opaque, uint32_t addr, unsigned int size)
     return r;
 }
 
-/* hakuX: the DSP memories are 24 bits wide and a host write's top byte is
+/* xbased: the DSP memories are 24 bits wide and a host write's top byte is
  * not stored (DirectSound can write sign-extended words; the DSP core
  * asserts on them) */
 #define DSP_WORD(v) ((uint32_t)(v) & 0xFFFFFF)
@@ -494,7 +494,7 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_
         dsp_start_frame(d->gp.dsp);
         d->gp.dsp->core.is_idle = false;
         d->gp.dsp->core.cycle_count = 0;
-        /* hakuX: while a vCPU waits (mcpx_apu_spin_wait), up to one
+        /* xbased: while a vCPU waits (mcpx_apu_spin_wait), up to one
          * hardware frame of cycles (160 MHz / 1500 Hz) */
         bool boost = !d->gp.realtime &&
                      apu_ld(&d->gp_boost_until_us) >

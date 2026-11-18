@@ -1,5 +1,5 @@
 /*
- * hakuX front end — xbased's updates (update.h).
+ * xbased front end — xbased's updates (update.h).
  *
  * The latest release comes from GitHub's API through curl, as the box art
  * does (library.c): Windows 10 and 11 ship it, and Linux distributions do.
@@ -118,10 +118,10 @@ static int check_thread(void *arg)
             }
             U.asset[0] = 0;
         }
-        nc_log("hakuX-app", "update: latest release %s (this is %s)%s", U.version, U.current,
+        nc_log("xbased-app", "update: latest release %s (this is %s)%s", U.version, U.current,
                 U.asset[0] ? "" : ", without a package for this platform");
     } else {
-        nc_log("hakuX-app", "update: no answer from GitHub");
+        nc_log("xbased-app", "update: no answer from GitHub");
     }
     SDL_free(body);
     SDL_SetAtomicInt(&U.state, U.version[0] && newer(U.version, U.current) ? UPD_AVAILABLE : UPD_IDLE);
@@ -130,9 +130,17 @@ static int check_thread(void *arg)
 
 void upd_check_start(const char *current)
 {
-    if (U.thread) {
+    /* again (About's button, #336) once the last check is done; never
+     * over an install */
+    const int st = SDL_GetAtomicInt(&U.state);
+    if (st == UPD_CHECKING || st == UPD_INSTALLING || st == UPD_INSTALLED) {
         return;
     }
+    if (U.thread) {
+        SDL_WaitThread(U.thread, NULL);
+        U.thread = NULL;
+    }
+    U.version[0] = 0;
     snprintf(U.current, sizeof(U.current), "%s", current);
     SDL_SetAtomicInt(&U.state, UPD_CHECKING);
     U.thread = SDL_CreateThread(check_thread, "update-check", NULL);
@@ -283,13 +291,13 @@ static bool move_over(const char *from, const char *to, const char *rel)
             snprintf(aside, sizeof(aside), "%s" UPD_OLD, d);
             SDL_RemovePath(aside);
             if (!SDL_RenamePath(d, aside)) {
-                nc_log("hakuX-app", "update: %s is in use: %s", d, SDL_GetError());
+                nc_log("xbased-app", "update: %s is in use: %s", d, SDL_GetError());
                 ok = false;
                 break;
             }
         }
         if (!SDL_RenamePath(s, d)) {
-            nc_log("hakuX-app", "update: %s couldn't be written: %s", d, SDL_GetError());
+            nc_log("xbased-app", "update: %s couldn't be written: %s", d, SDL_GetError());
             ok = false;
         }
     }
@@ -345,7 +353,7 @@ static bool zip_unpacked(const char *zip, const char *dir)
             snprintf(path, sizeof(path), "%s/%.*s", dir, (int)name_len, name);
             SDL_PathInfo pi;
             if (!SDL_GetPathInfo(path, &pi) || pi.type != SDL_PATHTYPE_FILE || pi.size != size) {
-                nc_log("hakuX-app", "update: %.*s isn't unpacked whole", (int)name_len, name);
+                nc_log("xbased-app", "update: %.*s isn't unpacked whole", (int)name_len, name);
                 ok = false;
             }
             files++;
@@ -354,7 +362,7 @@ static bool zip_unpacked(const char *zip, const char *dir)
     }
     SDL_free(z);
     if (ok) {
-        nc_log("hakuX-app", "update: tar reported an error, but all %u files of the package are unpacked", files);
+        nc_log("xbased-app", "update: tar reported an error, but all %u files of the package are unpacked", files);
     }
     return ok && files > 0;
 }
@@ -370,7 +378,7 @@ static bool install(void)
     snprintf(unpacked, sizeof(unpacked), "%s/files", tmp);
     SDL_CreateDirectory(unpacked);
     if (!curl(U.asset, zip, "600")) {
-        nc_log("hakuX-app", "update: the download failed");
+        nc_log("xbased-app", "update: the download failed");
         return false;
     }
     /* Windows' own tar (bsdtar) unpacks zips; not another one on the PATH */
@@ -379,13 +387,13 @@ static bool install(void)
     snprintf(tar, sizeof(tar), "%s\\System32\\tar.exe", root ? root : "C:\\Windows");
     const char *args[] = {tar, "-xf", zip, "-C", unpacked, NULL};
     if (!run(args) && !zip_unpacked(zip, unpacked)) {
-        nc_log("hakuX-app", "update: the package couldn't be unpacked");
+        nc_log("xbased-app", "update: the package couldn't be unpacked");
         return false;
     }
     char exe[1200];
     snprintf(exe, sizeof(exe), "%s/xbased.exe", unpacked);
     if (!SDL_GetPathInfo(exe, NULL)) {
-        nc_log("hakuX-app", "update: the package has no xbased.exe");
+        nc_log("xbased-app", "update: the package has no xbased.exe");
         return false;
     }
     char to[1100];
@@ -404,19 +412,19 @@ static bool install(void)
     char part[1200];
     snprintf(part, sizeof(part), "%s.new", a);
     if (!curl(U.asset, part, "600")) {
-        nc_log("hakuX-app", "update: the download failed");
+        nc_log("xbased-app", "update: the download failed");
         SDL_RemovePath(part);
         return false;
     }
     SDL_PathInfo pi;
     if (!SDL_GetPathInfo(part, &pi) || pi.size < 1024 * 1024) {
-        nc_log("hakuX-app", "update: the download is too small for an AppImage");
+        nc_log("xbased-app", "update: the download is too small for an AppImage");
         SDL_RemovePath(part);
         return false;
     }
     chmod(part, 0755);
     if (!SDL_RenamePath(part, a)) {
-        nc_log("hakuX-app", "update: %s couldn't be replaced: %s", a, SDL_GetError());
+        nc_log("xbased-app", "update: %s couldn't be replaced: %s", a, SDL_GetError());
         SDL_RemovePath(part);
         return false;
     }
@@ -427,7 +435,7 @@ static bool install(void)
 static int install_thread(void *arg)
 {
     const bool ok = install();
-    nc_log("hakuX-app", "update: %s %s", ok ? "installed" : "not installed:", ok ? U.version : "the release page instead");
+    nc_log("xbased-app", "update: %s %s", ok ? "installed" : "not installed:", ok ? U.version : "the release page instead");
     SDL_SetAtomicInt(&U.state, ok ? UPD_INSTALLED : UPD_FAILED);
     return 0;
 }

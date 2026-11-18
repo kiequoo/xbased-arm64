@@ -1,5 +1,5 @@
 /*
- * hakuX native core — objects and handles.
+ * xbased native core — objects and handles.
  *
  * Objects live in guest memory as on the Xbox: an OBJECT_HEADER
  * (PointerCount, HandleCount, Type, Flags) followed by the body; handles
@@ -20,7 +20,7 @@ static uint32_t g_ob_size[NC_OB_TYPES];
 
 static bool freeable(enum NcObType type)
 {
-    return type == NC_OB_FILE || type == NC_OB_SYMLINK;
+    return type == NC_OB_FILE || type == NC_OB_SYMLINK || type == NC_OB_TIMER;
 }
 
 static enum NcObType type_of(NcKernel *k, uint32_t object)
@@ -44,6 +44,18 @@ static void release(NcKernel *k, uint32_t object, enum NcObType type)
         nc_vm_rd32(k->vm, hdr) > 1) {
         return;
     }
+    if (type == NC_OB_TIMER) {
+        /* A timer goes as the console's does with its last handle (its
+         * delete routine cancels it): out of the timer queue first, and
+         * kept while a thread still waits on it. Kept for good, the timers
+         * of a title that makes one per wait filled RAM: The Nightmare
+         * Before Christmas: Oogie's Revenge's 171,000 by its title movie,
+         * 9.3 MiB of pool, and the movie's next block found no room (#326). */
+        if (nc_ke_object_waited(k, object)) {
+            return;
+        }
+        nc_timer_forget(k, object);
+    }
     nc_vm_wr32(k->vm, hdr + 0x8, 0);    /* a stale lookup of it fails the type check */
     k->pool_ob -= OB_HEADER + g_ob_size[type];
     nc_pool_free(k, hdr, OB_HEADER + g_ob_size[type]);
@@ -63,7 +75,7 @@ uint32_t nc_ob_create(NcKernel *k, enum NcObType type, uint32_t body_size)
 {
     if (freeable(type) && g_ob_size[type] != UINT32_MAX) {
         if (g_ob_size[type] && g_ob_size[type] != body_size) {
-            nc_log("hakuX-native", "ob: type %u objects of %u and %u bytes: not freed", type, g_ob_size[type],
+            nc_log("xbased-native", "ob: type %u objects of %u and %u bytes: not freed", type, g_ob_size[type],
                    body_size);
             g_ob_size[type] = UINT32_MAX;   /* for good: the sizes are mixed */
         } else {
@@ -100,7 +112,7 @@ uint32_t nc_ob_handle(NcKernel *k, uint32_t object, enum NcObType type)
             return i * 4;
         }
     }
-    nc_log("hakuX-native", "ob: out of handles");
+    nc_log("xbased-native", "ob: out of handles");
     return 0;
 }
 
@@ -299,7 +311,7 @@ static uint64_t ObOpenObjectByName(NcKernel *k, NcFrame *f, const uint32_t *a)
     if (!obj) {
         static unsigned told;
         if (told++ < 50) {
-            nc_log("hakuX-native", "ob: open %s: no such object", name[0] ? name : "(no name)");
+            nc_log("xbased-native", "ob: open %s: no such object", name[0] ? name : "(no name)");
         }
         return STATUS_OBJECT_NAME_NOT_FOUND;
     }

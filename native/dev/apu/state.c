@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the APU's savestate section.
+ * xbased native core — the APU's savestate section.
  *
  * The fields are stored self-describing, as xemu's VMState descriptions
  * named them: a description's field count, then each field's name, kind
@@ -245,12 +245,12 @@ static bool get(NcRd *r, const ApuDesc *desc, void *base, const char *path)
             f++;
         }
         if (f->kind == F_END) {
-            nc_log("hakuX-native-state", "apu: %s.%s is no longer stored: skipped", path, name);
+            nc_log("xbased-native-state", "apu: %s.%s is no longer stored: skipped", path, name);
             ok = skip_field(r, kind, size, num);
             continue;
         }
         if (f->kind != kind || f->num != num || (kind == F_DATA && f->size != size)) {
-            nc_log("hakuX-native-state", "apu: %s.%s changed (kind %u size %u x%u, now %u size %u x%u)", path,
+            nc_log("xbased-native-state", "apu: %s.%s changed (kind %u size %u x%u, now %u size %u x%u)", path,
                    name, kind, size, num, f->kind, f->size, f->num);
             ok = false;
             break;
@@ -268,7 +268,7 @@ static bool get(NcRd *r, const ApuDesc *desc, void *base, const char *path)
         }
     }
     if (ok && have != want) {
-        nc_log("hakuX-native-state", "apu: %s: the state has %u of this core's %u fields", path, have, want);
+        nc_log("xbased-native-state", "apu: %s: the state has %u of this core's %u fields", path, have, want);
         ok = false;
     }
     return ok && !r->fail;
@@ -341,7 +341,7 @@ bool nc_apu_state_load(NcRd *r, unsigned v)
     NcApuState st = {0};
     nc_rec_get(r, &nc_rec_NcApuState, &st, v);
     if (st.version_id != APU_STATE_VERSION) {
-        nc_log("hakuX-native-state", "apu: state version %d, this core reads %d", st.version_id,
+        nc_log("xbased-native-state", "apu: state version %d, this core reads %d", st.version_id,
                APU_STATE_VERSION);
         return false;
     }

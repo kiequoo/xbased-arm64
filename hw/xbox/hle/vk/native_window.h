@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU � the window the presenter draws into (vk/swapchain.c):
+ * xbased HLE GPU � the window the presenter draws into (vk/swapchain.c):
  * Android's ANativeWindow, or on Windows the front end's window as the
  * front end keeps it (native/app/win_main.c: its HWND, its size in pixels
  * as the last resize left it).

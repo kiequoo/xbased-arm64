@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Kelvin's immediate vertex data: the methods that set a
+ * xbased HLE GPU — Kelvin's immediate vertex data: the methods that set a
  * vertex attribute's current value.
  *
  * The NV2A keeps a current value for each of its 16 vertex attributes (0

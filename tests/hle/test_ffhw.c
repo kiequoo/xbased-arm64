@@ -1,4 +1,5 @@
 #include "hw/xbox/hle/shader/ffhw.h"
+#include "hw/xbox/hle/shader/vsh.h"
 #include "hle_test.h"
 #include <math.h>
 #include <stdio.h>
@@ -137,11 +138,151 @@ static void test_light_curves(void)
     HT_CHECK(strstr(buf, "reflect(normalize(tPos.xyz)") == NULL);
 }
 
+/* HLE_VSH_XF: every product by the transform unit's arithmetic; its stand-in
+ * (HLE_VSH_XF_FAST): plain floats, the unit's library left out */
+static void test_xf_fast(void)
+{
+    HleFfhwKey k = { .magic = HLE_FFHW_MAGIC, .skin = 3, .lighting = 2, .normalize = 1,
+                     .local_eye = 1, .src = { 0, 1, 1, 0 }, .light = { 1 } };
+    k.texmat = 1u << 1;
+    uint32_t tok[HLE_FFHW_SLOTS * 4];
+    memcpy(tok, &k, sizeof(k));
+    HleVshKey vk = { .in_mask = 0x1E1F, .spec_off = HLE_VSH_XF };
+    HT_CHECK(hle_ffhw_glsl(tok, HLE_FFHW_SLOTS, &vk, buf, sizeof(buf)) > 0);
+    dump("ffhw_xf");
+    HT_CHECK(strstr(buf, "#define XF(v, b) vec4(xdp4(") != NULL);
+    HT_CHECK(strstr(buf, "tN = xmul(vec4(tN, 0.0), xrsq4(") != NULL);
+    HT_CHECK(strstr(buf, "vec4 ePos3 = vec4(xmul(tPos, xrcp4(tPos.w)).xyz, 0.0);") != NULL);
+    HT_CHECK(strstr(buf, "oPos = vec4(xadd(xmul(vec4(sp.xyz, 0.0), xrcc4(sp.w))") != NULL);
+    HT_CHECK(strstr(buf, "uint xfm(uint a, uint b)") != NULL);
+    HT_CHECK(strstr(buf, "layout(location = 12) out vec4 vTexP0;") != NULL);
+    vk.spec_off = HLE_VSH_XF | HLE_VSH_XF_FAST;
+    HT_CHECK(hle_ffhw_glsl(tok, HLE_FFHW_SLOTS, &vk, buf, sizeof(buf)) > 0);
+    dump("ffhw_xf_fast");
+    HT_CHECK(strstr(buf, "#define XF(v, b) vec4(dot(") != NULL);
+    HT_CHECK(strstr(buf, "tN = normalize(tN);") != NULL);
+    HT_CHECK(strstr(buf, "vec3 eyeV = normalize(c[") != NULL);    /* lighting 1's */
+    HT_CHECK(strstr(buf, "oPos = vec4(sp.xyz / sw + c[") != NULL);
+    HT_CHECK(strstr(buf, "lt_v(") == NULL);                       /* no lighting unit */
+    HT_CHECK(strstr(buf, "xmul(") == NULL && strstr(buf, "xdp4(") == NULL);
+    HT_CHECK(strstr(buf, "uint xfm(uint a, uint b)") == NULL);
+    /* what the pixel stage takes from the exact form, written all the same */
+    HT_CHECK(strstr(buf, "layout(location = 12) out vec4 vTexP0;") != NULL);
+    HT_CHECK(strstr(buf, "vZs = oPos.z;") != NULL);
+    /* the lights one loop, not each written out (ffhw.c light_loop: its body built once) */
+    HT_CHECK(strstr(buf, "#extension GL_EXT_control_flow_attributes : enable") != NULL);
+    HT_CHECK(strstr(buf, "[[dont_unroll]] for (int li = 0; li < 8; li++) {") != NULL);
+    HT_CHECK(strstr(buf, "uint t = (0x1u >> uint(2 * li)) & 3u;") != NULL);
+    HT_CHECK(strstr(buf, "/* light 0 */") == NULL);
+    /* the colours' no-number rule left to the exact form */
+    HT_CHECK(strstr(buf, "NVNAN1(") == NULL);
+    /* points' rules: in a shader that may draw them, not in one that draws none */
+    HT_CHECK(strstr(buf, "ptS = floor(ptS * 8.0) / 8.0;") != NULL);
+    vk.spec_off |= HLE_VSH_NO_POINTS;
+    HT_CHECK(hle_ffhw_glsl(tok, HLE_FFHW_SLOTS, &vk, buf, sizeof(buf)) > 0);
+    HT_CHECK(strstr(buf, "ptS = floor(ptS * 8.0) / 8.0;") == NULL);
+    HT_CHECK(strstr(buf, "bool ptCull = false;") != NULL);
+    HT_CHECK(strstr(buf, "if (ptCull) gl_Position") != NULL);
+    /* the fog value by the lighting unit's arithmetic in the exact form, plain floats in the stand-in */
+    vk.fog_table = HLE_VSH_FOG_NV;
+    HT_CHECK(hle_ffhw_glsl(tok, HLE_FFHW_SLOTS, &vk, buf, sizeof(buf)) > 0);
+    HT_CHECK(strstr(buf, "float fv = pc.fog.x + pc.fog.y * fd;") != NULL);
+    HT_CHECK(strstr(buf, "lt_add3(") == NULL);
+    vk.spec_off = HLE_VSH_XF;
+    HT_CHECK(hle_ffhw_glsl(tok, HLE_FFHW_SLOTS, &vk, buf, sizeof(buf)) > 0);
+    HT_CHECK(strstr(buf, "uint fv = lt_add3(lt_s(pc.fog.x), lt_mul(lt_s(pc.fog.y), lt_s(fd)), 0u);") != NULL);
+}
+
+/* A transform-unit operation (xflib.h) the stand-in's text still calls: it
+ * has no library, so the shader would not build and its draw would wait for
+ * the exact form (Dead or Alive 3's and Fable's local lights did) */
+static const char *xf_call(const char *t)
+{
+    static const char *const k_ops[] = { "xadd(", "xmul(", "xdp3(", "xdp4(", "xdph(", "xdst(",
+                                         "xrcp4(", "xrcc4(", "xrsq4(" };
+    for (unsigned i = 0; i < sizeof(k_ops) / sizeof(k_ops[0]); i++) {
+        const char *q = strstr(t, k_ops[i]);
+        if (q) {
+            return q;
+        }
+    }
+    return NULL;
+}
+
+/* Every lighting, fog, skinning, texgen and point mode, fixed function and a
+ * program under SET_LIGHTING_ENABLE: the stand-in calls nothing of the
+ * transform unit, nor of the lighting unit (ltlib.h: its integer arithmetic
+ * is the other slow build) */
+static void test_xf_fast_sweep(void)
+{
+    static const uint8_t k_lights[][8] = { { 1 }, { 2 }, { 3 }, { 1, 2, 3 }, { 3, 3, 2, 1, 2, 3, 1, 2 } };
+    unsigned n = 0, bad = 0;
+    for (unsigned li = 0; li < sizeof(k_lights) / sizeof(k_lights[0]); li++) {
+        for (unsigned v = 0; v < 64; v++) {
+            HleFfhwKey k;
+            memset(&k, 0, sizeof(k));
+            k.magic = HLE_FFHW_MAGIC;
+            k.lighting = 2;
+            memcpy(k.light, k_lights[li], 8);
+            k.two_side = v & 1;
+            k.local_eye = (v >> 1) & 1;
+            k.normalize = (v >> 2) & 1;
+            k.skin = (uint8_t)((v >> 3) & 1 ? 3 : 0);
+            k.fog = (uint8_t)((v >> 4) % 4 + 1);
+            k.points = (v >> 5) & 1;
+            k.specular = 1;
+            k.src[1] = 1;
+            k.texgen[0][0] = HLE_FFHW_TG_SPHERE;
+            k.texgen[0][1] = HLE_FFHW_TG_REFLECTION;
+            k.texgen[1][0] = HLE_FFHW_TG_EYE;
+            k.texgen[1][2] = HLE_FFHW_TG_NORMAL;
+            k.texmat = 3;
+            uint32_t tok[HLE_FFHW_SLOTS * 4];
+            memcpy(tok, &k, sizeof(k));
+            HleVshKey vk = { .in_mask = 0x1E1F, .spec_off = HLE_VSH_XF | HLE_VSH_XF_FAST };
+            size_t len = hle_ffhw_glsl(tok, HLE_FFHW_SLOTS, &vk, buf, sizeof(buf));
+            const char *q = len ? xf_call(buf) : NULL;
+            q = q ? q : len ? strstr(buf, "lt_") : NULL;
+            n++;
+            char nm[48];
+            snprintf(nm, sizeof(nm), "sweep_ff_%u_%u", li, v);
+            dump(nm);
+            if (!len || q) {
+                if (bad++ < 3) {
+                    printf("  fixed function, lights %u, variant %u: %s\n", li, v,
+                           !len ? "no text" : q);
+                }
+            }
+            /* the same key after a program's final slot (vsh.c, ffhw.c hle_ffhw_lt_glsl) */
+            static const uint32_t k_prog[] = { 0x00000000, 0x0087601B, 0xC400286C, 0x3070E801 };
+            uint32_t pt[4 + HLE_FFHW_SLOTS * 4];
+            memcpy(pt, k_prog, sizeof(k_prog));
+            k.magic = HLE_FFHW_LT_MAGIC;
+            memcpy(pt + 4, &k, sizeof(k));
+            len = hle_vsh_glsl(pt, 1 + HLE_FFHW_SLOTS, &vk, buf, sizeof(buf));
+            q = len ? xf_call(buf) : NULL;
+            q = q ? q : len ? strstr(buf, "lt_") : NULL;
+            n++;
+            snprintf(nm, sizeof(nm), "sweep_prog_%u_%u", li, v);
+            dump(nm);
+            if (!len || q) {
+                if (bad++ < 3) {
+                    printf("  program, lights %u, variant %u: %s\n", li, v, !len ? "no text" : q);
+                }
+            }
+        }
+    }
+    printf("  %u stand-ins, %u calling the unit or empty\n", n, bad);
+    HT_CHECK(bad == 0);
+}
+
 int main(void)
 {
     HT_RUN(test_unlit);
     HT_RUN(test_lit_skinned);
     HT_RUN(test_not_a_key);
     HT_RUN(test_light_curves);
+    HT_RUN(test_xf_fast);
+    HT_RUN(test_xf_fast_sweep);
     HT_DONE();
 }

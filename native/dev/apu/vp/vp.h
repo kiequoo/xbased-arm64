@@ -73,7 +73,7 @@ typedef struct MCPXAPUVoiceFilter {
     uint16_t lfo_wait[2];
     bool lfo_armed;
     HrtfFilter hrtf;
-    /* HAKUX_AUDIO_SKIP_MUTED plumbing. Declared unconditionally to avoid ABI
+    /* XBASED_AUDIO_SKIP_MUTED plumbing. Declared unconditionally to avoid ABI
      * churn (2 bytes/voice); only read/written when the flag is enabled.
      * cb_skip_decode: set by voice_process before voice_resample, consumed
      *   inside voice_fill_block -> voice_get_samples to null the per-sample

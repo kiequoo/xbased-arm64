@@ -1,6 +1,6 @@
 """Kernel import census from census.sh output.
 
-Reads the "== <image>" and "hakuX-native-imports: title <id> <ordinals>"
+Reads the "== <image>" and "xbased-native-imports: title <id> <ordinals>"
 lines that tools/native/census.sh prints and writes a Markdown report: per
 title, how many kernel exports it imports and how many of those functions
 this kernel doesn't implement (nc_kernel_impl in native/); the union over a
@@ -48,7 +48,7 @@ def parse(path):
             line = line.strip()
             if line.startswith("== "):
                 image = os.path.basename(line[3:])
-            m = re.search(r"hakuX-native-imports: title (\w+) ([\d,]+)", line)
+            m = re.search(r"xbased-native-imports: title (\w+) ([\d,]+)", line)
             if m and image:
                 titles.append((image, m.group(1), {int(x) for x in m.group(2).split(",")}))
     return titles

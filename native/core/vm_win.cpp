@@ -1,5 +1,5 @@
 /*
- * hakuX native core — guest memory on Windows (core/vm.c's host side).
+ * xbased native core — guest memory on Windows (core/vm.c's host side).
  *
  * The guest's address space is the low 4 GiB of the process itself: guest
  * VA x is host address x (vm->base is null), which the translator relies on
@@ -80,7 +80,7 @@ bool map_view(uint32_t page, uint32_t pages, uint32_t pa)
     void *m = p_MapViewOfFile3(g_section, GetCurrentProcess(), want, pa, (SIZE_T)pages << 12,
                                MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, nullptr, 0);
     if (m != want) {
-        nc_log("hakuX-native", "vm: view at %08x (pa %08x, %u pages) failed: %lu", page << 12, pa, pages,
+        nc_log("xbased-native", "vm: view at %08x (pa %08x, %u pages) failed: %lu", page << 12, pa, pages,
                GetLastError());
         return false;
     }
@@ -91,7 +91,7 @@ bool map_view(uint32_t page, uint32_t pages, uint32_t pa)
 bool unmap_view(std::map<uint32_t, Region>::iterator it)
 {
     if (!p_UnmapViewOfFile2(GetCurrentProcess(), addr(it->first), MEM_PRESERVE_PLACEHOLDER)) {
-        nc_log("hakuX-native", "vm: unmapping the view at %08x failed: %lu", it->first << 12, GetLastError());
+        nc_log("xbased-native", "vm: unmapping the view at %08x failed: %lu", it->first << 12, GetLastError());
         return false;
     }
     it->second.view = false;
@@ -111,7 +111,7 @@ bool split(uint32_t page)
         return false;
     }
     if (!VirtualFree(addr(start), (SIZE_T)(page - start) << 12, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
-        nc_log("hakuX-native", "vm: splitting the placeholder at %08x at %08x failed: %lu", start << 12, page << 12,
+        nc_log("xbased-native", "vm: splitting the placeholder at %08x at %08x failed: %lu", start << 12, page << 12,
                GetLastError());
         return false;
     }
@@ -160,21 +160,86 @@ void log_taken(const MEMORY_BASIC_INFORMATION &mbi, uint64_t lo, uint64_t hi)
             WideCharToMultiByte(CP_UTF8, 0, w, -1, what, sizeof(what), nullptr, nullptr);
         }
     }
-    nc_log("hakuX-native", "vm: host memory at %08llx-%08llx (%s %s) %s", (unsigned long long)lo,
+    nc_log("xbased-native", "vm: host memory at %08llx-%08llx (%s %s) %s", (unsigned long long)lo,
            (unsigned long long)hi, mbi.State == MEM_RESERVE ? "reserved" : "committed",
            mbi.Type == MEM_IMAGE ? "image" : mbi.Type == MEM_MAPPED ? "mapped" : "private", what);
 }
 
-} // namespace
+/* The low 4 GiB's free ranges as placeholders, once (nc_vmos_reserve_early
+ * or nc_vmos_init): false if one couldn't be made (its error in *err). */
+bool g_early;
 
-extern "C" bool nc_vmos_init(NcVm *vm, uint32_t ram_size)
+bool reserve_low(uint64_t *bad_lo, uint64_t *bad_hi, DWORD *err)
+{
+    uint64_t at = 0x10000;
+    while (at < (1ull << 32)) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery((void *)(uintptr_t)at, &mbi, sizeof(mbi))) {
+            break;
+        }
+        uint64_t lo = (uint64_t)(uintptr_t)mbi.BaseAddress, hi = lo + mbi.RegionSize;
+        if (hi > (1ull << 32)) {
+            hi = 1ull << 32;
+        }
+        if (mbi.State == MEM_FREE) {
+            const uint64_t a = (lo + 0xFFFF) & ~0xFFFFull, b = hi & ~0xFFFFull;
+            if (b > a) {
+                void *p = p_VirtualAlloc2(GetCurrentProcess(), (void *)(uintptr_t)a, (SIZE_T)(b - a),
+                                          MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, nullptr, 0);
+                if (p != (void *)(uintptr_t)a) {
+                    *bad_lo = a;
+                    *bad_hi = b;
+                    *err = GetLastError();
+                    return false;
+                }
+                g_regions[(uint32_t)(a >> 12)] = Region{(uint32_t)((b - a) >> 12), false, 0};
+            }
+        }
+        at = hi;
+    }
+    return true;
+}
+
+bool load_api()
 {
     HMODULE kb = GetModuleHandleW(L"kernelbase.dll");
     p_VirtualAlloc2 = (VirtualAlloc2Fn)(void *)GetProcAddress(kb, "VirtualAlloc2");
     p_MapViewOfFile3 = (MapViewOfFile3Fn)(void *)GetProcAddress(kb, "MapViewOfFile3");
     p_UnmapViewOfFile2 = (UnmapViewOfFile2Fn)(void *)GetProcAddress(kb, "UnmapViewOfFile2");
-    if (!p_VirtualAlloc2 || !p_MapViewOfFile3 || !p_UnmapViewOfFile2) {
-        nc_log("hakuX-native", "vm: Windows 10 1803 or later is needed (no placeholder API)");
+    return p_VirtualAlloc2 && p_MapViewOfFile3 && p_UnmapViewOfFile2;
+}
+
+} // namespace
+
+/* The guest's addresses held before anything else can take them: a game's
+ * process, first thing, before SDL and its window. Programs that hook every
+ * window (clipboard managers, overlays) load their DLL into the process as
+ * its window takes messages, some at a fixed address in the guest's low
+ * 4 GiB (0x400000, where a title's code goes: "no memory for section .text",
+ * the game not starting while they ran, #321). Reserved first, the DLL
+ * goes elsewhere or not into this process at all. nc_vmos_init takes the
+ * placeholders over. */
+extern "C" void nc_vmos_reserve_early(void)
+{
+    uint64_t lo, hi;
+    DWORD err;
+    if (g_early || !load_api()) {
+        return;
+    }
+    g_early = reserve_low(&lo, &hi, &err);
+    if (!g_early) {
+        /* (nc_vmos_init reserves what's free then, and tells) */
+        for (auto &r : g_regions) {
+            VirtualFree(addr(r.first), 0, MEM_RELEASE);
+        }
+        g_regions.clear();
+    }
+}
+
+extern "C" bool nc_vmos_init(NcVm *vm, uint32_t ram_size)
+{
+    if (!load_api()) {
+        nc_log("xbased-native", "vm: Windows 10 1803 or later is needed (no placeholder API)");
         return false;
     }
     g_vm = vm;
@@ -192,13 +257,19 @@ extern "C" bool nc_vmos_init(NcVm *vm, uint32_t ram_size)
         if (hi > (1ull << 32)) {
             hi = 1ull << 32;
         }
-        if (mbi.State == MEM_FREE) {
+        auto own = g_regions.find((uint32_t)(lo >> 12));
+        const bool ours = g_early && mbi.State == MEM_RESERVE && own != g_regions.end() && lo % 0x10000 == 0 &&
+                          ((uint64_t)own->second.pages << 12) == hi - lo;
+        if (ours) {
+            ranges++;                   /* a placeholder of nc_vmos_reserve_early's */
+            reserved += hi - lo;
+        } else if (mbi.State == MEM_FREE) {
             const uint64_t a = (lo + 0xFFFF) & ~0xFFFFull, b = hi & ~0xFFFFull;
             if (b > a) {
                 void *p = p_VirtualAlloc2(GetCurrentProcess(), (void *)(uintptr_t)a, (SIZE_T)(b - a),
                                           MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, nullptr, 0);
                 if (p != (void *)(uintptr_t)a) {
-                    nc_log("hakuX-native", "vm: reserving %08llx-%08llx failed: %lu", (unsigned long long)a,
+                    nc_log("xbased-native", "vm: reserving %08llx-%08llx failed: %lu", (unsigned long long)a,
                            (unsigned long long)b, GetLastError());
                     return false;
                 }
@@ -209,8 +280,8 @@ extern "C" bool nc_vmos_init(NcVm *vm, uint32_t ram_size)
         } else if (!(lo >= 0x7FFE0000ull && hi <= 0x7FFF0000ull) && taken++ < 16) {
             log_taken(mbi, lo, hi);     /* Windows' shared pages aside, in every process */
         }
-        if (mbi.State != MEM_FREE && lo < 0x80000000ull + 0x08000000ull && hi > 0x80000000ull) {
-            nc_log("hakuX-native", "vm: host memory at %08llx-%08llx, inside the guest's RAM window",
+        if (!ours && mbi.State != MEM_FREE && lo < 0x80000000ull + 0x08000000ull && hi > 0x80000000ull) {
+            nc_log("xbased-native", "vm: host memory at %08llx-%08llx, inside the guest's RAM window",
                    (unsigned long long)lo, (unsigned long long)hi);
             nc_vm_why = k_low_taken;
             return false;
@@ -218,10 +289,10 @@ extern "C" bool nc_vmos_init(NcVm *vm, uint32_t ram_size)
         at = hi;
     }
     if (taken > 16) {
-        nc_log("hakuX-native", "vm: and %u more", taken - 16);
+        nc_log("xbased-native", "vm: and %u more", taken - 16);
     }
-    nc_log("hakuX-native", "vm: %llu MiB of the low 4 GiB reserved for the guest (%u ranges)",
-           (unsigned long long)(reserved >> 20), ranges);
+    nc_log("xbased-native", "vm: %llu MiB of the low 4 GiB reserved for the guest (%u ranges%s)",
+           (unsigned long long)(reserved >> 20), ranges, g_early ? ", held from the process's start" : "");
 
     /* The 4 GiB above the guest's stay empty too, as far as they are free.
      * Host code reaches guest memory as address + length, both the guest's
@@ -245,13 +316,13 @@ extern "C" bool nc_vmos_init(NcVm *vm, uint32_t ram_size)
         at = end;
     }
     if (guard != (1ull << 32)) {
-        nc_log("hakuX-native", "vm: %llu MiB of the 4 GiB above the guest's kept empty (the rest is the process's)",
+        nc_log("xbased-native", "vm: %llu MiB of the 4 GiB above the guest's kept empty (the rest is the process's)",
                (unsigned long long)(guard >> 20));
     }
 
     g_section = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, ram_size, nullptr);
     if (!g_section) {
-        nc_log("hakuX-native", "vm: guest RAM section failed: %lu", GetLastError());
+        nc_log("xbased-native", "vm: guest RAM section failed: %lu", GetLastError());
         return false;
     }
     vm->reservation = nullptr;
@@ -260,7 +331,7 @@ extern "C" bool nc_vmos_init(NcVm *vm, uint32_t ram_size)
     vm->ram_fd = -1;
     void *phys = MapViewOfFile(g_section, FILE_MAP_ALL_ACCESS, 0, 0, ram_size);
     if (!phys) {
-        nc_log("hakuX-native", "vm: RAM view failed: %lu", GetLastError());
+        nc_log("xbased-native", "vm: RAM view failed: %lu", GetLastError());
         return false;
     }
     vm->phys = (uint8_t *)phys;
@@ -279,13 +350,13 @@ extern "C" bool nc_vmos_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
         }
     }
     if (ok && region_of(s) == g_regions.end()) {
-        nc_log("hakuX-native", "vm: %08x is outside the guest's reservation", va);
+        nc_log("xbased-native", "vm: %08x is outside the guest's reservation", va);
         nc_vm_why = k_low_taken;
         ok = false;
     }
     if (ok && n > 1) {
         if (!VirtualFree(addr(s), (SIZE_T)(e - s) << 12, MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS)) {
-            nc_log("hakuX-native", "vm: coalescing %08x+%x failed: %lu", va, len, GetLastError());
+            nc_log("xbased-native", "vm: coalescing %08x+%x failed: %lu", va, len, GetLastError());
             ok = false;
         } else {
             g_regions.erase(g_regions.upper_bound(s), g_regions.lower_bound(e));
@@ -337,7 +408,7 @@ extern "C" void nc_vmos_protect(NcVm *vm, uint32_t va, uint32_t len, int prot)
         if (b > a && !VirtualProtect(addr(a), (SIZE_T)(b - a) << 12, wp, &old)) {
             static unsigned logged;
             if (logged++ < 8) {
-                nc_log("hakuX-native", "vm: protecting %08x+%x failed: %lu", a << 12, (b - a) << 12, GetLastError());
+                nc_log("xbased-native", "vm: protecting %08x+%x failed: %lu", a << 12, (b - a) << 12, GetLastError());
             }
         }
     }

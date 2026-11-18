@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the NAT backend (net=nat): the Internet through a
+ * xbased native core — the NAT backend (net=nat): the Internet through a
  * user-mode TCP/IP stack (libslirp, as xemu's NAT), so the console reaches
  * Xbox Live through Insignia with no host privileges.
  *
@@ -61,7 +61,7 @@ static slirp_ssize_t cb_send_packet(const void *buf, size_t len, void *opaque)
 
 static void cb_guest_error(const char *msg, void *opaque)
 {
-    nc_log("hakuX-native-net", "nat: guest error: %s", msg);
+    nc_log("xbased-native-net", "nat: guest error: %s", msg);
 }
 
 static int64_t cb_clock_get_ns(void *opaque)
@@ -78,7 +78,7 @@ static void *cb_timer_new_opaque(SlirpTimerId id, void *cb_opaque, void *opaque)
             return t;
         }
     }
-    nc_log("hakuX-native-net", "nat: no timer free");
+    nc_log("xbased-native-net", "nat: no timer free");
     return NULL;
 }
 
@@ -130,7 +130,7 @@ static bool nat_init(void)
     SlirpConfig cfg = {
         .version = 4,
         .in_enabled = true,
-        .vhostname = "hakuX",
+        .vhostname = "xbased",
         .vnameserver = dns,
         .disable_host_loopback = true,
         .disable_dns = true,            /* dns is a real server: no redirect */
@@ -141,12 +141,12 @@ static bool nat_init(void)
     inet_pton(AF_INET, "10.0.2.15", &cfg.vdhcp_start);
     g_nat.slirp = slirp_new(&cfg, &g_cb, NULL);
     if (!g_nat.slirp) {
-        nc_log("hakuX-native-net", "nat: libslirp didn't start");
+        nc_log("xbased-native-net", "nat: libslirp didn't start");
         return false;
     }
     char b[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &dns, b, sizeof(b));
-    nc_log("hakuX-native-net", "nat: libslirp %s, 10.0.2.0/24, DNS %s", slirp_version_string(), b);
+    nc_log("xbased-native-net", "nat: libslirp %s, 10.0.2.0/24, DNS %s", slirp_version_string(), b);
     return true;
 }
 
@@ -221,7 +221,7 @@ static void nat_poll(struct pollfd *fds, int n)
     }
     static unsigned s_logged;
     if (g_nat.overflow && s_logged++ < 8) {
-        nc_log("hakuX-native-net", "nat: %llu descriptors over the poll's %d", (unsigned long long)g_nat.overflow,
+        nc_log("xbased-native-net", "nat: %llu descriptors over the poll's %d", (unsigned long long)g_nat.overflow,
                g_nat.maxfds);
     }
     g_nat.overflow = 0;

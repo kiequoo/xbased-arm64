@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — read the running title's XBE headers from guest memory.
+ * xbased HLE GPU — read the running title's XBE headers from guest memory.
  */
 #include "hw/xbox/hle/base.h"
 #include "hw/xbox/hle/core/xbe_guest.h"

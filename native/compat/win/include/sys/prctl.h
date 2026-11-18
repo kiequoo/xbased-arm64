@@ -1,4 +1,4 @@
-/* hakuX on Windows: prctl, with nothing to set. */
+/* xbased on Windows: prctl, with nothing to set. */
 #ifndef NC_WIN_PRCTL_H
 #define NC_WIN_PRCTL_H
 #define PR_SET_NAME 15

@@ -1,6 +1,6 @@
 name: 120 fps
 description: The game at 120 frames a second (on a 120 Hz screen) and its normal speed: characters, vehicles and objects are drawn between the game's 30 updates a second (particles and effects still move 30 times a second). Use it instead of the 60 fps mod, not with it.
-author: hakuX
+author: xbased
 refresh: 120
 
 # Halo 2's frame limiter (0x12B0E0) waits N vblanks a frame: N is the video

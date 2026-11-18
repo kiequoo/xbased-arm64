@@ -28,7 +28,7 @@ assert logo == ORG and logo + logo_size <= base + hdr, (hex(logo), hex(logo_size
 
 HEADER = """name: 60 fps
 description: The game at 60 frames a second and its normal speed: characters, vehicles, objects and the first-person arms are drawn between the game's 30 updates a second (particles and effects still move 30 times a second).
-author: hakuX
+author: xbased
 
 # Halo's frame limiter (0xBB5D0) waits 60 / F vblanks a frame, F being the
 # video settings' frame rate (word 0x1F8C98): 0 there, the retail value,

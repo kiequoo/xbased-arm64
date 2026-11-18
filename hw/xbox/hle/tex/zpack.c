@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — a depth target's image as the NV2A's words (zpack.h).
+ * xbased HLE GPU — a depth target's image as the NV2A's words (zpack.h).
  */
 #include "hw/xbox/hle/tex/zpack.h"
 
@@ -77,6 +77,22 @@ void hle_zpack(const uint8_t *depth, const uint8_t *stencil, int src, uint32_t n
 {
     const uint32_t sb = hle_zsrc_bytes(src);
     if (!sb || (gbpp != 2 && gbpp != 4)) {
+        return;
+    }
+    if (zf < 0.0f && src == HLE_ZSRC_F32) {
+        /* the image holds a float buffer's words over 2^n */
+        for (uint32_t i = 0; i < n; i++) {
+            float f;
+            memcpy(&f, depth + (size_t)i * 4, 4);
+            if (gbpp == 2) {
+                const uint16_t v = f >= 1.0f ? 0xFFFFu : !(f > 0.0f) ? 0 : (uint16_t)lrintf(f * 65536.0f);
+                memcpy(out + (size_t)i * 2, &v, 2);
+            } else {
+                const uint32_t w = f >= 1.0f ? 0x00FFFFFFu : !(f > 0.0f) ? 0 : (uint32_t)lrintf(f * 16777216.0f);
+                const uint32_t v = w << 8 | (stencil ? stencil[i] : 0);
+                memcpy(out + (size_t)i * 4, &v, 4);
+            }
+        }
         return;
     }
     if (zf > 0.0f && src == HLE_ZSRC_F32) {

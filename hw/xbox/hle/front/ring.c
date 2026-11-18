@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — SPSC command ring.
+ * xbased HLE GPU — SPSC command ring.
  */
 #include "hw/xbox/hle/front/ring.h"
 
@@ -92,6 +92,28 @@ bool hle_ring_ahead(HleRing *r, uint16_t op, unsigned max)
         at += rec_bytes(h->len);
     }
     return false;
+}
+
+uint32_t hle_ring_ahead_start(HleRing *r, uint32_t *head)
+{
+    *head = __atomic_load_n(&r->head, __ATOMIC_ACQUIRE);
+    uint32_t at = __atomic_load_n(&r->tail, __ATOMIC_RELAXED);
+    if (at != *head) {
+        at += rec_bytes(((const HleCmdHdr *)(r->buf + (at & r->mask)))->len);   /* past the current one */
+    }
+    return at;
+}
+
+const HleCmdHdr *hle_ring_ahead_next(HleRing *r, uint32_t *at, uint32_t head)
+{
+    while (*at != head) {
+        const HleCmdHdr *h = (const HleCmdHdr *)(r->buf + (*at & r->mask));
+        *at += rec_bytes(h->len);
+        if (h->op != HLE_OP_PAD) {
+            return h;
+        }
+    }
+    return NULL;
 }
 
 void hle_ring_consume(HleRing *r)

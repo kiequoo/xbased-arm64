@@ -1,12 +1,12 @@
 /*
- * hakuX native core — the XLink Kai backend (net=kai): system link over the
+ * xbased native core — the XLink Kai backend (net=kai): system link over the
  * Internet through an XLink Kai engine on the local network (Windows, macOS,
  * Linux, a Raspberry Pi; it doesn't run on Android), port 34523.
  *
  * The emulator protocol Dolphin speaks to the engine (its XLINK_KAI_BBA.cpp),
  * one UDP datagram each:
  *   connect;<id>;<emulator>;<40 zeros>   us, until the engine answers (id:
- *                                        hakuX-<8 hex digits>, this run's)
+ *                                        xbased-<8 hex digits>, this run's)
  *   connected                            the engine: frames flow
  *   e;e;<Ethernet frame>                 both ways
  *   keepalive...                         the engine: echoed back
@@ -55,7 +55,7 @@ static void send_raw(const void *p, size_t len)
         nc_net_errno() != EAGAIN) {
         static unsigned s_logged;
         if (s_logged++ < 8) {
-            nc_log("hakuX-native-net", "kai: send: %s", strerror(nc_net_errno()));
+            nc_log("xbased-native-net", "kai: send: %s", strerror(nc_net_errno()));
         }
     }
 }
@@ -72,7 +72,7 @@ static bool find_engine(void)
         if (e || !res) {
             static unsigned s_logged;
             if (s_logged++ < 4) {
-                nc_log("hakuX-native-net", "kai: no address for %s: %s", c->kai_host, gai_strerror(e));
+                nc_log("xbased-native-net", "kai: no address for %s: %s", c->kai_host, gai_strerror(e));
             }
             return false;
         }
@@ -83,7 +83,7 @@ static bool find_engine(void)
     g_kai.found = true;
     char a[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &g_kai.engine.sin_addr, a, sizeof(a));
-    nc_log("hakuX-native-net", "kai: engine at %s:%u, we are %.14s", a, c->kai_port, g_kai.connect + 8);
+    nc_log("xbased-native-net", "kai: engine at %s:%u, we are %.14s", a, c->kai_port, g_kai.connect + 8);
     return true;
 }
 
@@ -99,17 +99,17 @@ static bool kai_init(void)
 {
     const NcNetConfig *c = nc_net_config();
     if (!c->kai_host[0]) {
-        nc_log("hakuX-native-net", "kai: no engine address (kai=HOST)");
+        nc_log("xbased-native-net", "kai: no engine address (kai=HOST)");
         return false;
     }
     g_kai.fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (g_kai.fd < 0) {
-        nc_log("hakuX-native-net", "kai: socket: %s", strerror(nc_net_errno()));
+        nc_log("xbased-native-net", "kai: socket: %s", strerror(nc_net_errno()));
         return false;
     }
     nc_net_nonblock(g_kai.fd);
     snprintf(g_kai.connect, sizeof(g_kai.connect),
-             "connect;hakuX-%08x;hakuX;0000000000000000000000000000000000000000", arc4random());
+             "connect;xbased-%08x;xbased;0000000000000000000000000000000000000000", arc4random());
     return true;                        /* the first connect from the network thread */
 }
 
@@ -170,16 +170,16 @@ static void kai_poll(struct pollfd *fds, int n)
             send_raw(buf, len);
         } else if (starts(buf, len, "connected")) {
             if (!g_kai.connected) {
-                nc_log("hakuX-native-net", "kai: connected to the engine");
+                nc_log("xbased-native-net", "kai: connected to the engine");
             }
             g_kai.connected = true;
         } else if (starts(buf, len, "disconnected")) {
-            nc_log("hakuX-native-net", "kai: the engine disconnected us");
+            nc_log("xbased-native-net", "kai: the engine disconnected us");
             g_kai.connected = false;
             ask();
         } else if (starts(buf, len, "message;") || starts(buf, len, "chat;") || starts(buf, len, "directmessage;")) {
             buf[len] = 0;
-            nc_log("hakuX-native-net", "kai: %s", (const char *)buf);
+            nc_log("xbased-native-net", "kai: %s", (const char *)buf);
         } else if (len >= 14 && len <= NC_NET_FRAME_MAX) {
             nc_net_deliver(buf, len);       /* a bare frame */
             g_kai.frames_in++;

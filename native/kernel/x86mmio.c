@@ -1,5 +1,5 @@
 /*
- * hakuX native core — device register accesses without host faults.
+ * xbased native core — device register accesses without host faults.
  *
  * A guest access to a device window faults in the host and is emulated in
  * the signal handler (core/mmio.c): a few microseconds each, and DirectSound
@@ -47,7 +47,7 @@ static void site_log(const char *what, uint32_t eip)
         logged = 0;
     }
     if (logged++ < 10) {
-        nc_log("hakuX-native", "x86mmio: site %08x %s: its blocks are translated again", eip, what);
+        nc_log("xbased-native", "x86mmio: site %08x %s: its blocks are translated again", eip, what);
     }
 }
 

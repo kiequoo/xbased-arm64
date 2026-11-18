@@ -1,5 +1,5 @@
 /*
- * hakuX native core — boot and run a title.
+ * xbased native core — boot and run a title.
  */
 #ifndef NATIVE_CORE_CORE_H
 #define NATIVE_CORE_CORE_H
@@ -54,6 +54,9 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext);
  * process's access violations to nc_core_fault for c. arm64 Linux (fault_linux_arm64.c):
  * a SIGSEGV/SIGBUS handler, as Android's front end installs. */
 void nc_core_fault_install(NcCore *c);
+/* Called first by the crash handler (an unhandled exception): the HLE GPU's
+ * note of a driver crash (hw/xbox/hle/vk/precision.h). NULL: none. */
+extern void (*nc_crash_hook)(void);
 #endif
 
 #ifdef __cplusplus

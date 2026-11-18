@@ -18,6 +18,7 @@ enable_testing()
 # Pure modules under test. P1a appends to this list.
 set(HLE_PURE_SOURCES
   ${REPO_ROOT}/hw/xbox/hle/core/xbe.c
+  ${REPO_ROOT}/hw/xbox/hle/fixes/fixes.c
   ${REPO_ROOT}/hw/xbox/hle/tex/xdk_res.c
   ${REPO_ROOT}/hw/xbox/hle/front/ring.c
   ${REPO_ROOT}/hw/xbox/hle/front/arena.c
@@ -26,7 +27,9 @@ set(HLE_PURE_SOURCES
   ${REPO_ROOT}/hw/xbox/hle/shader/ff_gen.c
   ${REPO_ROOT}/hw/xbox/hle/shader/ffhw.c
   ${REPO_ROOT}/hw/xbox/hle/shader/vsh.c
+  ${REPO_ROOT}/hw/xbox/hle/shader/xfcpu.c
   ${REPO_ROOT}/hw/xbox/hle/shader/psh.c
+  ${REPO_ROOT}/hw/xbox/hle/shader/uber.c
   ${REPO_ROOT}/hw/xbox/hle/pb/pusher.c
   ${REPO_ROOT}/hw/xbox/hle/pb/vimm.c
   ${REPO_ROOT}/hw/xbox/hle/pb/kvfmt.c
@@ -45,6 +48,7 @@ function(hle_test name)
 endfunction()
 
 hle_test(test_xbe)
+hle_test(test_fixes)
 hle_test(test_image)
 hle_test(test_xdk_res)
 hle_test(test_ring)
@@ -60,8 +64,10 @@ hle_test(test_idhint)
 hle_test(test_xg_swizzle)
 hle_test(test_ffgen)
 hle_test(test_vsh)
+hle_test(test_xfcpu)
 hle_test(test_ffhw)
 hle_test(test_psh)
+hle_test(test_uber)
 hle_test(test_apu_hrtf)
 hle_test(test_cheats)
 hle_test(test_vkcompat)

@@ -1,0 +1,13 @@
+/*
+ * xbased's version, generated from cmake/app_win.cmake's XBASED_VERSION (the
+ * one place it is set): the dashboard, the update check and the executable's
+ * version information (app/win/xbased.rc) read it here.
+ */
+#ifndef XBASED_VERSION_H
+#define XBASED_VERSION_H
+
+#define XBASED_VERSION "@XBASED_VERSION@"
+/* FILEVERSION / PRODUCTVERSION: major, minor, patch, 0 */
+#define XBASED_VERSION_RC @XBASED_VERSION_RC@,0
+
+#endif

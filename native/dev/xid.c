@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the Xbox gamepad (Duke): an XID device (class 0x58)
+ * xbased native core — the Xbox gamepad (Duke): an XID device (class 0x58)
  * with a 20-byte input report on interrupt IN 2 and the rumble report on
  * interrupt OUT 2.
  *
@@ -9,7 +9,7 @@
  * -32767..32767), times from the first report; "60f:a:2" counts frames
  * instead (frame 60, held for 2: the HLE GPU's swaps in this process, after
  * a savestate's load the frames since it), the same each run. "@path" reads
- * it from a file (debug.hakux.env holds 91 characters).
+ * it from a file (debug.xbased.env holds 91 characters).
  */
 #include "native/dev/usb.h"
 #include "native/core/irq.h"
@@ -26,7 +26,20 @@
 typedef struct Xid {
     NcUsbDev dev;
     unsigned player;
+    /* the report last sent, and the reload count then (nc_xid_resend) */
+    uint8_t last[20];
+    bool sent;
+    unsigned epoch;
 } Xid;
+
+/* Bumped by a savestate's load: each pad's next poll reports, whatever it last
+ * sent (the title's copy is the state's) */
+static unsigned g_xid_epoch;
+
+void nc_xid_resend(void)
+{
+    __atomic_add_fetch(&g_xid_epoch, 1, __ATOMIC_RELAXED);
+}
 
 static const uint8_t k_dev_desc[18] = {
     18, 1, 0x10, 0x01, /* USB 1.1 */
@@ -50,7 +63,7 @@ static const uint8_t k_xid_desc[16] = {
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 };
 
-static const char *const k_strings[] = {"hakuX", "Microsoft Xbox Controller", "1"};
+static const char *const k_strings[] = {"xbased", "Microsoft Xbox Controller", "1"};
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static NcPadState g_pad[XID_PLAYERS];
@@ -137,7 +150,7 @@ static void script_load(void)
         while (*s && *s != ':' && *s != ',') {
             size_t n = strcspn(s, "+:,");
             if (!script_button(s, n, &st)) {
-                nc_log("hakuX-native-usb", "pad script: unknown input '%.*s'", (int)n, s);
+                nc_log("xbased-native-usb", "pad script: unknown input '%.*s'", (int)n, s);
             }
             s += n;
             if (*s == '+') {
@@ -154,7 +167,7 @@ static void script_load(void)
             s++;
         }
     }
-    nc_log("hakuX-native-usb", "pad script: %u steps", g_nscript);
+    nc_log("xbased-native-usb", "pad script: %u steps", g_nscript);
 }
 
 static void make_report(unsigned player, uint8_t r[20])
@@ -257,9 +270,15 @@ static int xid_control(NcUsbDev *d, const uint8_t *s, uint8_t *data, int len)
         }
         return NC_USB_STALL;
     default:
-        nc_log("hakuX-native-usb", "xid: unhandled request %02x %02x value %04x", type, req, value);
+        nc_log("xbased-native-usb", "xid: unhandled request %02x %02x value %04x", type, req, value);
         return NC_USB_STALL;
     }
+}
+
+/* a bus reset: the next poll reports */
+static void xid_reset(NcUsbDev *d)
+{
+    ((Xid *)d)->sent = false;
 }
 
 static int xid_data(NcUsbDev *d, bool in, int ep, uint8_t *buf, int len)
@@ -272,17 +291,30 @@ static int xid_data(NcUsbDev *d, bool in, int ep, uint8_t *buf, int len)
         static bool polled[XID_PLAYERS];
         if (!polled[x->player]) {
             polled[x->player] = true;
-            nc_log("hakuX-native-usb", "gamepad %u: polled", x->player);
+            nc_log("xbased-native-usb", "gamepad %u: polled", x->player);
         }
         uint8_t r[20];
         make_report(x->player, r);
+        /* A pad answers its interrupt IN only when its state changed, else NAKs
+         * and the request stays (the XDK's XINPUT_STATE: dwPacketNumber moves
+         * only when the state does). Reported on every poll, the packet number
+         * climbed 125 times a second with nothing touched, and a title waiting
+         * for it to stand still (an attract mode, an idle timer) never saw it
+         * do so. A bus reset or a savestate's load sends the next one. */
+        const unsigned ep = __atomic_load_n(&g_xid_epoch, __ATOMIC_RELAXED);
+        if (x->sent && x->epoch == ep && !memcmp(r, x->last, sizeof(r))) {
+            return NC_USB_NAK;
+        }
+        memcpy(x->last, r, sizeof(r));
+        x->sent = true;
+        x->epoch = ep;
         {   /* button changes as the title reads them (a few a second at most) */
             static uint16_t s_last[XID_PLAYERS];
             static unsigned s_logged;
             const uint16_t b = (uint16_t)(r[2] | r[3] << 8);
             if (b != s_last[x->player] && s_logged < 200) {
                 s_logged++;
-                nc_log("hakuX-native-usb", "gamepad %u: buttons %04x -> %04x (A %02x)", x->player,
+                nc_log("xbased-native-usb", "gamepad %u: buttons %04x -> %04x (A %02x)", x->player,
                        s_last[x->player], b, r[4]);
             }
             s_last[x->player] = b;
@@ -308,6 +340,7 @@ NcUsbDev *nc_xid_gamepad_new(unsigned player)
     x->dev.nstrings = 3;
     x->dev.control = xid_control;
     x->dev.data = xid_data;
+    x->dev.reset = xid_reset;
     x->dev.pending_addr = -1;
     script_load();
     return &x->dev;

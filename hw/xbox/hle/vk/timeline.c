@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — timeline semaphore = GPU time; watcher thread publishes
+ * xbased HLE GPU — timeline semaphore = GPU time; watcher thread publishes
  * completions and drives the GPU-progress interrupt (spec §4.7, §5.12).
  */
 #include "hw/xbox/hle/base.h"
@@ -200,7 +200,7 @@ void hle_tl_land_freed(uint32_t pa, uint32_t len)
     static unsigned s_logged;
     if (n && s_logged < 8) {
         s_logged++;
-        hle_log("hakuX-hle-back", "memory %08x+%x freed: %u landing(s) into it dropped (first 8 logged)",
+        hle_log("xbased-hle-back", "memory %08x+%x freed: %u landing(s) into it dropped (first 8 logged)",
                 pa, len, n);
     }
 }
@@ -326,7 +326,7 @@ static void publish(uint64_t v)
  * where the timeline stood (the loss's message names the call alone) */
 static void wait_failed(VkResult r, const char *what, uint64_t value)
 {
-    hle_log("hakuX-hle-back", "%s failed for %llu: submitted %llu, completed %llu", what,
+    hle_log("xbased-hle-back", "%s failed for %llu: submitted %llu, completed %llu", what,
             (unsigned long long)value, (unsigned long long)hle_atomic_read(&g_tl.submitted),
             (unsigned long long)hle_atomic_read(&g_tl.completed));
     hle_vk_lose(r, what);
@@ -345,7 +345,7 @@ static void *watch_thread(void *opaque)
         VkResult r = hle_tl_sem_wait(g_tl.sem, want, 100 * 1000 * 1000ull);
         if (r == VK_TIMEOUT) {
             if (++g_tl.timeouts % 10 == 0) {
-                hle_log("hakuX-hle-back", "GPU has not reached %llu for %llu s",
+                hle_log("xbased-hle-back", "GPU has not reached %llu for %llu s",
                         (unsigned long long)want,
                         (unsigned long long)(g_tl.timeouts / 10));
             }
@@ -411,7 +411,7 @@ int hle_tl_init(void (*on_complete)(uint64_t))
     g_tl.gap_hold_ns = 4000000;
 #if defined(__ANDROID__) || defined(_WIN32) || defined(NC_DESKTOP)
     char v[PROP_VALUE_MAX] = "";
-    if (hle_prop_get("debug.hakux.gaphold", v) > 0 && atoi(v) >= 0) {
+    if (hle_prop_get("debug.xbased.gaphold", v) > 0 && atoi(v) >= 0) {
         g_tl.gap_hold_ns = (int64_t)atoi(v) * 1000;  /* microseconds (the A/B) */
     }
 #endif
@@ -458,7 +458,7 @@ void hle_tl_gap(void)
 
 /* The render thread, before a submit: a gap asked for is everything
  * submitted finished, then the GPU left idle gap_hold_ns
- * (debug.hakux.gaphold, microseconds; 4000 by default: with 1000 a window
+ * (debug.xbased.gaphold, microseconds; 4000 by default: with 1000 a window
  * frame still waited, the picture held 0.7 s, PGR2 at 3x on an Adreno 650). */
 void hle_tl_gap_serve(void)
 {
@@ -474,7 +474,7 @@ void hle_tl_gap_serve(void)
     g_tl.gaps++;
     const int64_t now = hle_now_ns();
     if (now - g_tl.gaps_log >= 10000000000ll) {
-        hle_log("hakuX-hle-back", "gpu gaps for the app's window: %u since the last (%lld us each)",
+        hle_log("xbased-hle-back", "gpu gaps for the app's window: %u since the last (%lld us each)",
                 g_tl.gaps, (long long)(g_tl.gap_hold_ns / 1000));
         g_tl.gaps = 0;
         g_tl.gaps_log = now;

@@ -1,5 +1,5 @@
 /*
- * hakuX native core — asynchronous procedure calls.
+ * xbased native core — asynchronous procedure calls.
  *
  * KAPC (nxdk xboxkrnl.h, CC0): Type 0x00, ApcMode 0x02, Inserted 0x03,
  * Thread 0x04, ApcListEntry 0x08, KernelRoutine 0x10, RundownRoutine 0x14,
@@ -192,7 +192,7 @@ bool nc_apc_queue(NcKernel *k, NcThread *t, const NcApc *a)
         const unsigned cap = t->apc_cap ? t->apc_cap * 2 : 16;
         NcApc *grown = realloc(t->apcs, cap * sizeof(NcApc));
         if (!grown) {
-            nc_log("hakuX-native", "ke: no memory for thread %u's APC queue (%u queued)", t->id, t->napcs);
+            nc_log("xbased-native", "ke: no memory for thread %u's APC queue (%u queued)", t->id, t->napcs);
             return false;
         }
         t->apcs = grown;

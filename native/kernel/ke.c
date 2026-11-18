@@ -1,5 +1,5 @@
 /*
- * hakuX native core — time, dispatcher objects, waits, IRQL.
+ * xbased native core — time, dispatcher objects, waits, IRQL.
  *
  * Dispatcher objects live in guest memory with the Xbox layouts (nxdk
  * xboxkrnl.h, CC0): DISPATCHER_HEADER { Type, Absolute, Size, Inserted,
@@ -687,6 +687,22 @@ void nc_ke_block(NcKernel *k)
 
 /* Ends t's nc_ke_block: status in its EAX, ready, ahead of the running
  * thread if its priority is higher. */
+bool nc_ke_object_waited(NcKernel *k, uint32_t object)
+{
+    for (unsigned i = 0; i < k->threads_hi; i++) {
+        const NcThread *t = &k->threads[i];
+        if (t->state != NC_T_WAITING) {
+            continue;
+        }
+        for (unsigned j = 0; j < t->wait.count; j++) {
+            if (t->wait.objects[j] == object) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void nc_ke_wake(NcKernel *k, NcThread *t, uint32_t status)
 {
     nc_context_set_gpr(&t->ctx, NC_EAX, status);
@@ -877,7 +893,7 @@ static uint64_t KeReleaseSemaphore(NcKernel *k, NcFrame *f, const uint32_t *a)
     const uint32_t old = release_semaphore(k, a[0], (int32_t)a[2], &status, (int32_t)a[1]);
     if (status != NC_STATUS_SUCCESS && !told) {
         told = true;
-        nc_log("hakuX-native", "ke: KeReleaseSemaphore %08x by %d past its limit %d (count %d): not released",
+        nc_log("xbased-native", "ke: KeReleaseSemaphore %08x by %d past its limit %d (count %d): not released",
                a[0], (int32_t)a[2], (int32_t)nc_vm_rd32(k->vm, a[0] + SEMAPHORE_LIMIT), (int32_t)old);
     }
     return old;
@@ -1026,7 +1042,7 @@ void nc_ke_port_queue(NcKernel *k, uint32_t obj, uint32_t key, uint32_t ctx, uin
     if (!p || p->n == PORT_PACKETS) {
         static unsigned s_warned;
         if (s_warned++ < 8) {
-            nc_log("hakuX-native", "ke: completion port %08x %s: packet dropped", obj, p ? "full" : "unknown");
+            nc_log("xbased-native", "ke: completion port %08x %s: packet dropped", obj, p ? "full" : "unknown");
         }
         return;
     }
@@ -1574,7 +1590,7 @@ static void clock_boot(void)
     const time_t s = (time_t)((BOOT_FILETIME + g_time_offset) / 10000000u) - (time_t)11644473600ll;
     struct tm tm;
     gmtime_r(&s, &tm);
-    nc_log("hakuX-native", "ke: console clock %04d-%02d-%02d %02d:%02d:%02d UTC, %s", tm.tm_year + 1900,
+    nc_log("xbased-native", "ke: console clock %04d-%02d-%02d %02d:%02d:%02d UTC, %s", tm.tm_year + 1900,
            tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
            g_clock_ms ? "as set in the settings" : "the phone's time");
 }

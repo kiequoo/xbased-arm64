@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the dashboard's drawing (ui.c): text in the bundled
+ * xbased front end — the dashboard's drawing (ui.c): text in the bundled
  * font with the system's CJK fonts behind it, shapes, the console's green
  * theme, over an SDL_Renderer (Direct3D on Windows, OpenGL/Vulkan on Linux),
  * or, in a game's process, as the overlay its own presenter composites over
@@ -50,6 +50,10 @@ SDL_Renderer *ui_renderer(void);
 /* The frame: its size (pixels) and scale (1 at 720 lines: sizes are given
  * in 720p units and scaled), then drawing, then ui_end presents. */
 void ui_begin(void);
+/* The interface in a centered 4:3 area of a wider window (the settings'
+ * "ui43"); ui_ox: that area's left edge in window pixels (0: the window). */
+void ui_set_frame43(bool on);
+int ui_ox(void);
 void ui_end(void);
 /* The overlay's frame drawn so far set as the presenter's, without
  * presenting (the window's loop presents); cover: it draws the whole
@@ -89,8 +93,10 @@ UiTex *ui_texture_rgba(const uint8_t *rgba, int w, int h);
 UiTex *ui_texture_surface(SDL_Surface *s);
 void ui_texture_free(UiTex *t);
 void ui_texture_size(const UiTex *t, float *w, float *h);
-/* A texture over the whole window, its colour modulated by c. */
+/* A texture over the whole window (the 4:3 area's sides too), its colour
+ * modulated by c; ui_fill_grad: a gradient over it. */
 void ui_fill(UiTex *t, UiColor c);
+void ui_fill_grad(UiColor top, UiColor bottom);
 /* The game's picture under the overlay, as the window would show it, or
  * that blurred (overlay only, while covering: NULL otherwise). */
 UiTex *ui_scene(bool blurred);

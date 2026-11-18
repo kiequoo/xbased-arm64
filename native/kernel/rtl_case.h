@@ -1,5 +1,5 @@
 /*
- * hakuX native core — Unicode case for the runtime library's upcase exports
+ * xbased native core — Unicode case for the runtime library's upcase exports
  * (RtlUpcaseUnicodeChar and the string forms): the simple uppercase of the
  * scripts titles write names in. ASCII, Latin-1, Latin Extended-A, Greek,
  * Cyrillic and the fullwidth forms; everything else is its own uppercase.

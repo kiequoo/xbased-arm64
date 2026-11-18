@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — guest RAM in GPU-importable memory (G0.3 strategy (a)).
+ * xbased HLE GPU — guest RAM in GPU-importable memory (G0.3 strategy (a)).
  */
 #include "hw/xbox/hle/base.h"
 #include "hw/xbox/hle/uma/uma.h"
@@ -31,26 +31,26 @@ static void *uma_alloc_usage(size_t size, uint64_t usage, AHardwareBuffer **out)
     AHardwareBuffer *ahb = NULL;
     void *ptr = NULL;
     if (AHardwareBuffer_allocate(&d, &ahb) != 0) {
-        __android_log_print(ANDROID_LOG_ERROR, "hakuX-hle",
+        __android_log_print(ANDROID_LOG_ERROR, "xbased-hle",
                             "uma: AHB allocate(%zu) failed", size);
         return NULL;
     }
     if (AHardwareBuffer_lock(ahb, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN |
                              AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, NULL,
                              &ptr) != 0 || !ptr) {
-        __android_log_print(ANDROID_LOG_ERROR, "hakuX-hle", "uma: AHB lock failed");
+        __android_log_print(ANDROID_LOG_ERROR, "xbased-hle", "uma: AHB lock failed");
         AHardwareBuffer_release(ahb);
         return NULL;
     }
     if ((uintptr_t)ptr & (hle_host_page_size() - 1)) {
-        __android_log_print(ANDROID_LOG_ERROR, "hakuX-hle",
+        __android_log_print(ANDROID_LOG_ERROR, "xbased-hle",
                             "uma: AHB pointer %p not page aligned", ptr);
         AHardwareBuffer_unlock(ahb, NULL);
         AHardwareBuffer_release(ahb);
         return NULL;
     }
     memset(ptr, 0, size);
-    __android_log_print(ANDROID_LOG_INFO, "hakuX-hle",
+    __android_log_print(ANDROID_LOG_INFO, "xbased-hle",
                         "uma: guest RAM from AHB size=%zu ptr=%p", size, ptr);
     *out = ahb;
     return ptr;   /* lives as long as the VM; intentionally never released */
@@ -61,7 +61,7 @@ struct AHardwareBuffer *hle_uma_ahb(void)
     return g_uma_ahb;
 }
 
-#define UMA_LOG(...) __android_log_print(ANDROID_LOG_INFO, "hakuX-hle", __VA_ARGS__)
+#define UMA_LOG(...) __android_log_print(ANDROID_LOG_INFO, "xbased-hle", __VA_ARGS__)
 
 static int g_uma_fd = -1;
 static size_t g_uma_size;
@@ -210,7 +210,7 @@ static void rate_log(int fd)
 {
     const size_t n = 16u << 20;
     uint8_t *a = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    int mfd = (int)syscall(__NR_memfd_create, "hakux-rate", 1u);
+    int mfd = (int)syscall(__NR_memfd_create, "xbased-rate", 1u);
     uint8_t *b = mfd >= 0 && ftruncate(mfd, (off_t)n) == 0
                      ? mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_SHARED, mfd, 0) : MAP_FAILED;
     if (a != MAP_FAILED && b != MAP_FAILED) {

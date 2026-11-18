@@ -1,5 +1,5 @@
 /*
- * hakuX front end — what the dashboard reads from discs and saves
+ * xbased front end — what the dashboard reads from discs and saves
  * (xbox_data.c): an image's game (its XBE's certificate and title image),
  * XPR0 images (title and save icons) as RGBA.
  */

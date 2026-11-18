@@ -1,12 +1,12 @@
 /*
- * hakuX HLE GPU — Vulkan driver quirks: what a driver gets wrong that the
+ * xbased HLE GPU — Vulkan driver quirks: what a driver gets wrong that the
  * back end works around. Each quirk is a bit with a name and the drivers it
  * is on for by default, picked from the driver's identity at device
  * creation (quirks.c). A new one is a row in that table and a test of
  * hle_quirk() where the back end works around it.
  *
- * A/B on any driver: HAKUX_HLE_QUIRKS at start, or the live property
- * debug.hakux.quirks: names separated by commas or spaces, "+name" (or the
+ * A/B on any driver: XBASED_HLE_QUIRKS at start, or the live property
+ * debug.xbased.quirks: names separated by commas or spaces, "+name" (or the
  * bare name) on and "-name" off on top of the driver's defaults, "+all" /
  * "-all" every quirk. Empty: the driver's defaults.
  */
@@ -87,7 +87,7 @@ enum {
      * the fragment job until the kernel hard-stops it (Mali-G57, Arm's r40p0:
      * VK_ERROR_DEVICE_LOST, "Job Hard-Stopped", GPU fault 0x4002 on job slot
      * 0): W-buffered draws test and store the rasterizer's z instead
-     * (vk/draw.c), as HAKUX_HLE_DBGFLAGS bit 8 does. Read per draw. */
+     * (vk/draw.c), as XBASED_HLE_DBGFLAGS bit 8 does. Read per draw. */
     HLE_QUIRK_NO_WBUF = 1u << 13,
     /* The host wait on a timeline semaphore (vkWaitSemaphores) returns
      * VK_ERROR_DEVICE_LOST and takes the session down, while the counter
@@ -105,10 +105,10 @@ static inline bool hle_quirk(uint32_t q)
     return (g_hle_quirks & q) != 0;
 }
 
-/* The driver's quirks (the device is created), and HAKUX_HLE_QUIRKS. */
+/* The driver's quirks (the device is created), and XBASED_HLE_QUIRKS. */
 void hle_quirks_init(VkPhysicalDevice phys);
 
-/* Once a frame: debug.hakux.quirks changed. */
+/* Once a frame: debug.xbased.quirks changed. */
 void hle_quirks_poll(void);
 
 #endif

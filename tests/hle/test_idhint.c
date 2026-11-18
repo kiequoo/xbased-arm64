@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — an object's slot by its id, remembered (hw/xbox/hle/vk/idhint.h).
+ * xbased HLE GPU — an object's slot by its id, remembered (hw/xbox/hle/vk/idhint.h).
  */
 #include "hle_test.h"
 

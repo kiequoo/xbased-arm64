@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — fixed-function GLSL generators (pure). See ff.h.
+ * xbased HLE GPU — fixed-function GLSL generators (pure). See ff.h.
  * - VS: XYZRHW (screen space) and transformed positions; D3D8 lighting
  *   (directional, point, spot; material colour sources, specular, local
  *   viewer), vertex blending (up to 3 weights), texgen (camera-space
@@ -38,6 +38,9 @@ static void put(Buf *b, const char *fmt, ...)
 bool g_hle_push_ssbo;                   /* ff.h */
 bool g_hle_glsl_zw;                     /* ff.h */
 bool g_hle_glsl_zclamp;                 /* ff.h */
+bool g_hle_glsl_f64;                    /* ff.h */
+bool g_hle_glsl_i64;                    /* ff.h */
+bool g_hle_psh_fast;                    /* ff.h */
 bool g_hle_glsl_fixed;                  /* ff.h */
 
 size_t hle_glsl_fixed_slots(char *src, size_t cap)
@@ -494,7 +497,7 @@ size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
     put(&b, "#version 450\n#extension GL_EXT_nonuniform_qualifier : require\n%s%s",
         k->wbuf == 2 ? HLE_WBUF_BARY_EXT_GLSL : "", hle_push_glsl());
     put(&b, "layout(set = 0, binding = 0) uniform texture2D uTex2D[];\n"
-            "layout(set = 0, binding = 1) uniform sampler uSmp[];\n");
+            "layout(set = 0, binding = 1) uniform sampler uSmp[];\n" HLE_CTE_GLSL);
     put(&b, "layout(location = 0) %sin vec4 vDiffuse;\n", interp);
     put(&b, "layout(location = 1) %sin vec4 vSpecular;\n", interp);
     for (unsigned s = 0; s < k->nstages; s++) {
@@ -548,9 +551,12 @@ size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
                             "        vec2(textureSize(sampler2D(uTex2D[nonuniformEXT(pc.tex[%u] & 0xFFFFu)], uSmp[0]), 0)); }\n",
                         s, s, s, s);
                 }
+                put(&b, "  uv%u = nvcte2i(pc.tex[%u], uv%u, "
+                        "pc.tex[%u] & 0xFFFFu, dFdx(uv%u), dFdy(uv%u));\n",
+                    s, s, s, s, s, s);
             }
             put(&b, "  vec4 t%u = texture(sampler2D(uTex2D[nonuniformEXT(pc.tex[%u] & 0xFFFFu)], "
-                    "uSmp[nonuniformEXT(pc.tex[%u] >> 16)]), uv%u);\n",
+                    "uSmp[nonuniformEXT((pc.tex[%u] >> 16) & 0x1FFu)]), uv%u);\n",
                 s, s, s, s);
             if (st->alpha_kill) {               /* D3DTSS_ALPHAKILL */
                 put(&b, "  if (t%u.a == 0.0) discard;\n", s);
@@ -599,7 +605,7 @@ size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
     if (k->fog) {
         put(&b, "%s  cur.rgb = mix(unpackUnorm4x8(pc.fog_color).zyx, cur.rgb, fogf);\n",   /* (psh.c) */
             k->fog == 1 || k->fog == 4 ?
-            "  if ((pc.flags & 8192u) != 0u) fogf = floor(fogf * 255.0 + 1.0 / 1024.0) / 255.0;\n" : "");
+            "  fogf = floor(fogf * 255.0 + 1.0 / 1024.0) / 255.0;\n" : "");
     }
     if (k->alpha_test && k->alpha_func < 8) {
         /* in eight bits, as the pixel shaders' (psh.c) */
@@ -612,7 +618,7 @@ size_t hle_ff_ps_glsl(const HleFfPsKey *k, char *buf, size_t cap)
     }
     put(&b, "  oColor = %s;\n", k->out_bgra ? "cur.bgra" : "cur");
     if (k->sblend >= 3) {
-        /* a title without D3D's (draw.c signed_blend): the target's byte as it
+        /* the NV2A's (draw.c signed_blend): the target's byte as it
          * is, the output's two's complement, from 0 to 255 */
         put(&b, "  { ivec4 sv = ivec4(floor(clamp(oColor, 0.0, 1.0) * 255.0 + 0.5));\n"
         "    ivec4 dv = ivec4(floor(clamp(subpassLoad(uFb), 0.0, 1.0) * 255.0 + 0.5));\n"

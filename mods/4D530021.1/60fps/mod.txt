@@ -1,6 +1,6 @@
 name: 60 fps
 description: Lifts the 30 fps cap: up to 60 frames a second, the game at its normal speed.
-author: hakuX
+author: xbased
 
 # Crimson Skies paces its frames itself: the gate at 0x12FB70 lets a frame
 # through once the QueryPerformanceCounter time since the last one reaches

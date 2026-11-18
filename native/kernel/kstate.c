@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the kernel in a savestate: NcKernel's own state, the
+ * xbased native core — the kernel in a savestate: NcKernel's own state, the
  * time and interrupt state of the modules around it (KERN), and the threads
  * (THRD). Thread pointers are stored as slots, CPU contexts by their fields
  * (NcCpuState), never as the JIT's layout.
@@ -12,6 +12,7 @@
  */
 #include "native/kernel/kernel.h"
 #include "native/core/irq.h"
+#include "native/dev/dev.h"
 
 #include <stdlib.h>
 
@@ -82,7 +83,7 @@ bool nc_kern_state_load(NcRd *r, unsigned v)
         memset(k->handles_more, 0, sizeof(k->handles_more));    /* its table ended at NC_HANDLES_V1 */
     }
     if (k->xbe_base != base || k->xbe_size != size || k->kprocess != kprocess) {
-        nc_log("hakuX-native-state", "the state's image is at %08x+%x (process %08x), this boot's at %08x+%x (%08x)",
+        nc_log("xbased-native-state", "the state's image is at %08x+%x (process %08x), this boot's at %08x+%x (%08x)",
                k->xbe_base, k->xbe_size, k->kprocess, base, size, kprocess);
         return false;
     }
@@ -97,7 +98,7 @@ bool nc_kern_state_load(NcRd *r, unsigned v)
         fits = fr->va >= NC_CONTIG_WINDOW && (uint64_t)(fr->va - NC_CONTIG_WINDOW) + fr->len <= k->vm->ram_size;
     }
     if (!fits) {
-        nc_log("hakuX-native-state", "kernel: the pool's free list or the thread count doesn't fit (a damaged state)");
+        nc_log("xbased-native-state", "kernel: the pool's free list or the thread count doesn't fit (a damaged state)");
         k->pool_nfree = 0;
         k->threads_hi = 0;
         return false;
@@ -117,7 +118,7 @@ bool nc_kern_state_load(NcRd *r, unsigned v)
     nc_kernel_av_saved_set(s.av_saved);
     nc_intr_isr_line_set(s.isr_line);
     nc_irq_state_set(s.irq_enabled, s.irq_lines);
-    nc_log("hakuX-native-state", "kernel: guest time %.3f s, %llu kernel calls", s.guest_ns / 1e9,
+    nc_log("xbased-native-state", "kernel: guest time %.3f s, %llu kernel calls", s.guest_ns / 1e9,
            (unsigned long long)k->calls);
     return true;
 }
@@ -206,7 +207,7 @@ bool nc_thrd_state_load(NcRd *r, unsigned v)
          * dispatch past the last one was written outside the thread) */
         if (t->wait.count > NC_MAX_WAIT_OBJECTS || t->ncallouts > NC_MAX_CALLOUTS || t->apc_nest > NC_MAX_APC_NEST ||
             t->nseh > NC_MAX_SEH || t->napcs > 65536) {
-            nc_log("hakuX-native-state", "threads: thread %u's counts don't fit (a damaged state)", i);
+            nc_log("xbased-native-state", "threads: thread %u's counts don't fit (a damaged state)", i);
             memset(t, 0, sizeof(*t));   /* no thread: nothing of it is looked at again */
             return false;
         }
@@ -235,7 +236,7 @@ bool nc_thrd_state_load(NcRd *r, unsigned v)
     k->resume_first = thread_at(k, refs.resume_first);
     k->yield_from = k->yield_to = NULL;     /* a yield's quantum, not kept */
     g_point = refs.point;
-    nc_log("hakuX-native-state", "threads: %u, current %d (%s)", n, refs.current,
+    nc_log("xbased-native-state", "threads: %u, current %d (%s)", n, refs.current,
            g_point == NC_STATE_AT_IDLE ? "idle: the scheduler picks first" : "at its kernel entry");
     return true;
 }
@@ -244,6 +245,16 @@ const NcCpuContext *nc_kstate_start_context(NcKernel *k)
 {
     nc_dpc_sync(k);                     /* a state from before the flag had none */
     nc_ps_old_stacks(k);                /* every section loaded: the memory map is the state's */
+    if (!nc_dev_nv2a_av_title()) {
+        nc_kernel_av_title_scan(k, NULL);   /* (a state without the title's shape: its parameters are
+                                               in its memory) */
+    }
+    if (!nc_dev_nv2a_av_title() && nc_dev_nv2a_av_title_remembered()) {
+        /* not there either: the shape the title had when last seen */
+        const uint32_t s = nc_dev_nv2a_av_title_remembered();
+        nc_dev_nv2a_av_title_set(s);
+        nc_log("xbased-native", "av: the title's shape as last seen: %s", s == 2 ? "16:9" : "4:3");
+    }
     NcThread *t = k->current;
     if (g_point == NC_STATE_AT_IDLE || !t || t->state != NC_T_RUNNING) {
         /* Every thread was switched out: the guest CPU starts in the

@@ -28,7 +28,7 @@ static inline float int8_to_float(int8_t x)
     return x / 128.0f;
 }
 
-/* hakuX: these scale by powers of two, so the float forms give the double
+/* xbased: these scale by powers of two, so the float forms give the double
  * division's result bit for bit (the voices' per-sample decode did each in
  * double). */
 static inline float uint8_to_float(uint8_t value)

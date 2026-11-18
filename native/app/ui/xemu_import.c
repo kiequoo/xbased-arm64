@@ -1,5 +1,5 @@
 /*
- * hakuX front end — xemu's saves brought in (xemu_import.h).
+ * xbased front end — xemu's saves brought in (xemu_import.h).
  *
  * xemu.toml's [sys.files] names the files: bootrom_path (the MCPX 1.0 boot
  * ROM), flashrom_path (the BIOS), eeprom_path (the EEPROM, default beside
@@ -769,6 +769,50 @@ static bool find_sig(Run *r, const char *root, int fi, const uint8_t *d, uint32_
     return false;
 }
 
+/* The wider look, when find_sig's places miss (#46: some games' saves came
+ * back damaged): a signature at any 4-byte step of the first or the last
+ * 512 bytes, over what follows it to the end, or what comes before it from
+ * the start (each end as the file has it, or before its padding). A file up
+ * to 1 MiB: some 500 signatures over it at most. */
+static bool find_sig_wide(int fi, const uint8_t *d, uint32_t n, const uint8_t auth[16], const uint8_t hd[16],
+                          Hit *hit)
+{
+    if (n > (1u << 20)) {
+        return false;
+    }
+    const uint32_t ends[3] = {n, unpadded(d, n, 0), unpadded(d, n, 0x20)};
+    for (int ei = 0; ei < 3; ei++) {
+        const uint32_t m = ends[ei];
+        if (m <= 40 || (ei >= 1 && m == ends[0]) || (ei == 2 && m == ends[1])) {
+            continue;
+        }
+        for (int side = 0; side < 2; side++) {
+            for (uint32_t k = 0; k <= 512; k += 4) {
+                /* side 0: the signature at p = k, over [p + 20, m); side 1: at
+                 * p = m - 20 - k (4-aligned from the end), over [0, p) */
+                const int64_t p = side == 0 ? (int64_t)k : (int64_t)m - 20 - (int64_t)k;
+                if (p < 0 || p + 20 > m) {
+                    break;
+                }
+                const uint32_t a = side == 0 ? (uint32_t)p + 20 : 0, b = side == 0 ? m : (uint32_t)p;
+                if (b <= a + 4) {
+                    continue;
+                }
+                uint8_t sig[2][20];
+                hmac(auth, 16, d + a, b - a, sig[ROAM]);
+                hmac(hd, 16, sig[ROAM], 20, sig[NOROAM]);
+                for (int kind = 0; kind < 2; kind++) {
+                    if (!memcmp(d + p, sig[kind], 20)) {
+                        *hit = (Hit){fi, a, b, kind, -1, (uint32_t)p};
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
 static void write_at(const char *p, uint32_t off, const uint8_t sig[20])
 {
     SDL_PathInfo pi;
@@ -898,13 +942,16 @@ static void resign(Run *r, const char *root, Keys *k, XiReport *rep)
             continue;
         }
         Hit h;
-        const bool found = find_sig(r, root, fi, d, (uint32_t)n, k->auth[ti], k->src_hd, &h);
+        bool found = find_sig(r, root, fi, d, (uint32_t)n, k->auth[ti], k->src_hd, &h);
         const int nhead = find_header_sigs(fi, d, (uint32_t)n, k->auth[ti], k->src_hd, found ? &h : NULL, hits + nh);
         for (int i = 0; i < nhead; i++) {
             LOG("%s: %s signature of its header [0, %u) at %u\n", rel, hits[nh + i].kind == NOROAM ? "console" : "roaming",
                 hits[nh + i].b, hits[nh + i].off);
         }
         nh += nhead;
+        if (!found && !nhead) {
+            found = find_sig_wide(fi, d, (uint32_t)n, k->auth[ti], k->src_hd, &h);
+        }
         if (found) {
             hits[nh++] = h;
             LOG("%s: %s signature of [%u, %u) at %s+%u\n", rel, h.kind == NOROAM ? "console" : "roaming", h.a, h.b,
@@ -1174,6 +1221,244 @@ out:
     SDL_SetAtomicInt(&g_have_report, 1);
     SDL_SetAtomicInt(&g_running, 0);
     return 0;
+}
+
+/* ---- saves from a folder (#283): a copy of an Xbox's or xemu's E:\UDATA /
+ * E:\TDATA (that folder, one holding them, the title folders or one title's
+ * folder), re-signed with the keys of xemu's files (its BIOS and boot ROM
+ * for the roaming signatures, its EEPROM for the console's) or, for saves
+ * locked to another console, the eeprom.bin put in the folder (that
+ * console's). xbased itself needs none of them; only this import does. */
+
+static char g_folder[1100];
+
+static bool hex8(const char *s)
+{
+    if (strlen(s) != 8) {
+        return false;
+    }
+    for (int i = 0; i < 8; i++) {
+        if (!isxdigit((unsigned char)s[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool is_dir(const char *p)
+{
+    SDL_PathInfo pi;
+    return SDL_GetPathInfo(p, &pi) && pi.type == SDL_PATHTYPE_DIRECTORY;
+}
+
+/* A host tree into to (rel: the path from Partition1, for the list). */
+static void copy_host_tree(Run *r, const char *from, const char *to, const char *rel, int depth)
+{
+    if (depth > 8 || r->failed) {
+        return;
+    }
+    SDL_CreateDirectory(to);
+    int n = 0;
+    char **names = SDL_GlobDirectory(from, NULL, 0, &n);
+    for (int i = 0; names && i < n && !r->failed; i++) {
+        if (!name_ok(names[i])) {
+            continue;
+        }
+        char src[1300], dst[1300], rp[300];
+        snprintf(src, sizeof(src), "%s/%s", from, names[i]);
+        snprintf(dst, sizeof(dst), "%s/%s", to, names[i]);
+        snprintf(rp, sizeof(rp), "%s/%s", rel, names[i]);
+        SDL_PathInfo pi;
+        if (!SDL_GetPathInfo(src, &pi)) {
+            continue;
+        }
+        if (pi.type == SDL_PATHTYPE_DIRECTORY) {
+            copy_host_tree(r, src, dst, rp, depth + 1);
+            continue;
+        }
+        if (pi.type != SDL_PATHTYPE_FILE || pi.size > MAX_FILE) {
+            continue;   /* too big for a save: left out */
+        }
+        size_t len = 0;
+        void *d = SDL_LoadFile(src, &len);
+        if (!d && pi.size) {
+            continue;   /* unreadable: left out */
+        }
+        if (!SDL_SaveFile(dst, d ? d : "", len)) {
+            r->failed = true;
+            snprintf(r->err, sizeof(r->err), "%s can't be written", dst);
+        }
+        SDL_free(d);
+        const time_t t = (time_t)(pi.modify_time / 1000000000);
+        struct utimbuf u = {t, t};
+        utime(dst, &u);
+        if (r->nfiles < MAX_FILES) {
+            snprintf(r->files[r->nfiles++], sizeof(r->files[0]), "%s", rp);
+        }
+    }
+    SDL_free(names);
+}
+
+/* One title's folder src into Partition1's area, its name in lower case as
+ * the console writes it. */
+static void copy_title(Run *r, const char *src, const char *name, const char *p1, const char *area_name)
+{
+    char area[1300], to[1400], rel[64], low[9];
+    for (int c = 0; c < 9; c++) {
+        low[c] = (char)tolower((unsigned char)name[c]);
+    }
+    area_dir(p1, area_name, area, sizeof(area));
+    snprintf(to, sizeof(to), "%s/%s", area, low);
+    snprintf(rel, sizeof(rel), "%s/%s", base_name(area), low);
+    copy_host_tree(r, src, to, rel, 0);
+    add_title(r, (uint32_t)strtoul(low, NULL, 16));
+}
+
+/* The title folders under dir into Partition1's area ("UDATA", "TDATA"). */
+static void copy_titles(Run *r, const char *dir, const char *p1, const char *area_name)
+{
+    int n = 0;
+    char **names = SDL_GlobDirectory(dir, NULL, 0, &n);
+    for (int i = 0; names && i < n && !r->failed; i++) {
+        char src[1300];
+        snprintf(src, sizeof(src), "%s/%s", dir, names[i]);
+        if (hex8(names[i]) && is_dir(src)) {
+            copy_title(r, src, names[i], p1, area_name);
+        }
+    }
+    SDL_free(names);
+}
+
+static int folder_thread(void *arg)
+{
+    (void)arg;
+    XiReport rep = {0};
+    rep.folder = true;
+    Run *r = calloc(1, sizeof(Run));
+    Keys *k = calloc(1, sizeof(Keys));
+    size_t tn = 0;
+    char *toml = g_toml[0] ? SDL_LoadFile(g_toml, &tn) : NULL;
+    char eep[1100] = "", mcpxp[1100] = "", flashp[1100] = "", own[1300];
+    bool own_eeprom = false;
+    if (!r || !k) {
+        snprintf(rep.error, sizeof(rep.error), "out of memory");
+        goto out;
+    }
+    if (!toml) {
+        snprintf(rep.error, sizeof(rep.error), "xemu's settings (xemu.toml) are needed for the saves' keys");
+        goto out;
+    }
+    if (!toml_value(toml, "eeprom_path", eep, sizeof(eep))) {
+        snprintf(eep, sizeof(eep), "%s", g_toml);
+        char *sl = strrchr(eep, '/'), *bs = strrchr(eep, '\\');
+        sl = bs > sl ? bs : sl;
+        snprintf(sl ? sl + 1 : eep, sizeof(eep) - (size_t)(sl ? sl + 1 - eep : 0), "eeprom.bin");
+    }
+    /* the console the saves come from: its eeprom.bin in the folder, else xemu's */
+    snprintf(own, sizeof(own), "%s/eeprom.bin", g_folder);
+    size_t en = 0;
+    uint8_t *ee = SDL_LoadFile(own, &en);
+    own_eeprom = ee != NULL;
+    if (!ee) {
+        ee = SDL_LoadFile(eep, &en);
+    }
+    if (!ee || en < 0x30 || !eeprom_hd_key(ee, k->src_hd)) {
+        SDL_free(ee);
+        snprintf(rep.error, sizeof(rep.error), "the EEPROM (%s) can't be read", own_eeprom ? own : eep);
+        goto out;
+    }
+    SDL_free(ee);
+    toml_value(toml, "bootrom_path", mcpxp, sizeof(mcpxp));
+    toml_value(toml, "flashrom_path", flashp, sizeof(flashp));
+    size_t mn = 0, fn = 0;
+    uint8_t *mcpx = mcpxp[0] ? SDL_LoadFile(mcpxp, &mn) : NULL;
+    uint8_t *flash = flashp[0] ? SDL_LoadFile(flashp, &fn) : NULL;
+    k->have_cert = mcpx && flash && bios_cert_key(mcpx, mn, flash, fn, k->cert);
+    SDL_free(mcpx);
+    SDL_free(flash);
+    rep.no_cert = !k->have_cert;
+    native_hd_key(g_hdd, k->dst_hd);
+    char p1[1200];
+    snprintf(p1, sizeof(p1), "%s/Partition1", g_hdd);
+    SDL_CreateDirectory(p1);
+    /* the layouts: a folder holding UDATA / TDATA, one of them, title folders, one title's */
+    const char *base = base_name(g_folder);
+    const char *bsl = strrchr(base, '\\');
+    base = bsl ? bsl + 1 : base;
+    bool any = false;
+    static const char *const areas[2] = {"UDATA", "TDATA"};
+    for (int a = 0; a < 2; a++) {
+        char sub[1300];
+        area_dir(g_folder, areas[a], sub, sizeof(sub));
+        if (is_dir(sub)) {
+            copy_titles(r, sub, p1, areas[a]);
+            any = true;
+        } else if (!SDL_strcasecmp(base, areas[a])) {
+            copy_titles(r, g_folder, p1, areas[a]);
+            any = true;
+        }
+    }
+    if (!any && hex8(base)) {
+        copy_title(r, g_folder, base, p1, "UDATA");
+    } else if (!any) {
+        copy_titles(r, g_folder, p1, "UDATA");
+    }
+    if (r->failed) {
+        snprintf(rep.error, sizeof(rep.error), "%s", r->err);
+        goto out;
+    }
+    if (!r->ntitles) {
+        snprintf(rep.error, sizeof(rep.error), "no game saves in %s (folders named by a title ID, as E:\\UDATA has them)",
+                 g_folder);
+        goto out;
+    }
+    rep.files = r->nfiles;
+    rep.titles = r->ntitles;
+    char lp[1200];
+    snprintf(lp, sizeof(lp), "%ssave_import.log", cfg_data_dir());
+    r->log = fopen(lp, "w");
+    LOG("folder: %s\nkeys: xemu's settings %s, BIOS key %s, the console's EEPROM %s\n", g_folder, g_toml,
+        k->have_cert ? "found" : "not found", own_eeprom ? own : eep);
+    if (k->have_cert) {
+        title_keys(r, k);
+    } else {
+        k->n = r->ntitles;
+        memcpy(k->ids, r->titles, sizeof(uint32_t) * (size_t)r->ntitles);
+    }
+    resign(r, p1, k, &rep);
+    LOG("%d files of %d titles, %d signatures replaced, %d files without one found, %d titles without their game\n",
+        rep.files, rep.titles, rep.resigned, rep.unsigned_files, rep.no_key);
+    rep.ok = true;
+out:
+    if (r && r->log) {
+        fclose(r->log);
+    }
+    free(r);
+    if (k) {
+        memset(k, 0, sizeof(*k));      /* the keys aren't kept */
+    }
+    free(k);
+    SDL_free(toml);
+    g_report = rep;
+    SDL_SetAtomicInt(&g_have_report, 1);
+    SDL_SetAtomicInt(&g_running, 0);
+    return 0;
+}
+
+void xi_start_folder(const char *folder, const char *toml, const char *hdd)
+{
+    if (!SDL_CompareAndSwapAtomicInt(&g_running, 0, 1)) {
+        return;
+    }
+    snprintf(g_folder, sizeof(g_folder), "%s", folder);
+    snprintf(g_toml, sizeof(g_toml), "%s", toml ? toml : "");
+    snprintf(g_hdd, sizeof(g_hdd), "%s", hdd);
+    SDL_Thread *t = SDL_CreateThread(folder_thread, "save-import", NULL);
+    if (t) {
+        SDL_DetachThread(t);
+    } else {
+        SDL_SetAtomicInt(&g_running, 0);
+    }
 }
 
 void xi_start(const char *toml, const char *hdd)

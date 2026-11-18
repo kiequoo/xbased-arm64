@@ -1,5 +1,5 @@
 /*
- * hakuX HLE — debug probes on title code (probe.h).
+ * xbased HLE — debug probes on title code (probe.h).
  */
 #include "hw/xbox/hle/base.h"
 #include "hw/xbox/hle/hle.h"
@@ -25,7 +25,7 @@ static bool in_code(uint32_t va)
     return false;
 }
 
-/* debug (HAKUX_HLE_PROBE_STACK=1): the words of the stack that look like
+/* debug (XBASED_HLE_PROBE_STACK=1): the words of the stack that look like
  * return addresses: in the XBE's code, right after a call (E8 rel32, or
  * FF /2 with a register, a [reg+disp8] or a [disp32/reg+disp32] operand). */
 static void backtrace(uint32_t esp, uint32_t va)
@@ -52,7 +52,7 @@ static void backtrace(uint32_t esp, uint32_t va)
             n++;
         }
     }
-    hle_log("hakuX-hle-probe", "%08x stack:%s", va, line);
+    hle_log("xbased-hle-probe", "%08x stack:%s", va, line);
 }
 
 bool hle_probe_at(uint32_t va)
@@ -71,23 +71,23 @@ void hle_probe_hit(const HleCpu *c)
     static int stack = -1;
     static uint32_t word_va;
     if (stack < 0) {
-        const char *e = getenv("HAKUX_HLE_PROBE_STACK");
+        const char *e = getenv("XBASED_HLE_PROBE_STACK");
         stack = e && atoi(e) > 0;
-        /* debug: HAKUX_HLE_PROBE_WORD=<va> (hex), that guest word with each hit */
-        e = getenv("HAKUX_HLE_PROBE_WORD");
+        /* debug: XBASED_HLE_PROBE_WORD=<va> (hex), that guest word with each hit */
+        e = getenv("XBASED_HLE_PROBE_WORD");
         word_va = e ? (uint32_t)strtoul(e, NULL, 16) : 0;
     }
 #if defined(__ANDROID__) || defined(_WIN32) || defined(NC_DESKTOP)
-    /* debug.hakux.probe, a new value: each probe logs its first hits again
+    /* debug.xbased.probe, a new value: each probe logs its first hits again
      * (a scene reached after the boot spent them) */
     static HleProp prop;
     static unsigned polls;
     char v[PROP_VALUE_MAX];
-    if ((polls++ & 1023) == 0 && hle_prop_new(&prop, "debug.hakux.probe", v)) {
+    if ((polls++ & 1023) == 0 && hle_prop_new(&prop, "debug.xbased.probe", v)) {
         for (unsigned i = 0; i < MAX_PROBES; i++) {
             g_probe[i].hits = 0;
         }
-        hle_log("hakuX-hle-probe", "re-armed (%s)", v);
+        hle_log("xbased-hle-probe", "re-armed (%s)", v);
     }
 #endif
     for (unsigned i = 0; i < MAX_PROBES; i++) {
@@ -98,7 +98,7 @@ void hle_probe_hit(const HleCpu *c)
         if (n <= g_probe[i].first || n % 1000 == 0) {
             uint32_t st[8] = { 0 };
             hle_va_rw(c->regs[R_ESP], st, sizeof(st), false);
-            hle_log("hakuX-hle-probe", "%08x #%llu eax %08x ecx %08x edx %08x ebx %08x esi %08x "
+            hle_log("xbased-hle-probe", "%08x #%llu eax %08x ecx %08x edx %08x ebx %08x esi %08x "
                     "edi %08x ebp %08x | esp %08x: %08x %08x %08x %08x %08x %08x %08x %08x",
                     va, (unsigned long long)n, c->regs[R_EAX], c->regs[R_ECX],
                     c->regs[R_EDX], c->regs[R_EBX], c->regs[R_ESI], c->regs[R_EDI],
@@ -109,7 +109,7 @@ void hle_probe_hit(const HleCpu *c)
             }
             uint32_t w = 0;
             if (word_va && !hle_va_rw(word_va, &w, 4, false)) {
-                hle_log("hakuX-hle-probe", "%08x #%llu word %08x = %08x", va, (unsigned long long)n,
+                hle_log("xbased-hle-probe", "%08x #%llu word %08x = %08x", va, (unsigned long long)n,
                         word_va, w);
             }
         }
@@ -119,7 +119,7 @@ void hle_probe_hit(const HleCpu *c)
 
 unsigned hle_probe_register(void)
 {
-    const char *e = getenv("HAKUX_HLE_PROBE");
+    const char *e = getenv("XBASED_HLE_PROBE");
     unsigned n = 0;
     memset(g_probe, 0, sizeof(g_probe));
     for (const char *p = e; p && *p && n < MAX_PROBES;) {
@@ -133,7 +133,7 @@ unsigned hle_probe_register(void)
             g_probe[n].va = va;
             g_probe[n].first = first;
             n++;
-            hle_log("hakuX-hle-probe", "probe at %08x (first %u logged)", va, first);
+            hle_log("xbased-hle-probe", "probe at %08x (first %u logged)", va, first);
         }
         p = *end == ',' ? end + 1 : end + strlen(end);
     }

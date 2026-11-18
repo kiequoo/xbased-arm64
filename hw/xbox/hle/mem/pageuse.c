@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — the page-use table (pageuse.h).
+ * xbased HLE GPU — the page-use table (pageuse.h).
  */
 #include "hw/xbox/hle/mem/pageuse.h"
 

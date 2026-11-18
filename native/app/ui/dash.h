@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the dashboard (dash.c): the console-style menus
+ * xbased front end — the dashboard (dash.c): the console-style menus
  * before a game: the library, settings, saves, online. Runs until the user
  * leaves; each game it starts runs in a process of its own.
  */
@@ -26,6 +26,10 @@ void dash_set_fullscreen_hook(void (*toggle)(void));
 /* The pointer's place (window pixels) from elsewhere (the game's frame):
  * false, none; NULL, SDL's own. */
 void dash_set_pointer_hook(bool (*where)(float *x, float *y));
+/* Called as the dashboard reads its input: the run's pump of the session
+ * frame's mouse into this window's events, while the in-game menu's loop
+ * has the window (win_main.c). */
+void dash_set_pump_hook(void (*pump)(void));
 int dash_ingame(SDL_Window *win, const char *key, const char *title, const char *frame_bmp, int *slot,
                 void (*live)(const struct Config *global, const struct Config *game));
 

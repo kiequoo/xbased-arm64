@@ -1,12 +1,14 @@
 /*
- * hakuX front end — settings files (config.h).
+ * xbased front end — settings files (config.h).
  */
 #include "native/app/ui/config.h"
 
 #include <SDL3/SDL.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -107,7 +109,7 @@ bool cfg_save(const Config *c)
     if (!f) {
         return false;
     }
-    /* the header (hakuX's earlier one becomes xbased's) */
+    /* the header (xbased's earlier one becomes xbased's) */
     const char *head = "# xbased options, one a line (the command line's come after and win)\n";
     fputs(c->comments[0] && strncmp(c->comments, "# hakuX options", 15) ? c->comments : head, f);
     for (int i = 0; i < c->n; i++) {
@@ -177,13 +179,34 @@ void cfg_set_bool(Config *c, const char *key, bool v)
 
 bool cfg_shaders_migrate(Config *c)
 {
-    if (cfg_get(c, "shaders.reset")) {
-        return false;
+    bool had = false;
+    /* 2 (1.1): every install starts in the hybrid mode once, whatever it had
+     * chosen (shaders, the old asyncpipe and prebuild); the choice made after
+     * that stays */
+    const char *reset = cfg_get(c, "shaders.reset");
+    if (!reset || atoi(reset) < 2) {
+        had = cfg_get(c, "asyncpipe") || cfg_get(c, "prebuild") || cfg_get(c, "shaders");
+        cfg_unset(c, "asyncpipe");
+        cfg_unset(c, "prebuild");
+        cfg_unset(c, "shaders");
+        cfg_set(c, "shaders.reset", "3");
+    } else if (atoi(reset) < 3) {
+        /* 3 (1.1.2): the cached shaders built before the game, on by default
+         * now: an earlier choice of it goes once */
+        had = cfg_get(c, "prebuild") != NULL;
+        cfg_unset(c, "prebuild");
+        cfg_set(c, "shaders.reset", "3");
     }
-    const bool had = cfg_get(c, "asyncpipe") || cfg_get(c, "prebuild");
-    cfg_unset(c, "asyncpipe");
-    cfg_unset(c, "prebuild");
-    cfg_set(c, "shaders.reset", "1");
+    /* the asynchronous shaders' switch (asyncpipe) as the mode it was: on, "async";
+     * off, the default one */
+    const char *a = cfg_get(c, "asyncpipe");
+    if (a) {
+        if (strcmp(a, "0")) {
+            cfg_set(c, "shaders", "async");
+        }
+        cfg_unset(c, "asyncpipe");
+        had = true;
+    }
     return had;
 }
 
@@ -237,6 +260,73 @@ const char *cfg_exe_dir(void)
 {
     const char *b = SDL_GetBasePath();
     return b ? b : "./";
+}
+
+const char *cfg_global_path(void)
+{
+    const char *e = getenv("XBASED_CONFIG");
+    if (e && e[0]) {
+        return e;
+    }
+    static char p[1100];
+    snprintf(p, sizeof(p), "%sxbased.ini", cfg_data_dir());
+    return p;
+}
+
+/* a folder's contents removed, the folder kept; the files removed */
+static int rm_inside(const char *dir)
+{
+    DIR *d = opendir(dir);
+    if (!d) {
+        return 0;
+    }
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) {
+            continue;
+        }
+        char p[1400];
+        snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(p, &st) != 0) {
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            n += rm_inside(p);
+            rmdir(p);
+        } else if (remove(p) == 0) {
+            n++;
+        }
+    }
+    closedir(d);
+    return n;
+}
+
+int cfg_clear_game_cache(const char *hdd)
+{
+    char root[1100];
+    if (hdd && hdd[0]) {
+        snprintf(root, sizeof(root), "%s", hdd);
+    } else {
+        snprintf(root, sizeof(root), "%shdd", cfg_data_dir());
+    }
+    struct stat st;
+    if (stat(root, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return -1;
+    }
+    int n = 0;
+    for (int p = 3; p <= 5; p++) {
+        char path[1200];
+        snprintf(path, sizeof(path), "%s/Partition%d", root, p);
+        n += rm_inside(path);
+        /* its FATX head: zeros read back, the title formats it anew */
+        snprintf(path, sizeof(path), "%s/raw-partition%d.bin", root, p);
+        if (remove(path) == 0) {
+            n++;
+        }
+    }
+    return n;
 }
 
 const char *cfg_data_dir(void)

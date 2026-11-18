@@ -4,10 +4,10 @@
 # (taken from its front-end Common library without the rest of it), with the
 # directory-scoped definitions FEX sources expect.
 
-set(HAKUX_FEX_DIR "${CMAKE_CURRENT_LIST_DIR}/../../external/fex" CACHE PATH "Checkout of the FEX fork (branch hakuX)")
-if(NOT EXISTS "${HAKUX_FEX_DIR}/CMakeLists.txt")
-  message(FATAL_ERROR "No FEX fork at ${HAKUX_FEX_DIR}: git submodule update --init external/fex "
-    "(and its submodules, android/README.md), or set HAKUX_FEX_DIR")
+set(XBASED_FEX_DIR "${CMAKE_CURRENT_LIST_DIR}/../../external/fex" CACHE PATH "Checkout of the FEX fork (branch hakuX)")
+if(NOT EXISTS "${XBASED_FEX_DIR}/CMakeLists.txt")
+  message(FATAL_ERROR "No FEX fork at ${XBASED_FEX_DIR}: git submodule update --init external/fex "
+    "(and its submodules, android/README.md), or set XBASED_FEX_DIR")
 endif()
 
 # FEXCore only. No thunks, tests, FEXConfig, telemetry, glibc jemalloc,
@@ -27,31 +27,31 @@ set(BUILD_FEX_LINUX_TESTS       OFF     CACHE BOOL   "" FORCE)
 set(ENABLE_ASSERTIONS           OFF     CACHE BOOL   "" FORCE)
 set(TUNE_CPU                    none    CACHE STRING "" FORCE)
 
-# HAKUX_ARCH: the CPUs the build may assume, for FEX (its TUNE_ARCH) and the
+# XBASED_ARCH: the CPUs the build may assume, for FEX (its TUNE_ARCH) and the
 # core alike, e.g. armv8.2-a+fp16+dotprod+rcpc (the Snapdragon 865 up: the
 # RP5, the Odin 3). Empty: FEX's generic armv8-a+crc, the core's NDK default,
 # which runs anywhere but calls out for every atomic read-modify-write.
-set(HAKUX_ARCH "" CACHE STRING "-march for FEX and the core (empty: generic)")
-if(HAKUX_ARCH)
-  set(TUNE_ARCH "${HAKUX_ARCH}" CACHE STRING "" FORCE)
-  add_compile_options("-march=${HAKUX_ARCH}")
+set(XBASED_ARCH "" CACHE STRING "-march for FEX and the core (empty: generic)")
+if(XBASED_ARCH)
+  set(TUNE_ARCH "${XBASED_ARCH}" CACHE STRING "" FORCE)
+  add_compile_options("-march=${XBASED_ARCH}")
 else()
   set(TUNE_ARCH generic CACHE STRING "" FORCE)
 endif()
 
 if(NOT TARGET FEXCore)
-  add_subdirectory("${HAKUX_FEX_DIR}" "${CMAKE_BINARY_DIR}/fex-build" EXCLUDE_FROM_ALL)
+  add_subdirectory("${XBASED_FEX_DIR}" "${CMAKE_BINARY_DIR}/fex-build" EXCLUDE_FROM_ALL)
 endif()
 
 if(NOT TARGET nc_fex)
   add_library(nc_fex STATIC
-    "${HAKUX_FEX_DIR}/Source/Common/HostFeatures.cpp"
-    "${HAKUX_FEX_DIR}/Source/Common/CPUInfo.cpp"
-    "${HAKUX_FEX_DIR}/Source/Common/Linux/LinuxVersion.cpp"
+    "${XBASED_FEX_DIR}/Source/Common/HostFeatures.cpp"
+    "${XBASED_FEX_DIR}/Source/Common/CPUInfo.cpp"
+    "${XBASED_FEX_DIR}/Source/Common/Linux/LinuxVersion.cpp"
   )
   target_compile_features(nc_fex PUBLIC cxx_std_20)
   target_include_directories(nc_fex PUBLIC
-    "${HAKUX_FEX_DIR}/Source"
+    "${XBASED_FEX_DIR}/Source"
     "${CMAKE_BINARY_DIR}/fex-build/Source"
   )
   # FEX sets these per directory (add_compile_definitions), so sources built

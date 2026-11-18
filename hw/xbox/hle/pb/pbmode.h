@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — push-buffer mode: the title's own D3D runs as guest code,
+ * xbased HLE GPU — push-buffer mode: the title's own D3D runs as guest code,
  * and the HLE takes what it sends the GPU, the NV2A push buffer, from the
  * host's register model (host.h hle_host_gpu_reg*). A decode thread runs
  * the DMA pusher (pusher.h) from DMA_GET to DMA_PUT on every kick and

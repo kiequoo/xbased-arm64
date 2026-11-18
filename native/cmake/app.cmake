@@ -1,11 +1,11 @@
-# The hakuX app's native core: libhakuxcore.so, loaded by NativeCoreActivity
+# The xbased app's native core: libxbasedcore.so, loaded by NativeCoreActivity
 # next to libSDL3.so. The front end (native/app) is the only thing it exports
 # (SDL_main and its JNI); everything linked in statically stays hidden.
 
 # adrenotools (NC_DEPS/adrenotools, bylaws/libadrenotools): a custom Vulkan
 # driver (Turnip) for the HLE GPU, chosen in the app's settings, and
 # xboxrun's "vkdriver=". Its hook libraries (libmain_hook.so and co.) ship
-# next to libhakuxcore.so.
+# next to libxbasedcore.so.
 set(NC_ADRENOTOOLS "${NC_DEPS}/adrenotools")
 if(EXISTS "${NC_ADRENOTOOLS}/CMakeLists.txt")
   add_subdirectory("${NC_ADRENOTOOLS}" adrenotools EXCLUDE_FROM_ALL)
@@ -19,7 +19,7 @@ endif()
 # is in android/app/src/main/java/org/libsdl/app.
 set(NC_SDL3 "${NC_DEPS}/SDL3")
 if(NOT EXISTS "${NC_SDL3}/CMakeLists.txt")
-  message(STATUS "hakuxcore: no SDL3 at ${NC_SDL3}; the app library is not built")
+  message(STATUS "xbasedcore: no SDL3 at ${NC_SDL3}; the app library is not built")
   return()
 endif()
 
@@ -31,19 +31,19 @@ set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory("${NC_SDL3}" sdl3 EXCLUDE_FROM_ALL)
 
-add_library(hakuxcore SHARED
+add_library(xbasedcore SHARED
   "${CMAKE_CURRENT_SOURCE_DIR}/app/app_main.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/present.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/vsync.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/vklayer.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/vkdriver.c"
 )
-target_link_libraries(hakuxcore PRIVATE hakux_native hakux_hle SDL3::SDL3-shared android log)
+target_link_libraries(xbasedcore PRIVATE xbased_native xbased_hle SDL3::SDL3-shared android log)
 if(TARGET adrenotools)
-  target_link_libraries(hakuxcore PRIVATE adrenotools)
-  target_compile_definitions(hakuxcore PRIVATE NC_ADRENOTOOLS=1)
-  add_dependencies(hakuxcore main_hook file_redirect_hook gsl_alloc_hook kgsl_context_hook hook_impl)
+  target_link_libraries(xbasedcore PRIVATE adrenotools)
+  target_compile_definitions(xbasedcore PRIVATE NC_ADRENOTOOLS=1)
+  add_dependencies(xbasedcore main_hook file_redirect_hook gsl_alloc_hook kgsl_context_hook hook_impl)
 endif()
-target_link_options(hakuxcore PRIVATE -Wl,--exclude-libs,ALL -Wl,--gc-sections)
-set_target_properties(hakuxcore PROPERTIES C_VISIBILITY_PRESET hidden)
-target_compile_options(hakuxcore PRIVATE -Wall -Wno-unused-parameter)
+target_link_options(xbasedcore PRIVATE -Wl,--exclude-libs,ALL -Wl,--gc-sections)
+set_target_properties(xbasedcore PROPERTIES C_VISIBILITY_PRESET hidden)
+target_compile_options(xbasedcore PRIVATE -Wall -Wno-unused-parameter)

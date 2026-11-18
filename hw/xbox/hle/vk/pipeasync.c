@@ -1,10 +1,15 @@
 /*
- * hakuX HLE GPU — asynchronous pipeline builds, the per-title pipeline
+ * xbased HLE GPU — asynchronous pipeline builds, the per-title pipeline
  * record and its prebuild (pipeasync.h).
  *
- * Workers: WORKERS threads below normal priority, so the guest's CPU and the
- * render thread keep the big cores; jobs carry copies of their key and
- * vertex program, results go back to the render thread (hle_pipe_take).
+ * Workers: threads below normal priority, so the guest's CPU and the render
+ * thread keep the big cores; jobs carry copies of their key and vertex
+ * program, results go back to the render thread (hle_pipe_take). As many as
+ * the host has threads beyond the emulation's own six (the guest's CPU, the
+ * render thread, the decoder, the audio's), two at least and WORKERS_MAX at
+ * most: they build every exact vertex program (vk/draw.c xf_exact, up to 2 s
+ * of the driver's each), and the frames draw the stand-ins till the last is
+ * in (Prince of Persia - Warrior Within cold: 33 s of building, 16 s on 2).
  *
  * The record: a header (magic, version, key size), then records appended as
  * the session makes pipelines: a vertex program (once per file), a pipeline
@@ -16,6 +21,7 @@
 #include "hw/xbox/hle/hle.h"
 
 #include "hw/xbox/hle/vk/pipeasync.h"
+#include "hw/xbox/hle/vk/precision.h"
 #include "hw/xbox/hle/vk/vkdev.h"
 
 #if defined(__ANDROID__) || defined(_WIN32) || defined(NC_DESKTOP)
@@ -27,7 +33,8 @@
 #include <sys/syscall.h>
 #endif
 
-#define WORKERS 2
+#define WORKERS_MAX 6
+#define EMU_THREADS 6
 #define QUEUE_MAX 1024
 #define PREBUILD_THREADS 6
 #define REC_MAGIC 0x43525048u       /* "HPRC" */
@@ -75,6 +82,7 @@ typedef struct Touch {
 
 static struct {
     bool opt_async, opt_prebuild;   /* the app's settings */
+    bool opt_hybrid;
     bool async, prebuild, nocache;  /* in effect */
     size_t key_size;
     const char *variant;            /* the record's name suffix (hle_pipe_init) */
@@ -82,7 +90,7 @@ static struct {
 
     HleMutex mu;
     HleCond cv;
-    HleThread th[WORKERS];
+    HleThread th[WORKERS_MAX];
     bool started;
     Job *queue[QUEUE_MAX];
     unsigned qhead, qn;
@@ -100,7 +108,7 @@ static struct {
     uint32_t pb_done, pb_total, pb_next;    /* atomics */
 } g_pa;
 
-/* -1 unset, else the value of HAKUX_HLE_<env> or debug.hakux.<prop> (0 / 1) */
+/* -1 unset, else the value of XBASED_HLE_<env> or debug.xbased.<prop> (0 / 1) */
 static int debug_switch(const char *env, const char *prop)
 {
     const char *e = getenv(env);
@@ -116,10 +124,31 @@ static int debug_switch(const char *env, const char *prop)
     return -1;
 }
 
-void hle_pipe_set_options(bool async, bool prebuild)
+void hle_pipe_set_options(bool async, bool prebuild, bool hybrid)
 {
     g_pa.opt_async = async;
     g_pa.opt_prebuild = prebuild;
+    g_pa.opt_hybrid = hybrid;
+}
+
+/* Fast precision (precision.h) has no hybrid mode: the interpreters are
+ * the exact forms' companions, and a device that needs the fast forms is one
+ * whose new shaders should not stall the frame either: hybrid's new shaders
+ * built asynchronously there (sync stays sync). The same where the device
+ * can't have the interpreters (no pipeline libraries: AMD's Windows driver,
+ * #307): hybrid was sync there, every new shader a wait of 30 to 45 ms on
+ * the render thread (a Ryzen 5600H's), so a scene's first frames came in at
+ * a few a second. */
+static bool g_no_interp;
+
+void hle_pipe_no_interpreters(void)
+{
+    g_no_interp = true;
+}
+
+bool hle_pipe_hybrid(void)
+{
+    return g_pa.opt_hybrid && !hle_precision_fast() && !g_no_interp;
 }
 
 void hle_pipe_init(size_t key_size, HlePipeBuildFn build, const char *variant)
@@ -127,14 +156,14 @@ void hle_pipe_init(size_t key_size, HlePipeBuildFn build, const char *variant)
     g_pa.key_size = key_size;
     g_pa.variant = variant;
     g_pa.build = build;
-    int a = debug_switch("HAKUX_HLE_ASYNCPIPE", "debug.hakux.asyncpipe");
-    int p = debug_switch("HAKUX_HLE_PREBUILD", "debug.hakux.prebuild");
-    g_pa.async = a >= 0 ? a : g_pa.opt_async;
+    int a = debug_switch("XBASED_HLE_ASYNCPIPE", "debug.xbased.asyncpipe");
+    int p = debug_switch("XBASED_HLE_PREBUILD", "debug.xbased.prebuild");
+    g_pa.async = a >= 0 ? a : g_pa.opt_async || (g_pa.opt_hybrid && !hle_pipe_hybrid());
     g_pa.prebuild = p >= 0 ? p : g_pa.opt_prebuild;
-    g_pa.nocache = debug_switch("HAKUX_HLE_NOCACHE", "debug.hakux.nocache") == 1;
+    g_pa.nocache = debug_switch("XBASED_HLE_NOCACHE", "debug.xbased.nocache") == 1;
     hle_mutex_init(&g_pa.mu);
     hle_cond_init(&g_pa.cv);
-    hle_log("hakuX-hle-pipe", "pipelines: asynchronous %s%s, prebuild %s%s%s",
+    hle_log("xbased-hle-pipe", "pipelines: asynchronous %s%s, prebuild %s%s%s",
             g_pa.async ? "on" : "off", a >= 0 ? " (debug)" : "",
             g_pa.prebuild ? "on" : "off", p >= 0 ? " (debug)" : "",
             g_pa.nocache ? ", no disk caches (debug)" : "");
@@ -150,9 +179,28 @@ bool hle_pipe_nocache(void)
     return g_pa.nocache;
 }
 
+static _Thread_local bool t_worker;
+
+bool hle_pipe_on_worker(void)
+{
+    return t_worker;
+}
+
+void hle_pipe_mark_worker(void)
+{
+    t_worker = true;
+}
+
+static bool (*g_yield)(void);
+
+void hle_pipe_set_yield(bool (*fn)(void))
+{
+    g_yield = fn;
+}
+
 /* ---- workers ----------------------------------------------------------------- */
 
-static void lower_priority(void)
+void hle_pipe_lower_priority(void)
 {
 #ifdef __linux__
     setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 10);
@@ -164,11 +212,16 @@ static void lower_priority(void)
 /* For the process's life (the back end has no end) */
 static void *worker(void *opaque)
 {
-    lower_priority();
+    t_worker = true;
+    hle_pipe_lower_priority();
     hle_mutex_lock(&g_pa.mu);
     for (;;) {
-        while (!g_pa.qn) {
-            hle_cond_wait(&g_pa.cv, &g_pa.mu);
+        while (!g_pa.qn || (g_yield && g_yield())) {
+            if (g_pa.qn) {
+                hle_cond_timedwait(&g_pa.cv, &g_pa.mu, 2);  /* (yielding: looked at again soon) */
+            } else {
+                hle_cond_wait(&g_pa.cv, &g_pa.mu);
+            }
         }
         Job *j = g_pa.queue[g_pa.qhead];
         g_pa.qhead = (g_pa.qhead + 1) % QUEUE_MAX;
@@ -186,11 +239,22 @@ static void *worker(void *opaque)
     return NULL;
 }
 
+/* The host's threads beyond the emulation's own (EMU_THREADS), WORKERS_MAX
+ * at most, least at least */
+unsigned hle_pipe_spare_threads(unsigned least)
+{
+    const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    return ncpu > (long)(EMU_THREADS + least) ? MIN((unsigned)(ncpu - EMU_THREADS), WORKERS_MAX) : least;
+}
+
 bool hle_pipe_queue(uint64_t hash, const void *key, uint64_t vsh, const uint32_t *tok,
                     uint32_t nslots)
 {
     if (!g_pa.started) {
-        for (unsigned i = 0; i < WORKERS; i++) {
+        const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+        const unsigned nw = hle_pipe_spare_threads(2);
+        hle_log("xbased-hle-pipe", "pipeline workers: %u (%ld host threads)", nw, ncpu);
+        for (unsigned i = 0; i < nw; i++) {
             hle_thread_create(&g_pa.th[i], "hle.pipe", worker, NULL, HLE_THREAD_DETACHED);
         }
         g_pa.started = true;
@@ -448,7 +512,7 @@ void hle_pipe_title(uint32_t title_id, uint32_t timedate)
     if (g_file_set_contents(tmp, (const gchar *)b.p, (gssize)b.n, NULL)) {
         rename(tmp, g_pa.path);
     }
-    hle_log("hakuX-hle-pipe", "pipeline record %s: %s, %u pipelines, %u programs (%zu bytes)",
+    hle_log("xbased-hle-pipe", "pipeline record %s: %s, %u pipelines, %u programs (%zu bytes)",
             g_pa.path, read ? "read" : "new", g_pa.nlist, g_pa.nprogs, b.n);
     g_free(b.p);
 }
@@ -456,7 +520,7 @@ void hle_pipe_title(uint32_t title_id, uint32_t timedate)
 void hle_pipe_record(uint64_t hash, const void *key, uint64_t vsh, const uint32_t *tok,
                      uint32_t nslots)
 {
-    if (!g_pa.path) {
+    if (!g_pa.path || ((const uint8_t *)key)[g_hle_key_stipple_at]) {
         return;
     }
     if (vsh && tok && !prog_find(vsh)) {
@@ -501,6 +565,7 @@ void hle_pipe_flush(bool now)
 
 static void *prebuild_worker(void *opaque)
 {
+    t_worker = true;
     uint32_t n = hle_atomic_read(&g_pa.pb_total);
     for (;;) {
         uint32_t i = __atomic_fetch_add(&g_pa.pb_next, 1, __ATOMIC_SEQ_CST);
@@ -548,7 +613,7 @@ void hle_pipe_prebuild(uint32_t max, void (*add)(uint64_t hash, VkPipeline p))
             failed++;
         }
     }
-    hle_log("hakuX-hle-pipe", "prebuild: %u of %u recorded pipelines in %.0f ms on %u threads "
+    hle_log("xbased-hle-pipe", "prebuild: %u of %u recorded pipelines in %.0f ms on %u threads "
             "(%u failed)", ok, g_pa.nlist, (g_get_monotonic_time() - t0) / 1000.0, nth, failed);
     hle_atomic_set(&g_pa.pb_total, 0);
     hle_atomic_set(&g_pa.pb_done, 0);

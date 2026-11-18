@@ -1,5 +1,5 @@
 /*
- * xbased (hakuX for PC) — the run's mods and cheats (win_mods.c).
+ * xbased (xbased for PC) — the run's mods and cheats (win_mods.c).
  */
 #ifndef NATIVE_APP_WIN_MODS_H
 #define NATIVE_APP_WIN_MODS_H

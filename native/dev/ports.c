@@ -1,5 +1,5 @@
 /*
- * hakuX native core — x86 I/O ports.
+ * xbased native core — x86 I/O ports.
  *
  * Devices claim ports as the frontier shows them used; the rest read as all
  * ones and drop writes, as unclaimed ports do on the bus. The first accesses
@@ -42,7 +42,7 @@ static void note(uint16_t port, bool out, unsigned bytes, uint32_t value)
             break;
         }
     }
-    nc_log("hakuX-native-io", "port %s %04x %s %0*x (%u)", out ? "out" : "in", port, out ? "<-" : "->",
+    nc_log("xbased-native-io", "port %s %04x %s %0*x (%u)", out ? "out" : "in", port, out ? "<-" : "->",
            (int)(2 * bytes), value, bytes);
 }
 

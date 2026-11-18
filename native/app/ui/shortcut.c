@@ -1,5 +1,5 @@
 /*
- * hakuX front end — a game's desktop shortcut (shortcut.h).
+ * xbased front end — a game's desktop shortcut (shortcut.h).
  *
  * The command it runs is the one front ends and Steam's non-Steam games
  * take too: xbased "<disc image>" boots the game without the dashboard.

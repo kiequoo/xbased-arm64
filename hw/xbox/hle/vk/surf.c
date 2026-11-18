@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — render-target / depth surfaces (spec §5.5: HLE-owned
+ * xbased HLE GPU — render-target / depth surfaces (spec §5.5: HLE-owned
  * images; identity by front-end object id).
  */
 #include "hw/xbox/hle/base.h"
@@ -72,10 +72,20 @@ static bool owner_kind(const HleSurfDesc *d)
  * positions (texel corners, half-texel offsets). */
 #define SURF_UNSCALED_MAX 128
 
-static uint32_t surf_scale(const HleSurfDesc *d, VkImageAspectFlags aspect)
+/* Both rules take depth buffers as well: a pass draws its target and its
+ * depth buffer at one scale, and the NV2A pairs them by size and kind (one
+ * surface type, linear or swizzled, for both). Hitman: Blood Money draws
+ * Hitman's depth for his shadow with a 256 x 256 linear target over the same
+ * memory, colour writes off: its depth buffer at 4x took the depth in its
+ * first quarter, the shadow-map pass read Hitman a quarter of his size in a
+ * corner of it, and the shadow on the floor was the map's square. */
+static uint32_t surf_scale(const HleSurfDesc *d)
 {
-    bool small = !d->role && !d->pitch && !d->parent && d->levels <= 1 && d->faces <= 1 &&
-                 (aspect & VK_IMAGE_ASPECT_COLOR_BIT) &&
+    /* (a mipmapped texture's image over its levels' targets too, pb/pbdraw.c
+     * mips_of_targets: its levels are copies of those targets, at their scale.
+     * Scaled, each of Fable's 128 x 128 ripple map's texels took a 4 x 4 block
+     * of the image, its pond a grid of squares) */
+    bool small = !d->role && !d->pitch && !d->parent && d->faces <= 1 &&
                  MAX(d->w, d->h) <= SURF_UNSCALED_MAX;
     if (small) {
         return 1;
@@ -87,14 +97,13 @@ static uint32_t surf_scale(const HleSurfDesc *d, VkImageAspectFlags aspect)
      * and added back over the scene it drew a bright outline around what
      * stands against a lit background (Prince of Persia: The Sands of Time's
      * Prince, 640 -> 320 -> 160 -> ... -> 16, #151). debug:
-     * HAKUX_HLE_HALFSCALE=0, scaled as before (A/B). */
+     * XBASED_HLE_HALFSCALE=0, scaled as before (A/B). */
     static int half = -1;
     if (half < 0) {
-        const char *e = getenv("HAKUX_HLE_HALFSCALE");
+        const char *e = getenv("XBASED_HLE_HALFSCALE");
         half = !e || strcmp(e, "0");
     }
-    if (half && d->pitch && !d->role && !d->parent && (aspect & VK_IMAGE_ASPECT_COLOR_BIT) && d->w <= 360 &&
-        d->h <= 288) {
+    if (half && d->pitch && !d->role && !d->parent && d->w <= 360 && d->h <= 288) {
         return 1;
     }
     /* The largest whole scale the device's images take: at 7x and 8x a
@@ -183,7 +192,7 @@ static void destroy_now(HleVkSurf *s)
     if (s->img && g_rec_open && s->rec_gen == g_rec_gen) {
         /* Must never happen: the open recording references this image. */
         if (g_surf_bugs++ < 8) {
-            hle_log("hakuX-hle-back", "BUG: destroying surface %u used by the open "
+            hle_log("xbased-hle-back", "BUG: destroying surface %u used by the open "
                     "recording", s->id);
         }
     }
@@ -287,7 +296,7 @@ HleVkSurf *hle_surf_define(const HleSurfDesc *d)
             hle_idhint_made(&g_surf_hint);      /* remembered misses may now hit */
             s->d = *d;
             s->fmt = surf_format(d->xfmt, &s->aspect, &s->texel_bytes);
-            s->scale = surf_scale(d, s->aspect);
+            s->scale = surf_scale(d);
             s->w = d->w * s->scale;
             s->h = d->h * s->scale;
             s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -303,13 +312,13 @@ HleVkSurf *hle_surf_define(const HleSurfDesc *d)
                 s->nfaces = d->faces == 6 && d->w == d->h ? 6 : 1;
             }
             if (s->fmt == VK_FORMAT_UNDEFINED) {
-                hle_log("hakuX-hle-back", "surface %u: format 0x%x not renderable",
+                hle_log("xbased-hle-back", "surface %u: format 0x%x not renderable",
                         d->id, d->xfmt);
             }
             static unsigned s_logged;
             if (s->general && s_logged < 48) {
                 s_logged++;
-                hle_log("hakuX-hle-back", "surface %u: %s %ux%u fmt 0x%x levels %u faces %u "
+                hle_log("xbased-hle-back", "surface %u: %s %ux%u fmt 0x%x levels %u faces %u "
                         "(parent %u level %u face %u)", d->id, d->parent ? "view" : "texture",
                         d->w, d->h, d->xfmt, s->nlevels, s->nfaces, d->parent, d->level,
                         d->face);
@@ -317,7 +326,7 @@ HleVkSurf *hle_surf_define(const HleSurfDesc *d)
             static unsigned s_unscaled;
             if (s->scale != g_hle_rscale && s_unscaled < 16) {
                 s_unscaled++;
-                hle_log("hakuX-hle-back", "surface %u: %ux%u fmt 0x%x at guest resolution",
+                hle_log("xbased-hle-back", "surface %u: %ux%u fmt 0x%x at guest resolution",
                         d->id, d->w, d->h, d->xfmt);
             }
             return s;
@@ -350,7 +359,7 @@ HleVkSurf *hle_surf_define(const HleSurfDesc *d)
             m += snprintf(line + m, sizeof(line) - m, " %ux%u/%x/%c:%u", hist[j].w, hist[j].h,
                           hist[j].f, "tgv"[hist[j].k], hist[j].n);
         }
-        hle_log("hakuX-hle-back", "surface table full (%u; %u to destroy):%s", HLE_MAX_VK_SURF,
+        hle_log("xbased-hle-back", "surface table full (%u; %u to destroy):%s", HLE_MAX_VK_SURF,
                 parked, line);
     }
     return NULL;
@@ -732,6 +741,18 @@ static void general_use(VkCommandBuffer cb, HleVkSurf *s, VkImageLayout to)
                       VK_IMAGE_LAYOUT_GENERAL, 0, o->nlevels, 0, o->nfaces);
         o->dirty = 0;
     }
+}
+
+void hle_surf_level_dst(VkCommandBuffer cb, HleVkSurf *s, uint32_t level)
+{
+    hle_surf_transition(cb, s, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    if (!s->general || s->d.parent || !level || level >= s->nlevels) {
+        return;
+    }
+    /* (general_use took it as level 0's write) */
+    barrier_range(cb, s->img, s->aspect, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, level, 1, 0, 1);
+    s->dirty |= 1ull << sub_bit(s, level, 0);
+    s->rendered_levels = MAX(s->rendered_levels, level + 1);
 }
 
 void hle_surf_written(HleVkSurf *s)

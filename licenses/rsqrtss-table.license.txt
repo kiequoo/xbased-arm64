@@ -1,0 +1,21 @@
+native/cpu/rsqrt_p3.h: the RSQRTSS table
+
+The table's values are from njuffa's answer to "Is there a C++ function that
+returns exactly the value of the built-in CPU operation RSQRTSS for inverse
+square root?" on Stack Overflow:
+
+    https://stackoverflow.com/a/58622059
+
+Author: njuffa (https://stackoverflow.com/users/780717/njuffa)
+License: Creative Commons Attribution-ShareAlike 4.0 International
+    https://creativecommons.org/licenses/by-sa/4.0/
+
+Changes: the answer's base table (128 entries) and offset table (2048
+entries) are added into one table of 2048 12-bit entries; the lookup around
+it is hakuX's own code.
+
+The answer's content is provided as is, without warranties of any kind.
+
+Creative Commons lists the GNU General Public License, version 3, as
+compatible with CC BY-SA 4.0 (https://creativecommons.org/compatiblelicenses),
+so this adaptation is distributed with hakuX under GPL-3.0-or-later.

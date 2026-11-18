@@ -18,7 +18,7 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
-/* hakuX native core: the device's state, on the core's own services
+/* xbased native core: the device's state, on the core's own services
  * (apu_base.h) in place of QOM/PCI and the QEMU memory API. */
 #ifndef NATIVE_DEV_APU_INT_H
 #define NATIVE_DEV_APU_INT_H
@@ -134,7 +134,7 @@ int apu_out_queued(void);
 int apu_out_asked_max(void);
 /* one EP frame in (the frame thread: the only producer; there is room) */
 void apu_out_push(const void *frame, int bytes);
-/* debug (HAKUX_APU_STATS): callbacks, and those that came up short, since
+/* debug (XBASED_APU_STATS): callbacks, and those that came up short, since
  * the last call */
 void apu_out_stats(uint32_t *callbacks, uint32_t *short_callbacks);
 

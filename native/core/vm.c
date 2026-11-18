@@ -1,5 +1,5 @@
 /*
- * hakuX native core — guest memory.
+ * xbased native core — guest memory.
  */
 #include <stdio.h>
 #include "native/core/vm.h"
@@ -16,6 +16,12 @@
 #include <unistd.h>
 
 static uint8_t *g_na;   /* per physical page: no guest access (nc_vm_noaccess), made on first use */
+static uint8_t *g_ro;   /* per user page (below the contiguous window): read-only (nc_vm_guest_ro), made on first use */
+
+static bool guest_ro(uint32_t va)
+{
+    return g_ro && va < NC_CONTIG_WINDOW && __atomic_load_n(&g_ro[va / NC_PAGE], __ATOMIC_ACQUIRE);
+}
 
 #ifndef MFD_CLOEXEC
 #define MFD_CLOEXEC 1u
@@ -26,6 +32,7 @@ static uint8_t *g_na;   /* per physical page: no guest access (nc_vm_noaccess), 
 #ifdef _WIN32
 /* core/vm_win.cpp: the host side on Windows (the guest at address 0) */
 bool nc_vmos_init(NcVm *vm, uint32_t ram_size);
+void nc_vmos_reserve_early(void);
 bool nc_vmos_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len);
 bool nc_vmos_unmap(NcVm *vm, uint32_t va, uint32_t len);
 void nc_vmos_protect(NcVm *vm, uint32_t va, uint32_t len, int prot);
@@ -47,6 +54,13 @@ static void guest_protect(NcVm *vm, uint32_t va, size_t len, int prot)
 }
 
 const char *nc_vm_why;
+
+void nc_vm_reserve_early(void)
+{
+#ifdef _WIN32
+    nc_vmos_reserve_early();
+#endif
+}
 
 bool nc_vm_init(NcVm *vm, uint32_t ram_size)
 {
@@ -70,7 +84,7 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
     void *r = mmap((void *)0x10000, vm->reservation_len, PROT_NONE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED_NOREPLACE, -1, 0);
     if (r != (void *)0x10000) {
-        nc_log("hakuX-native", "vm: the low 4 GiB aren't free for the guest (%s)",
+        nc_log("xbased-native", "vm: the low 4 GiB aren't free for the guest (%s)",
                r == MAP_FAILED ? strerror(errno) : "placed elsewhere");
         if (r != MAP_FAILED) {
             munmap(r, vm->reservation_len);
@@ -92,7 +106,7 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
         if (g != MAP_FAILED) {
             munmap(g, 1ull << 32);
         }
-        nc_log("hakuX-native", "vm: the 4 GiB above the guest's aren't free to keep empty");
+        nc_log("xbased-native", "vm: the 4 GiB above the guest's aren't free to keep empty");
     }
 #else
     /* 4 GiB of guest address space with PROT_NONE guards on both sides. */
@@ -100,7 +114,7 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
     void *r = mmap(NULL, vm->reservation_len, PROT_NONE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (r == MAP_FAILED) {
-        nc_log("hakuX-native", "vm: reserve failed: %s", strerror(errno));
+        nc_log("xbased-native", "vm: reserve failed: %s", strerror(errno));
         return false;
     }
     vm->reservation = r;
@@ -113,9 +127,9 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
     const char *mf = getenv("NC_RAM_MEMFD");
     vm->ram_fd = mf && atoi(mf) ? -1 : hle_uma_ram_fd(ram_size);
     if (vm->ram_fd < 0) {
-        vm->ram_fd = memfd("hakux-ram");
+        vm->ram_fd = memfd("xbased-ram");
         if (vm->ram_fd < 0 || ftruncate(vm->ram_fd, ram_size) != 0) {
-            nc_log("hakuX-native", "vm: guest RAM memfd failed: %s", strerror(errno));
+            nc_log("xbased-native", "vm: guest RAM memfd failed: %s", strerror(errno));
             return false;
         }
     }
@@ -135,7 +149,7 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
      * write-protected (dirty tracking applies to guest accesses). */
     void *phys = mmap(NULL, ram_size, PROT_READ | PROT_WRITE, MAP_SHARED, vm->ram_fd, 0);
     if (phys == MAP_FAILED) {
-        nc_log("hakuX-native", "vm: RAM view failed: %s", strerror(errno));
+        nc_log("xbased-native", "vm: RAM view failed: %s", strerror(errno));
         return false;
     }
     vm->phys = phys;
@@ -153,7 +167,7 @@ bool nc_vm_init(NcVm *vm, uint32_t ram_size)
      * as on the Xbox: devices whose DMA pointers the title hasn't set yet
      * (the APU's notifiers and FE writes, for one) write near address 0. */
     nc_vm_claim_phys(vm, 0, 0x10000);
-    nc_log("hakuX-native", "vm: guest base %p, RAM %u MiB", (void *)vm->base, ram_size >> 20);
+    nc_log("xbased-native", "vm: guest base %p, RAM %u MiB", (void *)vm->base, ram_size >> 20);
     return true;
 }
 
@@ -161,7 +175,7 @@ bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
 {
     if ((va | pa | len) & (NC_PAGE - 1) || (uint64_t)pa + len > vm->ram_size ||
         (uint64_t)va + len > (1ull << 32)) {
-        nc_log("hakuX-native", "vm: bad map va=%08x pa=%08x len=%x", va, pa, len);
+        nc_log("xbased-native", "vm: bad map va=%08x pa=%08x len=%x", va, pa, len);
         return false;
     }
 #ifdef _WIN32
@@ -172,7 +186,7 @@ bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
     void *want = vm->base + va;
     void *m = mmap(want, len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, vm->ram_fd, pa);
     if (m != want) {
-        nc_log("hakuX-native", "vm: map va=%08x pa=%08x len=%x failed: %s", va, pa, len,
+        nc_log("xbased-native", "vm: map va=%08x pa=%08x len=%x failed: %s", va, pa, len,
                strerror(errno));
         return false;
     }
@@ -187,7 +201,7 @@ bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
             if (prev && prev != va + off && vm->pte[prev / NC_PAGE] == ((pa + off) | NC_PTE_VALID)) {
                 static unsigned s_warned;
                 if (s_warned++ < 16) {
-                    nc_log("hakuX-native", "vm: pa %08x mapped at %08x is mapped again at %08x", pa + off, prev,
+                    nc_log("xbased-native", "vm: pa %08x mapped at %08x is mapped again at %08x", pa + off, prev,
                            va + off);
                 }
             }
@@ -195,8 +209,8 @@ bool nc_vm_map(NcVm *vm, uint32_t va, uint32_t pa, uint32_t len)
         }
         if (g_na && g_na[page]) {
             mprotect(vm->base + va + off, NC_PAGE, PROT_NONE); /* still no access (nc_vm_noaccess) */
-        } else if (vm->wp[page] == NC_WP_CLEAN) {
-            mprotect(vm->base + va + off, NC_PAGE, PROT_READ); /* still tracked */
+        } else if (vm->wp[page] == NC_WP_CLEAN || guest_ro(va + off)) {
+            mprotect(vm->base + va + off, NC_PAGE, PROT_READ); /* still tracked, or the title's read-only */
         }
     }
     return true;
@@ -214,7 +228,7 @@ void nc_vm_reprotect(NcVm *vm, uint32_t va, uint32_t len)
         const uint32_t page = e / NC_PAGE;
         if (g_na && g_na[page]) {
             mprotect(vm->base + va + off, NC_PAGE, PROT_NONE);
-        } else if (vm->wp[page] == NC_WP_CLEAN) {
+        } else if (vm->wp[page] == NC_WP_CLEAN || guest_ro(va + off)) {
             mprotect(vm->base + va + off, NC_PAGE, PROT_READ);
         }
     }
@@ -238,6 +252,10 @@ static void prot_views(NcVm *vm, uint32_t page, uint32_t n, int prot)
         if (i < n) {
             va = vm->rmap[page + i];
             if (va && nc_vm_phys(vm, va) != (page + i) * NC_PAGE) {
+                va = 0;
+            }
+            if (va && (prot & PROT_WRITE) && guest_ro(va)) {
+                guest_protect(vm, va, NC_PAGE, PROT_READ); /* the title's read-only page stays so */
                 va = 0;
             }
         }
@@ -350,7 +368,7 @@ bool nc_vm_unmap(NcVm *vm, uint32_t va, uint32_t len)
     if ((uint64_t)va + len > (1ull << 32)) {
         /* past the guest's end: host memory, which the mapping below would
          * replace (a range from a damaged state) */
-        nc_log("hakuX-native", "vm: bad unmap va=%08x len=%x", va, len);
+        nc_log("xbased-native", "vm: bad unmap va=%08x len=%x", va, len);
         return false;
     }
 #ifdef _WIN32
@@ -370,24 +388,97 @@ bool nc_vm_unmap(NcVm *vm, uint32_t va, uint32_t len)
             vm->rmap[e / NC_PAGE] = 0;
         }
         vm->pte[(va + off) / NC_PAGE] = 0;
+        if (guest_ro(va + off)) {
+            __atomic_store_n(&g_ro[(va + off) / NC_PAGE], 0, __ATOMIC_RELEASE);
+        }
     }
     return true;
 }
 
+void nc_vm_guest_ro(NcVm *vm, uint32_t va, uint32_t len, bool ro)
+{
+    va &= ~(NC_PAGE - 1);
+    const uint64_t end = (uint64_t)va + len < NC_CONTIG_WINDOW ? (uint64_t)va + len : NC_CONTIG_WINDOW;
+    if (!g_ro) {
+        if (!ro) {
+            return;
+        }
+        uint8_t *m = calloc(NC_CONTIG_WINDOW / NC_PAGE, 1);
+        uint8_t *none = NULL;
+        if (!m || !__atomic_compare_exchange_n(&g_ro, &none, m, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            free(m);
+        }
+        if (!g_ro) {
+            return;
+        }
+    }
+    /* Runs of mapped pages whose protection changes: marked before they are
+     * protected, unmarked once they are what write tracking wants again (a
+     * tracked page stays read-only for its own faults). */
+    for (uint64_t p = va; p < end;) {
+        const uint32_t e = vm->pte[p / NC_PAGE];
+        if (!(e & NC_PTE_VALID) || guest_ro((uint32_t)p) == ro) {
+            p += NC_PAGE;
+            continue;
+        }
+        const uint32_t page = e / NC_PAGE;
+        const int want = g_na && g_na[page] ? PROT_NONE
+                       : ro || vm->wp[page] == NC_WP_CLEAN ? PROT_READ : PROT_READ | PROT_WRITE;
+        uint64_t q = p + NC_PAGE;
+        while (q < end) {
+            const uint32_t e2 = vm->pte[q / NC_PAGE];
+            const uint32_t page2 = e2 / NC_PAGE;
+            if (!(e2 & NC_PTE_VALID) || guest_ro((uint32_t)q) == ro ||
+                (g_na && g_na[page2] ? PROT_NONE
+                 : ro || vm->wp[page2] == NC_WP_CLEAN ? PROT_READ : PROT_READ | PROT_WRITE) != want) {
+                break;
+            }
+            q += NC_PAGE;
+        }
+        if (ro) {
+            for (uint64_t r = p; r < q; r += NC_PAGE) {
+                __atomic_store_n(&g_ro[r / NC_PAGE], 1, __ATOMIC_RELEASE);
+            }
+        }
+        guest_protect(vm, (uint32_t)p, (size_t)(q - p), want);
+        if (!ro) {
+            for (uint64_t r = p; r < q; r += NC_PAGE) {
+                __atomic_store_n(&g_ro[r / NC_PAGE], 0, __ATOMIC_RELEASE);
+            }
+        }
+        p = q;
+    }
+}
+
+bool nc_vm_guest_ro_has(const NcVm *vm, uint32_t va)
+{
+    (void)vm;
+    return guest_ro(va);
+}
+
 /* A page an address still maps, handed out again: its owner and the new one
  * both write it (the new one zeroes it, mostly). Logged, the first 16, with
- * the caller as an offset in this library (llvm-addr2line). */
-static void check_unmapped(const NcVm *vm, uint32_t p, uint32_t pages, void *ra)
+ * the caller as an offset in this library (llvm-addr2line). That address
+ * isn't the new block's, so the page stays put until it is freed (pinned):
+ * as the page's own VA it made the page look movable, and moving it took the
+ * page from under a block reached through the contiguous window. Hitman 2
+ * maps all of RAM again at 0x88000000 through its page tables; DSOUND's
+ * region list (a pool block) went to a 0x65000 block made after it, which
+ * zeroed it (a fault in IDirectSoundBuffer_SetBufferData at its menu). */
+static void check_unmapped(NcVm *vm, uint32_t p, uint32_t pages, void *ra)
 {
     static unsigned warned;
-    for (uint32_t i = 0; i < pages && warned < 16; i++) {
+    for (uint32_t i = 0; i < pages; i++) {
         const uint32_t va = vm->rmap[p + i];
         if (va && vm->pte[va / NC_PAGE] == (((p + i) * NC_PAGE) | NC_PTE_VALID)) {
-            warned++;
-            Dl_info di;
-            const uintptr_t base = dladdr((void *)check_unmapped, &di) ? (uintptr_t)di.dli_fbase : 0;
-            nc_log("hakuX-native", "vm: allocated pa %08x (of %u pages) while %08x still maps it, from +%lx",
-                   (p + i) * NC_PAGE, pages, va, (unsigned long)((uintptr_t)ra - base));
+            vm->pin[p + i] |= NC_PIN_KNOWN;
+            if (warned < 16) {
+                warned++;
+                Dl_info di;
+                const uintptr_t base = dladdr((void *)check_unmapped, &di) ? (uintptr_t)di.dli_fbase : 0;
+                nc_log("xbased-native", "vm: allocated pa %08x (of %u pages) while %08x still maps it, from +%lx",
+                       (p + i) * NC_PAGE, pages, va, (unsigned long)((uintptr_t)ra - base));
+            }
         }
     }
 }
@@ -457,7 +548,7 @@ void nc_vm_free_phys(NcVm *vm, uint32_t pa, uint32_t len)
             if (va && vm->pte[va / NC_PAGE] == ((p * NC_PAGE) | NC_PTE_VALID)) {
                 static unsigned s_warned;
                 if (s_warned++ < 16) {
-                    nc_log("hakuX-native", "vm: pa %08x freed while %08x still maps it", p * NC_PAGE, va);
+                    nc_log("xbased-native", "vm: pa %08x freed while %08x still maps it", p * NC_PAGE, va);
                 }
             }
         }
@@ -529,6 +620,8 @@ static bool relocate(NcVm *vm, uint32_t q, uint32_t to)
     }
     vm->rmap[q] = 0;
     vm->page_used[q] = 0;
+    vm->pin[to] = vm->pin[q];   /* (a page whose address went out stays known where it goes: compact_known) */
+    vm->pin[q] = 0;
     if (tracked && nc_vm_dma.wrote) {
         nc_vm_dma.wrote(q * NC_PAGE, NC_PAGE);
         nc_vm_dma.wrote(to * NC_PAGE, NC_PAGE);
@@ -536,7 +629,31 @@ static bool relocate(NcVm *vm, uint32_t q, uint32_t to)
     return true;
 }
 
+/* movable, or only known (its address went out, no lock on it): the last
+ * resort's (nc_vm_alloc_phys_compact_known) */
+static bool movable_known(const NcVm *vm, uint32_t p)
+{
+    const uint32_t va = vm->rmap[p];
+    return va && (!vm->pin[p] || vm->pin[p] == NC_PIN_KNOWN) && !(g_na && g_na[p]) &&
+           vm->pte[va / NC_PAGE] == ((p * NC_PAGE) | NC_PTE_VALID);
+}
+
+static uint32_t compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, uint32_t align, uint32_t *moved,
+                        bool known_too);
+
 uint32_t nc_vm_alloc_phys_compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, uint32_t align, uint32_t *moved)
+{
+    return compact(vm, len, lo, hi, align, moved, false);
+}
+
+uint32_t nc_vm_alloc_phys_compact_known(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, uint32_t align,
+                                        uint32_t *moved)
+{
+    return compact(vm, len, lo, hi, align, moved, true);
+}
+
+static uint32_t compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t hi, uint32_t align, uint32_t *moved,
+                        bool known_too)
 {
     *moved = 0;
     if (len > vm->ram_size) {
@@ -558,7 +675,7 @@ uint32_t nc_vm_alloc_phys_compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t 
         for (uint32_t i = 0; i < pages && ok; i++) {
             const uint32_t p = (uint32_t)s + i;
             if (vm->page_used[p]) {
-                ok = movable(vm, p);
+                ok = known_too ? movable_known(vm, p) : movable(vm, p);
                 used++;
             }
         }
@@ -588,6 +705,7 @@ uint32_t nc_vm_alloc_phys_compact(NcVm *vm, uint32_t len, uint32_t lo, uint32_t 
         }
         (*moved)++;
     }
+    check_unmapped(vm, best, pages, __builtin_return_address(0));
     memset(vm->page_used + best, 1, pages);
     return best * NC_PAGE;
 }
@@ -832,12 +950,13 @@ bool nc_vm_alloc_at(NcVm *vm, uint32_t va, uint32_t len, uint32_t *pa_out)
                     p--;
                 }
                 piece = (q - p) * NC_PAGE;
+                check_unmapped(vm, p, q - p, __builtin_return_address(0));
                 memset(vm->page_used + p, 1, q - p);
                 pa = p * NC_PAGE;
             }
         }
         if (pa == UINT32_MAX) {
-            nc_log("hakuX-native", "vm: out of physical memory for %u KiB at %08x (%u KiB free)", len >> 10, va,
+            nc_log("xbased-native", "vm: out of physical memory for %u KiB at %08x (%u KiB free)", len >> 10, va,
                    free_pages(vm) * (NC_PAGE >> 10));
             for (uint32_t p = va; p < va + done; p += NC_PAGE) {
                 const uint32_t got = nc_vm_phys(vm, p);

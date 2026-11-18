@@ -1,6 +1,6 @@
 name: 60 fps
 description: Races at 60 frames a second instead of 30 (50 instead of 25 on a European disc without PAL 60 Hz). Each frame shows at the next vblank and the race steps a vblank's time a frame; a frame the device doesn't finish in time shows late, and the race slows down with it.
-author: hakuX
+author: xbased
 
 [default.xbe]
 # The vblanks a race frame takes: the PresentInterval setting (0x291A04),

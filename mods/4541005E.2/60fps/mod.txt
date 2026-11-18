@@ -1,6 +1,6 @@
 name: 60 fps
 description: Lifts the frame limiter: the game runs at the display's rate (50 or 60 fps) instead of 25-30, and beyond it with the frame rate uncapped. The game steps by the time each frame took.
-author: icup321 (XboxGraphicalPatches); hakuX port
+author: icup321 (XboxGraphicalPatches); xbased port
 
 # Medal of Honor: European Assault, the European release (version 2); the
 # USA patch's one record, the same code at the same address here.

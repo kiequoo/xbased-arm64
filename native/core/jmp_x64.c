@@ -1,5 +1,5 @@
 /*
- * hakuX native core � setjmp/longjmp for the fault scopes (jmp.h), Windows
+ * xbased native core � setjmp/longjmp for the fault scopes (jmp.h), Windows
  * x64: the callee-saved registers of its ABI (rbx rbp rdi rsi r12-r15,
  * xmm6-xmm15), rsp and the return address, MXCSR and the x87 control word.
  * No unwinding: the jump leaves the vectored exception handler's frames

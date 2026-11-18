@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — the title: its XBE read from guest memory when it starts,
+ * xbased HLE GPU — the title: its XBE read from guest memory when it starts,
  * then push-buffer mode for it (pb/pbmode.h).
  */
 #include "hw/xbox/hle/base.h"
@@ -7,6 +7,7 @@
 #include "hw/xbox/hle/core/image.h"
 #include "hw/xbox/hle/core/probe.h"
 #include "hw/xbox/hle/core/xbe_guest.h"
+#include "hw/xbox/hle/fixes/fixes.h"
 #include "hw/xbox/hle/pb/pbmode.h"
 
 #define MAX_IMAGE (64u << 20)
@@ -56,13 +57,14 @@ void hle_title_start(void)
     uint32_t hl = hle_xbe_read_guest_headers(g_hdr, sizeof(g_hdr));
     if (!hl || hle_xbe_parse(g_hdr, hl, &t->xbe) != HLE_XBE_OK ||
         t->xbe.sizeof_image > MAX_IMAGE) {
-        hle_log("hakuX-hle", "fingerprint %016llx: unusable XBE headers; HLE idle",
+        hle_log("xbased-hle", "fingerprint %016llx: unusable XBE headers; HLE idle",
                 (unsigned long long)fp);
         return;
     }
     lib_ranges(t);
-    hle_log("hakuX-hle-mode", "title %08x: push-buffer mode", t->xbe.title_id);
-    hle_probe_register();                   /* debug: HAKUX_HLE_PROBE */
+    hle_log("xbased-hle-mode", "title %08x: push-buffer mode", t->xbe.title_id);
+    hle_probe_register();                   /* debug: XBASED_HLE_PROBE */
+    hle_fixes_init(&t->xbe);                /* the title's fixes, before the decoder starts */
     hle_pb_start();
     hle_host_code_changed();
     hle_host_kick();

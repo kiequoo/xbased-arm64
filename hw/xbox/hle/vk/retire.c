@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — things let go that the GPU may still use (retire.h).
+ * xbased HLE GPU — things let go that the GPU may still use (retire.h).
  */
 #include "hw/xbox/hle/vk/retire.h"
 

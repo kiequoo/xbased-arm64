@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — an object's slot by its id, remembered: a small table
+ * xbased HLE GPU — an object's slot by its id, remembered: a small table
  * with two entries for the ids that share their low bits, so an id of any
  * size has one (the front end's ids only grow: a table indexed by the id
  * itself served the first 8192, and every lookup after them walked all the

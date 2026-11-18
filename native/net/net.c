@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the network thread and the NIC's frame queues (net.h).
+ * xbased native core — the network thread and the NIC's frame queues (net.h).
  */
 #include <stdio.h>
 #include "native/net/net.h"
@@ -185,14 +185,14 @@ static void pcap_open(void)
     }
     g_net.pcap = fopen(g_net.pcap_path, "wb");
     if (!g_net.pcap) {
-        nc_log("hakuX-native-net", "pcap: %s: %s", g_net.pcap_path, strerror(errno));
+        nc_log("xbased-native-net", "pcap: %s: %s", g_net.pcap_path, strerror(errno));
         return;
     }
     /* magic, version 2.4, GMT offset, accuracy, snapshot length, Ethernet */
     const uint32_t head[6] = { 0xA1B2C3D4, 0x00040002, 0, 0, 65535, 1 };
     fwrite(head, sizeof(head), 1, g_net.pcap);
     fflush(g_net.pcap);
-    nc_log("hakuX-native-net", "pcap: frames to %s", g_net.pcap_path);
+    nc_log("xbased-native-net", "pcap: frames to %s", g_net.pcap_path);
 }
 
 /* A frame to the capture; under lock. */
@@ -327,7 +327,7 @@ static void *net_thread(void *arg)
         int timeout = 1000;
         const int n = be->fill(fds + 1, MAX_FDS - 1, &timeout);
         if (nc_net_poll(fds, (nfds_t)(1 + n), timeout) < 0 && nc_net_errno() != EINTR) {
-            nc_log("hakuX-native-net", "poll: %s", strerror(nc_net_errno()));
+            nc_log("xbased-native-net", "poll: %s", strerror(nc_net_errno()));
             usleep(10000);
             continue;
         }
@@ -359,7 +359,7 @@ static void *net_thread(void *arg)
         const time_t now = time(NULL);
         if (now - last_log >= 30) {
             last_log = now;
-            nc_log("hakuX-native-net", "%s: %llu frames sent, %llu received (dropped: %llu out, %llu in)", be->name,
+            nc_log("xbased-native-net", "%s: %llu frames sent, %llu received (dropped: %llu out, %llu in)", be->name,
                    (unsigned long long)g_net.sent, (unsigned long long)g_net.received,
                    (unsigned long long)g_net.tx.dropped, (unsigned long long)g_net.rx.dropped);
         }
@@ -376,7 +376,7 @@ void nc_net_start(void)
     pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
     pthread_cond_init(&g_net.rx_cond, &attr);
     pthread_condattr_destroy(&attr);
-    /* debug: NC_NET="option option ..." over the app's (via debug.hakux.env) */
+    /* debug: NC_NET="option option ..." over the app's (via debug.xbased.env) */
     const char *env = getenv("NC_NET");
     if (env) {
         char buf[256];
@@ -390,7 +390,7 @@ void nc_net_start(void)
                              : g_net.mode == NC_NET_KAI ? &nc_net_kai
                                                         : NULL;
     if (!be) {
-        nc_log("hakuX-native-net", "network off: the NIC has no link");
+        nc_log("xbased-native-net", "network off: the NIC has no link");
         return;
     }
 #ifdef _WIN32
@@ -399,17 +399,17 @@ void nc_net_start(void)
     g_net.wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
 #endif
     if (g_net.wake_fd < 0 || !ring_init(&g_net.tx, TX_SLOTS) || !ring_init(&g_net.rx, RX_SLOTS) || !be->init()) {
-        nc_log("hakuX-native-net", "%s: couldn't start: the NIC has no link", be->name);
+        nc_log("xbased-native-net", "%s: couldn't start: the NIC has no link", be->name);
         return;
     }
     g_net.be = be;
     pcap_open();
     pthread_t t;
     if (pthread_create(&t, NULL, net_thread, NULL) != 0) {
-        nc_log("hakuX-native-net", "%s: no thread: the NIC has no link", be->name);
+        nc_log("xbased-native-net", "%s: no thread: the NIC has no link", be->name);
         return;
     }
     pthread_detach(t);
     __atomic_store_n(&g_net.running, true, __ATOMIC_RELEASE);
-    nc_log("hakuX-native-net", "%s: started", be->name);
+    nc_log("xbased-native-net", "%s: started", be->name);
 }

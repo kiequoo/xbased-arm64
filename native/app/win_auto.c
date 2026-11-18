@@ -1,5 +1,5 @@
 /*
- * xbased (hakuX for PC) — scripted input and pictures (win_auto.h).
+ * xbased (xbased for PC) — scripted input and pictures (win_auto.h).
  */
 #include "native/app/win_auto.h"
 #include "native/core/nc.h"
@@ -67,7 +67,7 @@ static void shot(const char *name)
     char path[MAX_PATH + 64];
     snprintf(path, sizeof(path), "%s/shot_%s.bmp", g_auto.dir, name);
     hle_present_shot(path);
-    nc_log("hakuX-auto", "%.1f s: picture %s", now_s() - g_auto.t0, path);
+    nc_log("xbased-auto", "%.1f s: picture %s", now_s() - g_auto.t0, path);
 }
 
 static void act(const char *a, const char *label)
@@ -78,14 +78,14 @@ static void act(const char *a, const char *label)
         return;
     }
     if (!_strnicmp(a, "prof ", 5)) {
-        nc_log("hakuX-auto", "%.1f s: profile for %s s", now_s() - g_auto.t0, a + 5);
+        nc_log("xbased-auto", "%.1f s: profile for %s s", now_s() - g_auto.t0, a + 5);
 #if defined(__x86_64__)
         nc_cpu_prof_start((unsigned)atoi(a + 5));
 #endif
         return;
     }
     if (!_strnicmp(a, "save ", 5) || !_strnicmp(a, "load ", 5)) {
-        nc_log("hakuX-auto", "%.1f s: %s", now_s() - g_auto.t0, a);
+        nc_log("xbased-auto", "%.1f s: %s", now_s() - g_auto.t0, a);
         (a[0] == 's' || a[0] == 'S' ? g_auto.save : g_auto.load)(atoi(a + 5));
         return;
     }
@@ -118,14 +118,14 @@ static void act(const char *a, const char *label)
         for (unsigned i = 0; vj && i < sizeof(k_b) / sizeof(k_b[0]); i++) {
             if (!_stricmp(bn, k_b[i].n)) {
                 SDL_SetJoystickVirtualButton(vj, k_b[i].b, down != 0);
-                nc_log("hakuX-auto", "%.1f s: virtual gamepad %s %s", now_s() - g_auto.t0, k_b[i].n,
+                nc_log("xbased-auto", "%.1f s: virtual gamepad %s %s", now_s() - g_auto.t0, k_b[i].n,
                        down ? "down" : "up");
             }
         }
         return;
     }
     if (!_stricmp(a, "quit")) {
-        nc_log("hakuX-auto", "%.1f s: quit", now_s() - g_auto.t0);
+        nc_log("xbased-auto", "%.1f s: quit", now_s() - g_auto.t0);
         _exit(0);
     }
     char name[48];
@@ -147,11 +147,11 @@ static void act(const char *a, const char *label)
         if (!_stricmp(name, k_ctl[i].name)) {
             g_auto.until[i] = now_s() + hold;
             g_auto.amount[i] = amount;
-            nc_log("hakuX-auto", "%.1f s: %s for %.1f s", now_s() - g_auto.t0, k_ctl[i].name, hold);
+            nc_log("xbased-auto", "%.1f s: %s for %.1f s", now_s() - g_auto.t0, k_ctl[i].name, hold);
             return;
         }
     }
-    nc_log("hakuX-auto", "unknown action \"%s\"", a);
+    nc_log("xbased-auto", "unknown action \"%s\"", a);
 }
 
 static int by_time(const void *x, const void *y)
@@ -162,23 +162,23 @@ static int by_time(const void *x, const void *y)
 
 void nc_auto_init(const char *exe_dir, void (*save)(int slot), void (*load)(int slot))
 {
-    const char *script = getenv("HAKUX_AUTO");
-    const char *cmd = getenv("HAKUX_AUTO_CMD");
+    const char *script = getenv("XBASED_AUTO");
+    const char *cmd = getenv("XBASED_AUTO_CMD");
     if (!script && !cmd) {
         return;
     }
     g_auto.on = true;
     g_auto.save = save;
     g_auto.load = load;
-    const char *t0 = getenv("HAKUX_AUTO_T0");
+    const char *t0 = getenv("XBASED_AUTO_T0");
     g_auto.t0 = t0 ? atof(t0) : now_s();
     if (!t0) {
         char v[64];
         snprintf(v, sizeof(v), "%.3f", g_auto.t0);
-        SetEnvironmentVariableA("HAKUX_AUTO_T0", v); /* a relaunch's process inherits it */
-        setenv("HAKUX_AUTO_T0", v, 1);
+        SetEnvironmentVariableA("XBASED_AUTO_T0", v); /* a relaunch's process inherits it */
+        setenv("XBASED_AUTO_T0", v, 1);
     }
-    const char *dir = getenv("HAKUX_AUTO_DIR");
+    const char *dir = getenv("XBASED_AUTO_DIR");
     if (dir) {
         snprintf(g_auto.dir, sizeof(g_auto.dir), "%s", dir);
     } else {
@@ -209,7 +209,7 @@ void nc_auto_init(const char *exe_dir, void (*save)(int slot), void (*load)(int 
         struct _stat64 st;
         g_auto.cmd_off = _stat64(cmd, &st) == 0 ? st.st_size : 0; /* lines from now on */
     }
-    nc_log("hakuX-auto", "%u scripted actions%s%s, %.1f s into the run, pictures in %s", g_auto.n,
+    nc_log("xbased-auto", "%u scripted actions%s%s, %.1f s into the run, pictures in %s", g_auto.n,
            cmd ? ", commands from " : "", cmd ? cmd : "", el, g_auto.dir);
 }
 

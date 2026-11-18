@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — things let go that the GPU may still use: kept until the
+ * xbased HLE GPU — things let go that the GPU may still use: kept until the
  * timeline passes the work that may use them.
  *
  * An entry is parked when it is retired (HLE_RETIRE_PARKED: the recording

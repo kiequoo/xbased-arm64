@@ -1,5 +1,5 @@
 /*
- * hakuX native core, app front end — SDL_main for NativeCoreActivity.
+ * xbased native core, app front end — SDL_main for NativeCoreActivity.
  *
  *   argv[1]  the disc image: a path, or "fd:<n>" for a descriptor the activity opened
  *   argv[2]  the hard disk folder (Partition0-5 and the raw sector files)
@@ -173,7 +173,7 @@ EXPORT JNIEXPORT jstring JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_n
     return err ? (*env)->NewStringUTF(env, err) : NULL;
 }
 
-/* debug: a new value of debug.hakux.state ("save:<slot>", "load:<slot>")
+/* debug: a new value of debug.xbased.state ("save:<slot>", "load:<slot>")
  * for the activity to act on as its menu would (scripted savestate runs);
  * the value found at the first call, "none" and "" do nothing. Null: none. */
 EXPORT JNIEXPORT jstring JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_nativeTakeStateRequest(JNIEnv *env,
@@ -182,7 +182,7 @@ EXPORT JNIEXPORT jstring JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_n
     static char last[PROP_VALUE_MAX];
     static bool primed;
     char v[PROP_VALUE_MAX] = "";
-    hle_prop_get("debug.hakux.state", v);
+    hle_prop_get("debug.xbased.state", v);
     if (!primed || !strcmp(v, last)) {
         primed = true;
         snprintf(last, sizeof(last), "%s", v);
@@ -192,7 +192,7 @@ EXPORT JNIEXPORT jstring JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_n
     if (!v[0] || !strcmp(v, "none")) {
         return NULL;
     }
-    nc_log("hakuX-app", "debug.hakux.state: %s", v);
+    nc_log("xbased-app", "debug.xbased.state: %s", v);
     return (*env)->NewStringUTF(env, v);
 }
 
@@ -417,7 +417,7 @@ EXPORT JNIEXPORT jboolean JNICALL Java_com_rfandango_haku_1x_NativeCoreActivity_
 static void *core_thread(void *arg)
 {
     if (!nc_core_boot(&g_core, g_disc_fd)) {
-        nc_log("hakuX-app", "core: boot failed");
+        nc_log("xbased-app", "core: boot failed");
         if (!nc_hle_fatal()) {
             nc_hle_set_fatal(NC_FATAL_BOOT, "The game stopped while starting.");
         }
@@ -426,7 +426,7 @@ static void *core_thread(void *arg)
     }
     SDL_SetAtomicInt(&g_core_state, 1);
     nc_core_run(&g_core);
-    nc_log("hakuX-app", "core: stopped");
+    nc_log("xbased-app", "core: stopped");
     SDL_SetAtomicInt(&g_core_state, -1);
     return NULL;
 }
@@ -497,7 +497,7 @@ static void make_hdd(const char *root)
 EXPORT int SDL_main(int argc, char *argv[])
 {
     if (argc < 3) {
-        nc_log("hakuX-app", "usage: <disc path | fd:N> <hdd folder>");
+        nc_log("xbased-app", "usage: <disc path | fd:N> <hdd folder>");
         return 1;
     }
     const char *disc = argv[1];
@@ -507,9 +507,9 @@ EXPORT int SDL_main(int argc, char *argv[])
                                            : open(disc, O_RDONLY | O_CLOEXEC);
     if (g_disc_fd < 0 && strcmp(disc, "none")) {
         /* the boot says so (NC_FATAL_BOOT), and the activity goes back */
-        nc_log("hakuX-app", "can't open the disc %s", disc);
+        nc_log("xbased-app", "can't open the disc %s", disc);
     }
-    /* debug: debug.hakux.hdd=NAME runs on the hard disk <hdd>-NAME instead,
+    /* debug: debug.xbased.hdd=NAME runs on the hard disk <hdd>-NAME instead,
      * made empty the first time: a title's first boot (its cache partition
      * formatted and filled) without touching the usual disk. Unset or
      * "none": the usual one. */
@@ -517,15 +517,15 @@ EXPORT int SDL_main(int argc, char *argv[])
     snprintf(hdd, sizeof(hdd), "%s", argv[2]);
     {
         char name[PROP_VALUE_MAX] = "";
-        if (hle_prop_get("debug.hakux.hdd", name) > 0 && strcmp(name, "none") && !strchr(name, '/') &&
+        if (hle_prop_get("debug.xbased.hdd", name) > 0 && strcmp(name, "none") && !strchr(name, '/') &&
             name[0] != '.') {
             snprintf(hdd, sizeof(hdd), "%s-%s", argv[2], name);
-            nc_log("hakuX-app", "debug.hakux.hdd: the hard disk is %s", hdd);
+            nc_log("xbased-app", "debug.xbased.hdd: the hard disk is %s", hdd);
         }
     }
     make_hdd(hdd);
     nc_io_set_hdd_root(hdd);
-    setenv("HAKUX_HLE_MODE", "replace", 0);
+    setenv("XBASED_HLE_MODE", "replace", 0);
     /* The HLE GPU's shader and pipeline caches beside the hard disk, in the
      * app's own storage: the default (/data/local/tmp, xboxrun's) is the
      * shell's, where the app can't keep its SPIR-V cache, and every run
@@ -533,20 +533,20 @@ EXPORT int SDL_main(int argc, char *argv[])
     {
         char base[512];
         snprintf(base, sizeof(base), "%s/../hle", argv[2]);
-        setenv("HAKUX_NATIVE_BASE", base, 1);
+        setenv("XBASED_NATIVE_BASE", base, 1);
     }
-    /* debug: debug.hakux.env="NAME=value;NAME=value" sets the runner's
-     * environment switches (NC_TRACE_*, HAKUX_HLE_*) for the next game, and
-     * debug.hakux.env2 more of them (a property holds 91 characters) */
+    /* debug: debug.xbased.env="NAME=value;NAME=value" sets the runner's
+     * environment switches (NC_TRACE_*, XBASED_HLE_*) for the next game, and
+     * debug.xbased.env2 more of them (a property holds 91 characters) */
     for (unsigned p = 0; p < 2; p++) {
         char env[PROP_VALUE_MAX] = "";
-        if (hle_prop_get(p ? "debug.hakux.env2" : "debug.hakux.env", env) > 0) {
+        if (hle_prop_get(p ? "debug.xbased.env2" : "debug.xbased.env", env) > 0) {
             for (char *save = NULL, *t = strtok_r(env, ";", &save); t; t = strtok_r(NULL, ";", &save)) {
                 char *eq = strchr(t, '=');
                 if (eq && eq != t) {
                     *eq = 0;
                     setenv(t, eq + 1, 1);
-                    nc_log("hakuX-app", "debug.hakux.env: %s=%s", t, eq + 1);
+                    nc_log("xbased-app", "debug.xbased.env: %s=%s", t, eq + 1);
                 }
             }
         }
@@ -566,7 +566,7 @@ EXPORT int SDL_main(int argc, char *argv[])
                                   : !strcmp(a, "16:9")    ? NC_ASPECT_16_9
                                   : !strcmp(a, "stretch") ? NC_ASPECT_STRETCH
                                                           : NC_ASPECT_AUTO);
-            nc_log("hakuX-app", "aspect ratio %s", a);
+            nc_log("xbased-app", "aspect ratio %s", a);
         }
         if (!strncmp(argv[i], "fxaa=", 5)) {
             nc_present_set_fxaa(atoi(argv[i] + 5) != 0);
@@ -582,20 +582,20 @@ EXPORT int SDL_main(int argc, char *argv[])
     }
     nc_options_apply(&opt);
     nc_present_set_widescreen(opt.video >= 0 && (opt.video & NC_VIDEO_WIDESCREEN));
-    nc_log("hakuX-app", "native core: disc %s, hdd %s%s", disc, argv[2], opt.uncap ? ", frame rate uncapped" : "");
+    nc_log("xbased-app", "native core: disc %s, hdd %s%s", disc, argv[2], opt.uncap ? ", frame rate uncapped" : "");
 
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
     /* the gamepads are the activity's (its controller router), unless the
      * legacy SDL input was asked for: SDL then doesn't open them either */
     if (!SDL_Init(SDL_INIT_VIDEO | (g_sdl_pads ? SDL_INIT_GAMEPAD : 0))) {
-        nc_log("hakuX-app", "SDL_Init: %s", SDL_GetError());
+        nc_log("xbased-app", "SDL_Init: %s", SDL_GetError());
         return 1;
     }
     /* no GL or Vulkan flag: the HLE GPU makes its own Vulkan surface of the
      * window's ANativeWindow (hw/xbox/hle/vk/swapchain.c) */
-    SDL_Window *win = SDL_CreateWindow("hakuX", 0, 0, SDL_WINDOW_FULLSCREEN);
+    SDL_Window *win = SDL_CreateWindow("xbased", 0, 0, SDL_WINDOW_FULLSCREEN);
     if (!win) {
-        nc_log("hakuX-app", "window: %s", SDL_GetError());
+        nc_log("xbased-app", "window: %s", SDL_GetError());
         return 1;
     }
     if (!nc_present_init()) {
@@ -629,7 +629,7 @@ EXPORT int SDL_main(int argc, char *argv[])
             case SDL_EVENT_GAMEPAD_ADDED:
                 if (!pad) {
                     pad = SDL_OpenGamepad(ev.gdevice.which);
-                    nc_log("hakuX-app", "gamepad: %s", pad ? SDL_GetGamepadName(pad) : SDL_GetError());
+                    nc_log("xbased-app", "gamepad: %s", pad ? SDL_GetGamepadName(pad) : SDL_GetError());
                 }
                 break;
             case SDL_EVENT_GAMEPAD_REMOVED:
@@ -674,6 +674,6 @@ EXPORT int SDL_main(int argc, char *argv[])
             SDL_Delay(16);
         }
     }
-    nc_log("hakuX-app", "native core: leaving");
+    nc_log("xbased-app", "native core: leaving");
     _exit(0); /* the core thread has no stop yet; the activity's process ends with it */
 }

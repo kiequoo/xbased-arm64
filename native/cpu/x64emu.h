@@ -1,5 +1,5 @@
 /*
- * hakuX native core — one faulting x86-64 instruction run against a
+ * xbased native core — one faulting x86-64 instruction run against a
  * buffer instead of its memory operand (Windows): the device registers'
  * accesses (core/mmio.c) and the dirty tracking's emulated stores
  * (hle/dirty.c), from translated code and host code alike.

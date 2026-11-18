@@ -1,15 +1,15 @@
 /*
- * hakuX HLE GPU — host-time profile (HAKUX_HLE_PROF=1, debug): nanoseconds
+ * xbased HLE GPU — host-time profile (XBASED_HLE_PROF=1, debug): nanoseconds
  * per bucket, logged once a second (hle_prof_diag). Off: one branch.
  */
 #ifndef HW_XBOX_HLE_PROF_H
 #define HW_XBOX_HLE_PROF_H
 
-/* HAKUX_DIAG: 1 in a build made to investigate (the run's statistics, traces
+/* XBASED_DIAG: 1 in a build made to investigate (the run's statistics, traces
  * and monitor compiled in), 0 in every other (the build system's
  * definition; 0 where there is none). */
-#ifndef HAKUX_DIAG
-#define HAKUX_DIAG 0
+#ifndef XBASED_DIAG
+#define XBASED_DIAG 0
 #endif
 
 #include <stdbool.h>
@@ -46,12 +46,12 @@ static inline int64_t hle_prof_now(void)
 
 static inline int64_t hle_prof_begin(void)
 {
-    return HAKUX_DIAG && g_hle_prof_on ? hle_prof_now() : 0;
+    return XBASED_DIAG && g_hle_prof_on ? hle_prof_now() : 0;
 }
 
 static inline void hle_prof_end(int k, int64_t t0)
 {
-    if (HAKUX_DIAG && g_hle_prof_on && t0) {    /* t0 0: the profile came on mid-span */
+    if (XBASED_DIAG && g_hle_prof_on && t0) {    /* t0 0: the profile came on mid-span */
         g_hle_prof_ns[k] += hle_prof_now() - t0;
         g_hle_prof_cnt[k]++;
     }

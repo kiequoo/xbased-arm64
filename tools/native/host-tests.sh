@@ -4,6 +4,7 @@
 #
 #   tools/native/host-tests.sh [the app's build folder]
 #
+# - tools/native/check-layers.sh: nothing but the title fixes asks which title runs
 # - tests/hle: the pure modules of the GPU layer and the core (CMake)
 # - tests/native: the kernel's crypto, the upcase table, the GLib subset; and
 #   under the address sanitizer the disc reader's directory walk, the
@@ -50,6 +51,9 @@ check() { # name, command...
     failed=$((failed + 1))
   fi
 }
+
+# the GPU layer's structure: only hw/xbox/hle/fixes/ asks which title runs (docs/hle-gpu-layers.md)
+check "hle layers" bash "$REPO/tools/native/check-layers.sh"
 
 # tests/hle
 if cmake -S "$REPO/tests/hle" -B "$OUT/hle" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang \

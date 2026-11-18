@@ -110,7 +110,7 @@ static void dsp_dma_run(DSPDMAState *s)
         uint32_t block_addr = 0;
         int block_space = DSP_SPACE_X;
 
-        /* hakuX: the guest's DSP code builds the chain; a descriptor
+        /* xbased: the guest's DSP code builds the chain; a descriptor
          * outside the memories ends it (EOL) */
         if (addr < 0x1800 && APU_CHECK(addr+6 < 0x1800)) {
             block_space = DSP_SPACE_X;
@@ -183,7 +183,7 @@ static void dsp_dma_run(DSPDMAState *s)
         uint32_t mem_address = 0;
         int mem_space = DSP_SPACE_X;
 
-        /* hakuX: a transfer outside the DSP's memories is skipped (this
+        /* xbased: a transfer outside the DSP's memories is skipped (this
          * also bounds the count, the scratch buffer's size) */
         if (dsp_offset < 0x1800 && APU_CHECK(dsp_offset+count < 0x1800)) {
             mem_space = DSP_SPACE_X;

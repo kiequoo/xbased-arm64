@@ -85,7 +85,7 @@ static bool capture_one(const char *path)
     const bool ok = write_png(path, px, w, h);
     g_free(px);
     if (ok) {
-        nc_log("hakuX-native-frontier", "captured %s (%ux%u)", path, w, h);
+        nc_log("xbased-native-frontier", "captured %s (%ux%u)", path, w, h);
     }
     return ok;
 }
@@ -135,16 +135,16 @@ static void frame_got(uint64_t n, const uint8_t *rgba, uint32_t w, uint32_t h, v
         char path[64];
         snprintf(path, sizeof(path), "frames/f%llu.png", (unsigned long long)n);
         if (!rgba) {
-            nc_log("hakuX-native-frontier", "frame %llu: no picture (no display image)", (unsigned long long)n);
+            nc_log("xbased-native-frontier", "frame %llu: no picture (no display image)", (unsigned long long)n);
         } else if (write_png(path, rgba, w, h)) {
-            nc_log("hakuX-native-frontier", "frame %llu: %s (%ux%u)", (unsigned long long)n, path, w, h);
+            nc_log("xbased-native-frontier", "frame %llu: %s (%ux%u)", (unsigned long long)n, path, w, h);
         } else {
-            nc_log("hakuX-native-frontier", "frame %llu: %s not written", (unsigned long long)n, path);
+            nc_log("xbased-native-frontier", "frame %llu: %s not written", (unsigned long long)n, path);
         }
     }
     if (n == g_cf.stop) {
         hle_back_save_caches();         /* the next run's shaders and pipelines */
-        nc_log("hakuX-native-frontier", "frames: %llu reached", (unsigned long long)n);
+        nc_log("xbased-native-frontier", "frames: %llu reached", (unsigned long long)n);
         _exit(0);
     }
 }

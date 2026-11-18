@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — the NV2A's DMA pusher (push-buffer mode): reads command
+ * xbased HLE GPU — the NV2A's DMA pusher (push-buffer mode): reads command
  * words from the push buffer's DMA object between DMA_GET and DMA_PUT,
  * follows jumps, calls and returns as the GPU does, and hands the methods
  * to a sink (the class decoders). Pure: guest memory comes through a fetch

@@ -302,7 +302,7 @@ def sizes(build):
         cmd = entry["command"]
         cmd = re.sub(r"\s-o\s+\S+", " ", cmd)
         cmd = re.sub(r"\s-c\s", " ", cmd)
-        cmd = re.sub(r"\s-flto(=\S+)?", " ", cmd)  # assembly, not LTO's IR (HAKUX_LTO)
+        cmd = re.sub(r"\s-flto(=\S+)?", " ", cmd)  # assembly, not LTO's IR (XBASED_LTO)
         cmd += " -DNC_STATE_PROBE -S -o -"
         asm = subprocess.run(cmd, shell=True, cwd=entry["directory"], capture_output=True, text=True)
         if asm.returncode:

@@ -1,6 +1,6 @@
 name: 60 fps
 description: The game at 60 frames a second instead of 30 (split screen too, instead of 30 or 20). The game steps by the vblanks each frame took, so it keeps its speed when the device can't hold 60.
-author: hakuX
+author: xbased
 
 [default.xbe]
 # The vblanks a frame takes: the game's present interval setter (0x2A78D0,

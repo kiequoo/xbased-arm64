@@ -1,5 +1,5 @@
 /*
- * xbased (hakuX for PC) — the run's mods and cheats (mods/README.md): the
+ * xbased (xbased for PC) — the run's mods and cheats (mods/README.md): the
  * manifest the core reads (native/core/mods.h), written from the mods
  * folder beside the executable as the Android app's ModRun writes it from
  * its assets.
@@ -199,7 +199,7 @@ static int ips_patches(FILE *out, int disc_fd, const char *path, const char *id,
     uint8_t *p = SDL_LoadFile(path, &len);
     if (!p || len < 8 || memcmp(p, "PATCH", 5)) {
         SDL_free(p);
-        nc_log("hakuX-mods", "%s: not an IPS patch", path);
+        nc_log("xbased-mods", "%s: not an IPS patch", path);
         return -1;
     }
     /* default.xbe's headers: the base, the sections' raw ranges */
@@ -494,7 +494,7 @@ static void cleanup_list(const char *exe_dir, const char *kind, const char *what
             continue;
         }
         if (SDL_RemovePath(path)) {
-            nc_log("hakuX-mods", "%s/%s: %s, removed", kind, line, what);
+            nc_log("xbased-mods", "%s/%s: %s, removed", kind, line, what);
             char *slash = strrchr(path, '/');
             if (slash) {
                 *slash = 0;
@@ -569,7 +569,7 @@ bool nc_win_mods_prepare(const char *exe_dir, int disc_fd, char **opts, int nopt
     static WsPatch ws;
     const bool have_ws = widescreen_db(exe_dir, (uint32_t)strtoul(key, NULL, 16), &ws);
     if (!n && !have_ws && GetFileAttributesA(dirs[0]) == INVALID_FILE_ATTRIBUTES) {
-        nc_log("hakuX-mods", "%s: no mods or cheats", key);
+        nc_log("xbased-mods", "%s: no mods or cheats", key);
         return false;
     }
     const char *dir = dirs[0];   /* cheats.txt's */
@@ -602,11 +602,11 @@ bool nc_win_mods_prepare(const char *exe_dir, int disc_fd, char **opts, int nopt
             if (!nc_win_mods_ips_fits(exe_dir, disc_fd, mods[i].dir, mods[i].id, why, sizeof(why))) {
                 /* never applied: listed off (a savestate made with it on gets the disc's bytes back) */
                 ips_patches(out, disc_fd, path, mods[i].id, false);
-                nc_log("hakuX-mods", "%s patch %s.ips: not for this executable (%s), left off", key, mods[i].id, why);
+                nc_log("xbased-mods", "%s patch %s.ips: not for this executable (%s), left off", key, mods[i].id, why);
                 continue;
             }
             const int recs = ips_patches(out, disc_fd, path, mods[i].id, mods[i].on);
-            nc_log("hakuX-mods", "%s patch %s.ips (%d records): %s", key, mods[i].id, recs,
+            nc_log("xbased-mods", "%s patch %s.ips (%d records): %s", key, mods[i].id, recs,
                    mods[i].on ? "on" : "off (mod=<its name> turns it on)");
             continue;
         }
@@ -643,14 +643,14 @@ bool nc_win_mods_prepare(const char *exe_dir, int disc_fd, char **opts, int nopt
         if (mods[i].on && mods[i].refresh > refresh) {
             refresh = mods[i].refresh;
         }
-        nc_log("hakuX-mods", "%s mod %s (\"%s\"): %s", key, mods[i].id, mods[i].name,
+        nc_log("xbased-mods", "%s mod %s (\"%s\"): %s", key, mods[i].id, mods[i].name,
                mods[i].on ? "on" : "off (mod=<its folder> turns it on)");
     }
     if (have_ws) {
         const bool won = opt_has(opts, nopts, "mod", "widescreen-db");
         const int hits = widescreen_patches(out, disc_fd, &ws, "widescreen-db", won);
         on += won;
-        nc_log("hakuX-mods", "%s widescreen database: %d of its %d patterns' matches in default.xbe: %s", key, hits,
+        nc_log("xbased-mods", "%s widescreen database: %d of its %d patterns' matches in default.xbe: %s", key, hits,
                ws.n, won ? "on" : "off (mod=widescreen-db turns it on)");
     }
     if (refresh > 0) {
@@ -711,6 +711,6 @@ bool nc_win_mods_prepare(const char *exe_dir, int disc_fd, char **opts, int nopt
     }
     fclose(out);
     nc_mods_set_manifest(manifest);
-    nc_log("hakuX-mods", "%s: %d of %d mods on, %d cheats (manifest %s)", key, on, n, cheats, manifest);
+    nc_log("xbased-mods", "%s: %d of %d mods on, %d cheats (manifest %s)", key, on, n, cheats, manifest);
     return true;
 }

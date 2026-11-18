@@ -78,3 +78,18 @@ One entry per section version (tools/native/statelock.py).
 
 - a thread's wait may be a frame latency hold (NcWait.hold, flip_seq): it ends without a status in EAX
 - upgraded: v1..v5 states load
+
+## NV2A v2 (2026-11-12, after c4dd93e5da)
+
+- PTIMER's time base (NcNv2aState.pt_set, pt_ticks, pt_ns): the time counts the core clock times 32 * DENOMINATOR / NUMERATOR from where the guest last set or rescaled it (v1: it was the guest's ns, and goes on from there at the console's scale)
+- upgraded: v1..v1 states load
+
+## NV2A v3 (2026-11-15, after 330a723943)
+
+- NcNv2aState.av_mode, av_title: the AV mode and the title's own shape (D3DPRESENTFLAG_WIDESCREEN from its presentation parameters), for aspect=auto after a load (v1..v2 states: 0, the shape looked for in the title's memory)
+- upgraded: v1..v2 states load
+
+## MM v3 (2026-11-15, after 16a6838a82)
+
+- RoRun list and NcMmState.nro: the pages a title made read-only (PAGE_READONLY / PAGE_EXECUTE_READ), a store to which faults to the title (v2 states: none, every page writable)
+- upgraded: v1..v2 states load

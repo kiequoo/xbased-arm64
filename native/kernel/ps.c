@@ -1,5 +1,5 @@
 /*
- * hakuX native core — threads and the scheduler.
+ * xbased native core — threads and the scheduler.
  *
  * Every guest thread runs on the core's one JIT thread. A thread that isn't
  * running keeps its CPU state in NcThread.ctx; switching happens inside a
@@ -71,7 +71,22 @@
 #define STACK_GUARD    0x10000u
 #define DEFAULT_STACK  0x10000u
 #define KERNEL_STACK_SIZE 0x3000u       /* the least the kernel makes (nboxkrnl kernel.hpp) */
+#define STACK_OVER     0x4000u          /* zeroed pages over a thread's stack top (thread_create) */
 #define DEFAULT_PRIORITY 8
+
+/* STACK_OVER's pages over a stack's top, those not mapped yet, zeroed; how
+ * many were */
+static unsigned stack_over_map(NcVm *vm, uint32_t top)
+{
+    unsigned n = 0;
+    for (uint32_t p = top; p < top + STACK_OVER; p += NC_PAGE) {
+        if (nc_vm_phys(vm, p) == UINT32_MAX && nc_vm_alloc_at(vm, p, NC_PAGE, NULL)) {
+            memset(nc_vm_host(vm, p), 0, NC_PAGE);
+            n++;
+        }
+    }
+    return n;
+}
 
 static void list_init(NcVm *vm, uint32_t head)
 {
@@ -105,7 +120,7 @@ bool nc_ps_stack_alloc(NcKernel *k, uint32_t size, uint32_t *base)
     }
     const uint32_t slot = k->next_stack_va;
     if (span > NC_GPU_WINDOW - slot) {
-        nc_log("hakuX-native", "ps: the stack region is full (%u KiB more asked)", size >> 10);
+        nc_log("xbased-native", "ps: the stack region is full (%u KiB more asked)", size >> 10);
         return false;
     }
     if (!nc_vm_alloc_at(k->vm, slot + STACK_GUARD, size, NULL)) {
@@ -141,7 +156,7 @@ static NcThread *thread_create(NcKernel *k, uint32_t stack_size, uint32_t tls_si
         }
     }
     if (!t) {
-        nc_log("hakuX-native", "ps: out of thread slots");
+        nc_log("xbased-native", "ps: out of thread slots");
         return NULL;
     }
     if ((unsigned)(t - k->threads) + 1 > k->threads_hi) {
@@ -179,16 +194,17 @@ static NcThread *thread_create(NcKernel *k, uint32_t stack_size, uint32_t tls_si
     const uint32_t tib = top - FX_SAVE_AREA;
 
     NcVm *vm = k->vm;
-    /* A page over the top, zeroed (the slot's room past the stack, never
-     * anyone else's): on the console a title's thread starts under more of
-     * the kernel's and XAPI's frames, and a read a little past the top lands
-     * in memory there. Dave Mirra Freestyle BMX 2 indexes an array on its
-     * stack with a stray byte (0xFF) at its title screen, 0x80 bytes over
-     * the top here: a fault the title doesn't handle. It goes with the stack
-     * (the scheduler's free of a terminated thread). */
-    if (nc_vm_phys(vm, top) == UINT32_MAX && nc_vm_alloc_at(vm, top, NC_PAGE, NULL)) {
-        memset(nc_vm_host(vm, top), 0, NC_PAGE);
-    }
+    /* Pages over the top, zeroed (the slot's room past the stack, or the
+     * next slot's guard: never anyone else's): on the console a title's
+     * thread starts under more of the kernel's and XAPI's frames, and a read
+     * past the top lands in memory there. Dave Mirra Freestyle BMX 2 indexes
+     * an array on its stack with a stray byte (0xFF) at its title screen,
+     * 0x80 bytes over the top here; Shin Sangoku Musou 3 (Japan, Asia) walks
+     * a model's table from a copy of its header on its stack, the table's
+     * offset taken from the whole file, up to 0x3030 bytes over the top as a
+     * battle starts (#316): faults the titles don't handle. They go with the
+     * stack (the scheduler's free of a terminated thread). */
+    stack_over_map(vm, top);
     uint8_t *fx = nc_vm_host(vm, tib);         /* the top page's: a slot may come back used */
     memset(fx, 0, FX_SAVE_AREA);
     *(uint16_t *)(fx + FX_CONTROL_WORD) = 0x27F;
@@ -251,18 +267,17 @@ void nc_ps_old_stacks(NcKernel *k)
     unsigned n = 0;
     for (unsigned i = 0; i < NC_MAX_THREADS; i++) {
         const NcThread *t = &k->threads[i];
-        /* every thread now (thread_create's page): a state from before it too */
-        if (t->state == NC_T_FREE || t->stack_base >= NC_GPU_WINDOW ||
-            nc_vm_phys(k->vm, t->stack_base) != UINT32_MAX) {
+        /* every thread now (thread_create's pages): a state from before
+         * them too, or with the one page there was before #316 */
+        if (t->state == NC_T_FREE || t->stack_base >= NC_GPU_WINDOW) {
             continue;
         }
-        if (nc_vm_alloc_at(k->vm, t->stack_base, NC_PAGE, NULL)) {
-            memset(nc_vm_host(k->vm, t->stack_base), 0, NC_PAGE);
+        if (stack_over_map(k->vm, t->stack_base)) {
             n++;
         }
     }
     if (n) {
-        nc_log("hakuX-native", "ps: %u threads from an older state: a page over each stack", n);
+        nc_log("xbased-native", "ps: %u threads from an older state: the pages over their stacks", n);
     }
 }
 
@@ -308,7 +323,7 @@ NcThread *nc_ps_kernel_thread(NcKernel *k, uint32_t stack_size, int priority)
     NcThread *t = thread_create(k, stack_size, 0, 0);
     if (t) {
         t->priority = priority;
-        nc_log("hakuX-native", "ps: kernel thread %u, priority %d, stack %08x-%08x", t->id, priority,
+        nc_log("xbased-native", "ps: kernel thread %u, priority %d, stack %08x-%08x", t->id, priority,
                t->stack_limit, t->stack_base);
     }
     return t;
@@ -529,7 +544,7 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f)
         /* Off its stack for good: the pages go back (titles start threads per
          * movie and load), the slot can hold a new thread. Its ETHREAD stays,
          * signaled, for whoever still holds a handle. */
-        const uint32_t end = cur->stack_base + NC_PAGE;     /* the page over the top (thread_create, nc_ps_old_stacks) */
+        const uint32_t end = cur->stack_base + STACK_OVER;  /* the pages over the top (thread_create, nc_ps_old_stacks) */
         for (uint32_t p = cur->stack_limit; p < end; p += NC_PAGE) {
             const uint32_t pa = nc_vm_phys(k->vm, p);
             if (pa != UINT32_MAX) {
@@ -605,7 +620,7 @@ static uint64_t PsCreateSystemThreadEx(NcKernel *k, NcFrame *f, const uint32_t *
     }
     t->state = NC_T_READY;
     t->suspend = (a[7] & 0xff) ? 1 : 0;
-    nc_log("hakuX-native", "ps: thread %u created: start %08x (%s), stack %08x-%08x, tls %u%s, handle %x", t->id,
+    nc_log("xbased-native", "ps: thread %u created: start %08x (%s), stack %08x-%08x, tls %u%s, handle %x", t->id,
            a[5], a[9] ? "via system routine" : "direct", t->stack_limit, t->stack_base, a[3],
            t->suspend ? ", suspended" : "", h);
     return NC_STATUS_SUCCESS;
@@ -648,7 +663,7 @@ void nc_ps_debug_resume(NcKernel *k, unsigned id)
     for (unsigned i = 0; i < NC_MAX_THREADS; i++) {
         NcThread *t = &k->threads[i];
         if (t->state != NC_T_FREE && t->id == id) {
-            nc_log("hakuX-native", "debug: t%u resumed (suspend count was %u)", id, resume(k, t));
+            nc_log("xbased-native", "debug: t%u resumed (suspend count was %u)", id, resume(k, t));
             return;
         }
     }
@@ -705,7 +720,7 @@ static uint64_t KeResumeThread(NcKernel *k, NcFrame *f, const uint32_t *a)
 /* PsTerminateSystemThread(ExitStatus): never returns. */
 static uint64_t PsTerminateSystemThread(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    nc_log("hakuX-native", "ps: thread %u exits (%08x)", k->current ? k->current->id : 0, a[0]);
+    nc_log("xbased-native", "ps: thread %u exits (%08x)", k->current ? k->current->id : 0, a[0]);
     nc_ps_terminate_current(k, a[0]);
     return 0;
 }
@@ -735,7 +750,7 @@ void nc_kernel_dump_threads(NcKernel *k, int fd)
         const bool cur = t == k->current;
         const uint32_t eip = cur && k->frame ? nc_frame_eip(k->frame) : nc_context_eip(&t->ctx);
         const uint32_t esp = cur && k->frame ? nc_frame_gpr(k->frame, NC_ESP) : nc_context_gpr(&t->ctx, NC_ESP);
-        int n = snprintf(line, sizeof(line), "hakuX-native-frontier:   thread t%u %s prio %d%s eip %08x esp %08x",
+        int n = snprintf(line, sizeof(line), "xbased-native-frontier:   thread t%u %s prio %d%s eip %08x esp %08x",
                          t->id, k_state[t->state], t->priority, t->suspend ? " suspended" : "", eip, esp);
         if (t->state == NC_T_WAITING) {
             n += snprintf(line + n, sizeof(line) - (size_t)n, " | wait%s%s", t->wait.wait_all ? " all" : "",

@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the game library (library.h).
+ * xbased front end — the game library (library.h).
  *
  * The cache (<data>/covers/library.txt, cache_load): a line a file, so the
  * library shows at once and a scan reads only new or changed images; their
@@ -35,6 +35,7 @@ struct ScanArgs;
 
 static struct {
     SDL_Mutex *mu;
+    SDL_Mutex *names_mu;            /* names_load's: the fetch thread's and the picker's */
     LibGame *games[MAX_GAMES];      /* every entry, by title */
     int n;
     LibGame *by_path[HASH_SIZE];    /* the same, by file */
@@ -773,6 +774,7 @@ void lib_scan(const char *const *folders, int n)
 {
     if (!L.mu) {
         L.mu = SDL_CreateMutex();
+        L.names_mu = SDL_CreateMutex();
     }
     ScanArgs *a = calloc(1, sizeof(*a));
     if (!a) {
@@ -1250,37 +1252,78 @@ static bool names_load(void)
     return g_nnames > 0;
 }
 
+/* How well a box art name fits a game whose title and file name are a and f
+ * (norm's): their words', the file name's a hair over a tie (a title two
+ * editions share: Dead or Alive Ultimate's two discs, the second's name in
+ * its file's, #318), the disc's region first (1 North America, 2 Japan, 4
+ * the rest), no demos; under 0: not it. */
+/* a pre-release's picture: an alpha, a beta, a prototype, a demo, a kiosk
+ * disc (in its name's groups: "(Beta)", "( Beta 2004 06 28)") */
+static bool prerelease(const char *nm)
+{
+    const char *g = strchr(nm, '(');
+    return g && (strstr(g, "Alpha") || strstr(g, "Beta") || strstr(g, "Proto") || strstr(g, "Demo") ||
+                 strstr(g, "Kiosk") || strstr(g, "Sample"));
+}
+
+static float game_score(const XdGame *g, const char *a, const char *f, const char *raw, const char *nm)
+{
+    char b[256];
+    norm(nm, b, sizeof(b));
+    const float st = score(a, b), sf = score(f, b);
+    float s = (st > sf ? st : sf) + 0.02f * sf;
+    if (s < 0.6f) {
+        return -1;
+    }
+    if (prerelease(nm)) {
+        s -= 0.3f;
+    }
+    if (((g->regions & 4) && strstr(nm, "(Europe")) || ((g->regions & 1) && strstr(nm, "(USA")) ||
+        ((g->regions & 2) && strstr(nm, "(Japan"))) {
+        s += 0.05f;
+    }
+    /* the file's own region group, as a set's names have it: a disc for
+     * every region (Halo 2's "(USA, Europe)") had every region's bonus, the
+     * Japanese cover first by its name */
+    const char *o = strchr(nm, '('), *c = o ? strchr(o, ')') : NULL;
+    if (c && c - o < 64) {
+        char grp[72];
+        snprintf(grp, sizeof(grp), "%.*s", (int)(c - o + 1), o);
+        if (strstr(raw, grp)) {
+            s += 0.04f;
+        }
+    }
+    return s;
+}
+
+/* a game's title and file name, normalised (norm), and the file's name as
+ * it is (its groups kept) */
+static void game_words(const XdGame *g, char *a, size_t an, char *f, size_t fn, char *raw, size_t rn)
+{
+    norm(g->title, a, an);
+    char name[256];
+    xd_clean_name(g->path, name, sizeof(name));
+    norm(name, f, fn);
+    const char *base = g->path;
+    for (const char *q = g->path; *q; q++) {
+        if (*q == '/' || *q == '\\') {
+            base = q + 1;
+        }
+    }
+    snprintf(raw, rn, "%s", base);
+}
+
 static const char *best_name(const XdGame *g)
 {
-    char a[256], b[256], f[256];
-    norm(g->title, a, sizeof(a));
-    char fn[256];
-    xd_clean_name(g->path, fn, sizeof(fn));
-    norm(fn, f, sizeof(f));
+    char a[256], f[256], raw[512];
+    game_words(g, a, sizeof(a), f, sizeof(f), raw, sizeof(raw));
     const char *best = NULL;
     float bs = 0;
     for (int i = 0; i < g_nnames; i++) {
-        norm(g_names[i], b, sizeof(b));
-        float s = score(a, b);
-        const float s2 = score(f, b);
-        if (s2 > s) {
-            s = s2;
-        }
-        if (s < 0.6f) {
-            continue;
-        }
-        /* the disc's region first (1 North America, 2 Japan, 4 the rest), no demos */
-        const char *nm = g_names[i];
-        if (strstr(nm, "(Demo)") || strstr(nm, "(Beta)") || strstr(nm, "(Proto)")) {
-            s -= 0.3f;
-        }
-        if (((g->regions & 4) && strstr(nm, "(Europe")) || ((g->regions & 1) && strstr(nm, "(USA")) ||
-            ((g->regions & 2) && strstr(nm, "(Japan"))) {
-            s += 0.05f;
-        }
+        const float s = game_score(g, a, f, raw, g_names[i]);
         if (s > bs) {
             bs = s;
-            best = nm;
+            best = g_names[i];
         }
     }
     return best;
@@ -1313,7 +1356,10 @@ static int fetch_thread(void *arg)
         const int left = L.nq;
         SDL_UnlockMutex(L.mu);
         snprintf(L.status, sizeof(L.status), "%s (%d)", g->g.title, left + 1);
-        if (!names_load()) {
+        SDL_LockMutex(L.names_mu);
+        const bool have = names_load();
+        SDL_UnlockMutex(L.names_mu);
+        if (!have) {
             break;
         }
         XdGame named = g->g;            /* matched by the disc's name, not the user's */
@@ -1359,6 +1405,229 @@ void lib_fetch_cover(LibGame *g)
     }
     SDL_UnlockMutex(L.mu);
     fetch_start();
+}
+
+/* ------------------------------------------------------------ the cover picker
+ * Box art names for a game to choose from (the Games screen's game, its
+ * cover chosen by hand: the one found first was another edition's, or none
+ * was found, #318): libretro-thumbnails' list, read on a thread of its own;
+ * the names that fit the game best, or the words typed; a name's picture
+ * fetched into covers/preview while it is the one looked at. */
+
+static SDL_AtomicInt g_names_state;    /* 0 not asked, 1 being read, 2 read, 3 failed */
+
+static int names_thread(void *arg)
+{
+    (void)arg;
+    SDL_LockMutex(L.names_mu);
+    const bool ok = names_load();
+    SDL_UnlockMutex(L.names_mu);
+    L.status[0] = 0;
+    SDL_SetAtomicInt(&g_names_state, ok ? 2 : 3);
+    return 0;
+}
+
+void lib_cover_picker_open(void)
+{
+    SDL_CompareAndSwapAtomicInt(&g_names_state, 3, 0);     /* failed: tried again */
+}
+
+/* the words typed, each one a word of the name starts with (all of them),
+ * the names with fewer others first; under 0: not it */
+static float query_score(const char *q, const char *nm)
+{
+    char b[256], qq[128], tmp[256];
+    norm(nm, b, sizeof(b));
+    norm(q, qq, sizeof(qq));
+    int nq = 0, hit = 0;
+    char qcopy[128];
+    snprintf(qcopy, sizeof(qcopy), "%s", qq);
+    for (char *s = qcopy, *w; (w = tok(&s, " "));) {
+        if (!*w) {
+            continue;
+        }
+        nq++;
+        const size_t wl = strlen(w);
+        snprintf(tmp, sizeof(tmp), "%s", b);
+        for (char *t = tmp, *x; (x = tok(&t, " "));) {
+            if (!strncmp(x, w, wl)) {
+                hit++;
+                break;
+            }
+        }
+    }
+    if (!nq || hit < nq) {
+        return -1;
+    }
+    return 1.0f + score(qq, b);
+}
+
+int lib_cover_candidates(const LibGame *lg, const char *query, const char **out, int max)
+{
+    const int st = SDL_GetAtomicInt(&g_names_state);
+    if (st == 3) {
+        return -2;
+    }
+    if (st != 2) {
+        if (L.names_mu && SDL_CompareAndSwapAtomicInt(&g_names_state, 0, 1)) {
+            SDL_Thread *t = SDL_CreateThread(names_thread, "lib-names", NULL);
+            if (t) {
+                SDL_DetachThread(t);
+            } else {
+                SDL_SetAtomicInt(&g_names_state, 3);
+            }
+        }
+        return -1;
+    }
+    /* the last answer kept: the same game and words give the same names */
+    enum { KEEP = 64 };
+    static const LibGame *s_game;
+    static char s_query[128];
+    static const char *s_names[KEEP];
+    static int s_n = -1;
+    if (s_game != lg || strcmp(s_query, query ? query : "") || s_n < 0) {
+        s_game = lg;
+        snprintf(s_query, sizeof(s_query), "%s", query ? query : "");
+        XdGame named = lg->g;           /* the disc's name, not the user's */
+        if (lg->orig[0]) {
+            snprintf(named.title, sizeof(named.title), "%s", lg->orig);
+        }
+        char a[256], f[256], raw[512];
+        game_words(&named, a, sizeof(a), f, sizeof(f), raw, sizeof(raw));
+        float sc[KEEP];
+        s_n = 0;
+        for (int i = 0; i < g_nnames; i++) {
+            const float s = s_query[0] ? query_score(s_query, g_names[i])
+                                       : game_score(&named, a, f, raw, g_names[i]);
+            if (s < 0) {
+                continue;
+            }
+            int at = s_n < KEEP ? s_n : KEEP - 1;
+            if (s_n == KEEP && s <= sc[KEEP - 1]) {
+                continue;
+            }
+            while (at > 0 && sc[at - 1] < s) {
+                sc[at] = sc[at - 1];
+                s_names[at] = s_names[at - 1];
+                at--;
+            }
+            sc[at] = s;
+            s_names[at] = g_names[i];
+            if (s_n < KEEP) {
+                s_n++;
+            }
+        }
+    }
+    const int n = s_n < max ? s_n : max;
+    for (int i = 0; i < n; i++) {
+        out[i] = s_names[i];
+    }
+    return n;
+}
+
+static void preview_path(const char *name, char *out, size_t n)
+{
+    char d[1100];
+    covers_dir(d, sizeof(d));
+    uint64_t h = 1469598103934665603ull;
+    for (const char *c = name; *c; c++) {
+        h = (h ^ (uint8_t)*c) * 1099511628211ull;
+    }
+    snprintf(out, n, "%s/preview", d);
+    SDL_CreateDirectory(out);
+    snprintf(out, n, "%s/preview/%016llx.png", d, (unsigned long long)h);
+}
+
+static struct {
+    SDL_Mutex *mu;
+    char want[512];             /* the name whose picture is looked at */
+    char failed[512];           /* the last one that couldn't be had */
+    SDL_AtomicInt busy;
+} P;
+
+static int preview_thread(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        char nm[512], p[1200];
+        SDL_LockMutex(P.mu);
+        snprintf(nm, sizeof(nm), "%s", P.want);
+        SDL_UnlockMutex(P.mu);
+        preview_path(nm, p, sizeof(p));
+        SDL_PathInfo pi;
+        if (nm[0] && !SDL_GetPathInfo(p, &pi)) {
+            char esc[1600], url[1800];
+            url_escape(nm, esc, sizeof(esc));
+            snprintf(url, sizeof(url), THUMBS "%s", esc);
+            if (!download(url, p)) {
+                SDL_LockMutex(P.mu);
+                snprintf(P.failed, sizeof(P.failed), "%s", nm);
+                SDL_UnlockMutex(P.mu);
+            }
+        }
+        SDL_LockMutex(P.mu);
+        const bool same = !strcmp(nm, P.want);
+        if (same) {
+            SDL_SetAtomicInt(&P.busy, 0);
+        }
+        SDL_UnlockMutex(P.mu);
+        if (same) {
+            return 0;
+        }
+    }
+}
+
+UiTex *lib_cover_preview(const char *name, bool *failed)
+{
+    static UiTex *s_tex;
+    static char s_name[512];
+    *failed = false;
+    if (!name || !name[0]) {
+        return NULL;
+    }
+    if (s_tex && !strcmp(s_name, name)) {
+        return s_tex;
+    }
+    char p[1200];
+    preview_path(name, p, sizeof(p));
+    SDL_PathInfo pi;
+    if (SDL_GetPathInfo(p, &pi) && pi.size > 0) {
+        UiTex *t = lib_load_png(p);
+        if (t) {
+            if (s_tex) {
+                ui_texture_free(s_tex);
+            }
+            s_tex = t;
+            snprintf(s_name, sizeof(s_name), "%s", name);
+            return s_tex;
+        }
+    }
+    if (!P.mu) {
+        P.mu = SDL_CreateMutex();
+    }
+    SDL_LockMutex(P.mu);
+    *failed = !strcmp(P.failed, name);
+    if (!*failed) {
+        snprintf(P.want, sizeof(P.want), "%s", name);
+    }
+    SDL_UnlockMutex(P.mu);
+    if (!*failed && SDL_CompareAndSwapAtomicInt(&P.busy, 0, 1)) {
+        SDL_Thread *t = SDL_CreateThread(preview_thread, "lib-preview", NULL);
+        if (t) {
+            SDL_DetachThread(t);
+        } else {
+            SDL_SetAtomicInt(&P.busy, 0);
+        }
+    }
+    return NULL;
+}
+
+bool lib_set_cover_name(LibGame *g, const char *name)
+{
+    char p[1200];
+    preview_path(name, p, sizeof(p));
+    SDL_PathInfo pi;
+    return SDL_GetPathInfo(p, &pi) && pi.size > 0 && lib_set_cover_file(g, p);
 }
 
 void lib_fetch_all_covers(void)

@@ -1,5 +1,5 @@
 /*
- * hakuX native core, app front end (libhakuxcore.so): SDL3 window and input,
+ * xbased native core, app front end (libxbasedcore.so): SDL3 window and input,
  * the core on its own thread, and the HLE GPU's frames presented (through
  * its Vulkan swapchain).
  * Independent of xemu: it talks to native/core and the HLE GPU's display only.
@@ -50,7 +50,7 @@ void nc_present_stats(float *fps, float *avg_ms, float *last_ms);
 /* A title frame has been on screen (any thread). */
 bool nc_present_shown(void);
 
-/* vklayer.c — debug.hakux.vkvalidation=1: the Khronos validation layer in
+/* vklayer.c — debug.xbased.vkvalidation=1: the Khronos validation layer in
  * front of the custom driver, its vkGetInstanceProcAddr returned in place of
  * the driver's (drv_gipa as it is otherwise, or without the layer). */
 void *nc_vk_layers(void *drv_gipa);

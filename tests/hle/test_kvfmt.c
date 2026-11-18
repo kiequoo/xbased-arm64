@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Kelvin values in a surface's format (hw/xbox/hle/pb/kvfmt.c).
+ * xbased HLE GPU — Kelvin values in a surface's format (hw/xbox/hle/pb/kvfmt.c).
  */
 #include "hle_test.h"
 

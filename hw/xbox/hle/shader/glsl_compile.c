@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — GLSL -> SPIR-V via glslang C API.
+ * xbased HLE GPU — GLSL -> SPIR-V via glslang C API.
  */
 #include "hw/xbox/hle/base.h"
 #include "hw/xbox/hle/shader/glsl_compile.h"
@@ -8,7 +8,7 @@
 #include <glslang/Include/glslang_c_interface.h>
 #ifdef __ANDROID__
 #include <android/log.h>
-#define GLSL_LOG(...) __android_log_print(ANDROID_LOG_ERROR, "hakuX-hle-glsl", __VA_ARGS__)
+#define GLSL_LOG(...) __android_log_print(ANDROID_LOG_ERROR, "xbased-hle-glsl", __VA_ARGS__)
 #else
 #define GLSL_LOG(...) fprintf(stderr, __VA_ARGS__)
 #endif
@@ -175,6 +175,7 @@ uint32_t *hle_glsl_compile(HleShaderStage stage, const char *src,
 {
     glslang_stage_t st = stage == HLE_SHADER_VERTEX ? GLSLANG_STAGE_VERTEX :
                          stage == HLE_SHADER_FRAGMENT ? GLSLANG_STAGE_FRAGMENT :
+                         stage == HLE_SHADER_GEOMETRY ? GLSLANG_STAGE_GEOMETRY :
                          GLSLANG_STAGE_COMPUTE;
     const glslang_input_t input = {
         .language = GLSLANG_SOURCE_GLSL,

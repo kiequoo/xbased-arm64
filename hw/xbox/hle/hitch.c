@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — stutter / hang monitor (see hitch.h).
+ * xbased HLE GPU — stutter / hang monitor (see hitch.h).
  *
  * Cost: activity spans at rare transitions (a counter read each), one
  * snapshot per guest flip (two thread-CPU clock reads, a short lock), and a
@@ -19,7 +19,7 @@ HleHitchThr g_hitch_thr[HLE_HT_N];
 __thread int8_t t_hitch = -1;
 bool g_hitch_on;
 
-#define TAG          "hakuX-hle-hitch"
+#define TAG          "xbased-hle-hitch"
 #define EIP_SLOTS    64
 #define TICK_IDLE_US 10000
 #define TICK_SMP_US  1000
@@ -338,11 +338,11 @@ static void init_once(void)
     }
     g_h.init = true;
     hle_mutex_init(&g_h.mx);
-    const char *e = getenv("HAKUX_HLE_HITCH_MS");
+    const char *e = getenv("XBASED_HLE_HITCH_MS");
     g_h.stutter_ms_env = e ? atof(e) : 0.0f;
-    e = getenv("HAKUX_HLE_HANG_MS");
+    e = getenv("XBASED_HLE_HANG_MS");
     g_h.hang_ms = e && atof(e) > 0 ? atof(e) : 500.0f;
-    e = getenv("HAKUX_HLE_HITCH_GTRACE");
+    e = getenv("XBASED_HLE_HITCH_GTRACE");
     g_h.gtrace_left = e ? (unsigned)atoi(e) : 0;
 }
 
@@ -387,8 +387,8 @@ static void hang_snapshot(void)
             (uint32_t)env->regs[R_EBP], esp, fs);
     hle_log(TAG, "hang code @%08x: %s", eip - 16, hx);
     hle_log(TAG, "hang stack @%08x: %s", esp, sk);
-    /* debug: HAKUX_HLE_HITCH_PEEK=<hex va>:<len>[,...], guest memory at the hang */
-    const char *pk = getenv("HAKUX_HLE_HITCH_PEEK");
+    /* debug: XBASED_HLE_HITCH_PEEK=<hex va>:<len>[,...], guest memory at the hang */
+    const char *pk = getenv("XBASED_HLE_HITCH_PEEK");
     while (pk && *pk) {
         char *end;
         uint32_t va = (uint32_t)strtoul(pk, &end, 16), len = 64;
@@ -495,16 +495,16 @@ static void *wd_thread(void *opaque)
 
 /* ---- frame windows ------------------------------------------------------------- */
 
-/* The monitor's start, at the first frame (HAKUX_HLE_HITCH=0: off); true
+/* The monitor's start, at the first frame (XBASED_HLE_HITCH=0: off); true
  * when it just started. */
 static bool start(void)
 {
     if (g_h.started) {
         return false;
     }
-    const char *e = getenv("HAKUX_HLE_HITCH");
+    const char *e = getenv("XBASED_HLE_HITCH");
     g_h.started = true;
-    if (!HAKUX_DIAG || (e && atoi(e) == 0)) {
+    if (!XBASED_DIAG || (e && atoi(e) == 0)) {
         return false;                       /* (a build made to investigate only) */
     }
     init_once();
@@ -757,7 +757,7 @@ static void display_eval(uint32_t id, const FrameT *f)
             "(vs the last front)%s%s%s", no, id, fint, exp, skipped, reason, ts, tw, tr, fl, tf,
             tu, sk, g ? " | guest: " : "", g ? g->det : "");
     if (g_h.gtrace_left) {
-        /* debug (HAKUX_HLE_HITCH_GTRACE=n): the vblanks, flips and the
+        /* debug (XBASED_HLE_HITCH_GTRACE=n): the vblanks, flips and the
          * guest's interrupt handling that led here */
         g_h.gtrace_left--;
         char why[32];

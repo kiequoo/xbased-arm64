@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Kelvin's immediate vertex data (vimm.h).
+ * xbased HLE GPU — Kelvin's immediate vertex data (vimm.h).
  *
  * What each method writes is the hardware's as xemu's pgraph has it (which
  * follows the nxdk pgraph tests): the forms with fewer components than four
@@ -201,12 +201,12 @@ bool hle_vimm_element(uint32_t fmt, const uint8_t *p, float out[4])
             v[i] = (float)p[i] / 255.0f;
         }
         break;
-    case 1:     /* -32768 is -1 too */
+    case 1:     /* S1: (2x + 1) / 65535, the console's (vsh.h s1_mask) */
     case 5:
         for (uint32_t i = 0; i < n; i++) {
             int16_t x;
             memcpy(&x, p + 2 * i, 2);
-            v[i] = type == 5 ? (float)x : x <= -32767 ? -1.0f : (float)x / 32767.0f;
+            v[i] = type == 5 ? (float)x : (2.0f * (float)x + 1.0f) / 65535.0f;
         }
         break;
     case 2:

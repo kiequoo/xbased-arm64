@@ -1,5 +1,5 @@
 /*
- * hakuX native core â€” the guest CPU on x86-64 hosts (Windows): a dynamic
+ * xbased native core â€” the guest CPU on x86-64 hosts (Windows): a dynamic
  * translator from the title's x86-32 code to x86-64, behind the same
  * interface as the FEX embedding (cpu.h).
  *
@@ -27,6 +27,7 @@
  */
 #include "native/cpu/cpu.h"
 #include "native/cpu/x64asm.h"
+#include "native/cpu/rsqrt_p3.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -36,6 +37,7 @@
 #endif
 
 #include <Zydis/Zydis.h>
+#include <xmmintrin.h>
 
 #include <algorithm>
 #include <string>
@@ -184,7 +186,7 @@ struct NcCpu {
 
 static NcCpu *g_cpu;
 /* Diagnostics, in builds made with NC_CPU_DIAG only (the tests' cputest; the
- * app with -DHAKUX_CPU_DIAG=ON): a release has none of it.
+ * app with -DXBASED_CPU_DIAG=ON): a release has none of it.
  * NC_SMC_CHECK=1: no chaining and no dispatcher table, so every block is
  * entered through the lookup, which compares the guest bytes it was made
  * from with what is there now, logs a block whose code changed without an
@@ -491,7 +493,7 @@ static bool build_stubs(NcCpu *cpu)
     a.jmp(cpu->s_dispatch);
 
     if (a.failed) {
-        nc_log("hakuX-native", "cpu: the stubs don't assemble");
+        nc_log("xbased-native", "cpu: the stubs don't assemble");
         return false;
     }
     return true;
@@ -546,6 +548,51 @@ static bool guest_readable(uint32_t va, uint32_t n)
             return false;
         }
         g_ok_page = p;
+    }
+    return true;
+}
+
+/* RSQRTSS / RSQRTPS as the Pentium III gives them (rsqrt_p3.h): on a host
+ * whose own approximation differs (an AMD one), the translator puts the
+ * model in their place; an Intel host's are the console's and stay. */
+static bool g_rsqrt_model;
+
+enum { RQ_7FF, RQ_FF, RQ_380, RQ_ABS, RQ_MINNORM, RQ_INF, RQ_INDEF, RQ_QUIET, RQ_SIGN, RQ_COUNT };
+alignas(16) static const uint32_t k_rsqrt_const[RQ_COUNT][4] = {
+    {0x7FF, 0x7FF, 0x7FF, 0x7FF}, {0xFF, 0xFF, 0xFF, 0xFF}, {380, 380, 380, 380},
+    {0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF}, {0x00800000, 0x00800000, 0x00800000, 0x00800000},
+    {0x7F800000, 0x7F800000, 0x7F800000, 0x7F800000}, {0xFFC00000, 0xFFC00000, 0xFFC00000, 0xFFC00000},
+    {0x00400000, 0x00400000, 0x00400000, 0x00400000}, {0x80000000, 0x80000000, 0x80000000, 0x80000000},
+};
+
+/* The host's RSQRTSS against the model: every table index with both
+ * exponent parities, the low mantissa bits varied, and the special values. */
+static bool rsqrt_host_is_model()
+{
+    static const uint32_t special[] = {0, 0x80000000u, 1, 0x807FFFFFu, 0x7F800000u, 0xFF800000u,
+                                       0x7FC00000u, 0xFFC00000u, 0x7F800001u, 0xBF800000u, 0x7F7FFFFFu};
+    for (uint32_t x : special) {
+        float f, r;
+        memcpy(&f, &x, 4);
+        r = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(f)));
+        uint32_t h;
+        memcpy(&h, &r, 4);
+        if (h != nc_rsqrt_model(x)) {
+            return false;
+        }
+    }
+    for (uint32_t i = 0; i < 4096; i++) {
+        for (uint32_t e = 2; e < 254; e += 50) {
+            const uint32_t x = ((e & ~1u) | (i >> 11)) << 23 | (i & 2047u) << 12 | ((i * 2654435761u) & 0xFFFu);
+            float f, r;
+            memcpy(&f, &x, 4);
+            r = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(f)));
+            uint32_t h;
+            memcpy(&h, &r, 4);
+            if (h != nc_rsqrt_model(x)) {
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -944,6 +991,91 @@ struct Translator {
         a.op(ZYDIS_MNEMONIC_PUSH, {R(ZYDIS_REGISTER_R13)});
         a.op(ZYDIS_MNEMONIC_POPFQ, {});
         return true;
+    }
+
+    /* RSQRTSS / RSQRTPS by the model (rsqrt_p3.h), in XMM8-15 (the guest has
+     * XMM0-7), R8, R13 and R14: no flags touched. The source to XMM8 first
+     * (an FS operand goes through r13); the table's entries by PEXTRW /
+     * PINSRW, SSE2's (no gather on the hosts it has to run on). */
+    bool rsqrt(const ZydisDecodedInstruction &in, const ZydisDecodedOperand *ops)
+    {
+        const bool ps = in.mnemonic == ZYDIS_MNEMONIC_RSQRTPS;
+        const ZydisDecodedOperand &d = ops[0], &s = ops[1];
+        if (in.encoding != ZYDIS_INSTRUCTION_ENCODING_LEGACY || d.type != ZYDIS_OPERAND_TYPE_REGISTER) {
+            return false;
+        }
+        const ZydisRegister X8 = ZYDIS_REGISTER_XMM8, X9 = ZYDIS_REGISTER_XMM9, X10 = ZYDIS_REGISTER_XMM10,
+                            X11 = ZYDIS_REGISTER_XMM11, X12 = ZYDIS_REGISTER_XMM12, X13 = ZYDIS_REGISTER_XMM13,
+                            X14 = ZYDIS_REGISTER_XMM14, X15 = ZYDIS_REGISTER_XMM15;
+        if (s.type == ZYDIS_OPERAND_TYPE_REGISTER) {
+            a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X8), R(s.reg.value)});
+        } else {
+            ZydisEncoderOperand m;
+            if (s.type != ZYDIS_OPERAND_TYPE_MEMORY || !mem_operand(s, m)) {
+                return false;
+            }
+            /* (MOVAPS: RSQRTPS's alignment fault where it would have one) */
+            m.mem.size = ps ? 16 : 4;
+            if (!a.op(ps ? ZYDIS_MNEMONIC_MOVAPS : ZYDIS_MNEMONIC_MOVSS, {R(X8), m}, true)) {
+                return false;
+            }
+        }
+        const ZydisRegister K = ZYDIS_REGISTER_R13, T = ZYDIS_REGISTER_R14;
+        auto C = [&](int i) { return M(K, i * 16, 16); };
+        a.op(ZYDIS_MNEMONIC_MOV, {R(K), I((int64_t)(uintptr_t)k_rsqrt_const)});
+        a.op(ZYDIS_MNEMONIC_MOV, {R(T), I((int64_t)(uintptr_t)k_rsqrt_tab)});
+        /* the mantissa: table[(x >> 13) & 2047] << 11 */
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X9), R(X8)});
+        a.op(ZYDIS_MNEMONIC_PSRLD, {R(X9), I(13)});
+        a.op(ZYDIS_MNEMONIC_PAND, {R(X9), C(RQ_7FF)});
+        a.op(ZYDIS_MNEMONIC_PXOR, {R(X10), R(X10)});
+        for (int i = 0; i < (ps ? 4 : 1); i++) {
+            a.op(ZYDIS_MNEMONIC_PEXTRW, {R(ZYDIS_REGISTER_R8D), R(X9), I(2 * i)});
+            a.op(ZYDIS_MNEMONIC_MOVZX, {R(ZYDIS_REGISTER_R8D), M(T, 0, 2, ZYDIS_REGISTER_R8, 2)});
+            a.op(ZYDIS_MNEMONIC_PINSRW, {R(X10), R(ZYDIS_REGISTER_R8D), I(2 * i)});
+        }
+        a.op(ZYDIS_MNEMONIC_PSLLD, {R(X10), I(11)});
+        /* the exponent: (380 - e) / 2 */
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X11), R(X8)});
+        a.op(ZYDIS_MNEMONIC_PSRLD, {R(X11), I(23)});
+        a.op(ZYDIS_MNEMONIC_PAND, {R(X11), C(RQ_FF)});
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X12), C(RQ_380)});
+        a.op(ZYDIS_MNEMONIC_PSUBD, {R(X12), R(X11)});
+        a.op(ZYDIS_MNEMONIC_PSRLD, {R(X12), I(1)});
+        a.op(ZYDIS_MNEMONIC_PSLLD, {R(X12), I(23)});
+        a.op(ZYDIS_MNEMONIC_POR, {R(X12), R(X10)});
+        /* the masks: zero / denormal (X14), NaN (X15), negative (X11), +inf (X9) */
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X13), R(X8)});
+        a.op(ZYDIS_MNEMONIC_PAND, {R(X13), C(RQ_ABS)});
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X14), C(RQ_MINNORM)});
+        a.op(ZYDIS_MNEMONIC_PCMPGTD, {R(X14), R(X13)});
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X15), R(X13)});
+        a.op(ZYDIS_MNEMONIC_PCMPGTD, {R(X15), C(RQ_INF)});
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X11), R(X8)});
+        a.op(ZYDIS_MNEMONIC_PSRAD, {R(X11), I(31)});
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X9), R(X8)});
+        a.op(ZYDIS_MNEMONIC_PCMPEQD, {R(X9), C(RQ_INF)});
+        /* the result, the stronger case last: +inf 0, a negative the default
+         * NaN, a NaN quieted, zero or a denormal an infinity of its sign */
+        a.op(ZYDIS_MNEMONIC_PANDN, {R(X9), R(X12)});
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X10), R(X11)});
+        a.op(ZYDIS_MNEMONIC_PANDN, {R(X10), R(X9)});
+        a.op(ZYDIS_MNEMONIC_PAND, {R(X11), C(RQ_INDEF)});
+        a.op(ZYDIS_MNEMONIC_POR, {R(X10), R(X11)});
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X9), R(X15)});
+        a.op(ZYDIS_MNEMONIC_PANDN, {R(X9), R(X10)});
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X11), R(X8)});
+        a.op(ZYDIS_MNEMONIC_POR, {R(X11), C(RQ_QUIET)});
+        a.op(ZYDIS_MNEMONIC_PAND, {R(X11), R(X15)});
+        a.op(ZYDIS_MNEMONIC_POR, {R(X9), R(X11)});
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X10), R(X14)});
+        a.op(ZYDIS_MNEMONIC_PANDN, {R(X10), R(X9)});
+        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X11), R(X8)});
+        a.op(ZYDIS_MNEMONIC_PAND, {R(X11), C(RQ_SIGN)});
+        a.op(ZYDIS_MNEMONIC_POR, {R(X11), C(RQ_INF)});
+        a.op(ZYDIS_MNEMONIC_PAND, {R(X11), R(X14)});
+        a.op(ZYDIS_MNEMONIC_POR, {R(X10), R(X11)});
+        return a.op(ps ? ZYDIS_MNEMONIC_MOVAPS : ZYDIS_MNEMONIC_MOVSS, {R(d.reg.value), R(X10)});
     }
 
     /* Stores a 16-bit then a 32-bit value at a memory operand (SIDT/SGDT). */
@@ -1379,6 +1511,22 @@ struct Translator {
             }
             return generic(in, ops) ? CONTINUE : FAIL;
         }
+        case ZYDIS_MNEMONIC_FXSAVE: {
+            /* MXCSR_MASK as a Pentium III leaves it: 0, the default mask (no
+             * DAZ). The host's own (0x2FFFF on a Ryzen) told the title that
+             * DAZ works (nxdk_low_level_cpu_tests' SSE MXCSR test) */
+            ZydisEncoderOperand m;
+            if (!generic(in, ops) || o0.type != ZYDIS_OPERAND_TYPE_MEMORY || !mem_operand(o0, m, 28)) {
+                return FAIL;
+            }
+            m.mem.size = 4;
+            return a.op(ZYDIS_MNEMONIC_MOV, {m, I(0)}, true) ? CONTINUE : FAIL;
+        }
+        case ZYDIS_MNEMONIC_RSQRTSS: case ZYDIS_MNEMONIC_RSQRTPS:
+            if (g_rsqrt_model) {
+                return rsqrt(in, ops) ? CONTINUE : FAIL;
+            }
+            return generic(in, ops) ? CONTINUE : FAIL;
         default:
             return generic(in, ops) ? CONTINUE : FAIL;
         }
@@ -1414,7 +1562,7 @@ static void flush_all(NcCpu *cpu)
         cpu->frame->shadow_reset = 1; /* the return predictions point into what went (s_restore) */
     }
     cpu->flushes++;
-    nc_log("hakuX-native", "cpu: translation buffer flushed (%llu so far)", (unsigned long long)cpu->flushes);
+    nc_log("xbased-native", "cpu: translation buffer flushed (%llu so far)", (unsigned long long)cpu->flushes);
 }
 
 static void link_block(NcCpu *cpu, Block *b)
@@ -1564,7 +1712,7 @@ static Block *translate(NcCpu *cpu, uint32_t eip, bool bypass)
                 ZydisFormatter fmt;
                 ZydisFormatterInit(&fmt, ZYDIS_FORMATTER_STYLE_INTEL);
                 ZydisFormatterFormatInstruction(&fmt, &in, ops, in.operand_count_visible, txt, sizeof(txt), at, nullptr);
-                nc_log("hakuX-native", "cpu: no translation for %08x: %s (a system op)", at, txt);
+                nc_log("xbased-native", "cpu: no translation for %08x: %s (a system op)", at, txt);
             }
             dep_end = std::max(dep_end, (uint64_t)at + in.length);
             t.sysop(at, NC_SYSOP_OTHER, in.length);
@@ -1641,7 +1789,7 @@ static uint8_t *code_for(NcCpu *cpu, uint32_t eip)
                     while (((const uint8_t *)(uintptr_t)eip)[at] == b->src[at]) {
                         at++;
                     }
-                    nc_log("hakuX-native", "cpu: smc: the code at %08x changed with no invalidation (first at %08x, %u bytes)",
+                    nc_log("xbased-native", "cpu: smc: the code at %08x changed with no invalidation (first at %08x, %u bytes)",
                            eip, eip + at, n);
                 }
                 kill_block(cpu, b);
@@ -1899,7 +2047,7 @@ extern "C" uint8_t *nc_x86_sysop_entry(NcFrame *f)
         return next_for(cpu, f);
     }
     if (!cpu->cfg.sysop(cpu->cfg.opaque, f, op, size)) {
-        nc_log("hakuX-native", "cpu: unhandled system op %d at %08x", (int)op, (uint32_t)f->rip);
+        nc_log("xbased-native", "cpu: unhandled system op %d at %08x", (int)op, (uint32_t)f->rip);
         abort();
     }
     return next_for(cpu, f);
@@ -2050,7 +2198,11 @@ extern "C" void nc_frame_load(NcFrame *f, const NcCpuContext *c)
 static void fx_reset(uint8_t *fx)
 {
     memset(fx, 0, 512);
-    const uint16_t fcw = 0x037F; /* FNINIT's */
+    /* the Xbox kernel's for a new thread (ps.c's NPX area): double precision,
+     * every exception masked. FNINIT's 0x037F (extended) rounded a double
+     * twice, 64 bits then 53 at the store: nxdk_low_level_cpu_tests'
+     * TestFloat F64 (add, sub, mul, div, sqrt) failed on it */
+    const uint16_t fcw = 0x027F;
     const uint32_t mxcsr = 0x1F80;
     memcpy(fx + FX_FCW, &fcw, 2);
     memcpy(fx + FX_MXCSR, &mxcsr, 4);
@@ -2140,17 +2292,24 @@ extern "C" void nc_context_import(NcCpuContext *c, const NcCpuState *st)
 extern "C" NcCpu *nc_cpu_create(const NcCpuConfig *cfg, uint32_t fs_base)
 {
     if (cfg->membase != nullptr) {
-        nc_log("hakuX-native", "cpu: guest memory must be at host address 0 (it is at %p)", (void *)cfg->membase);
+        nc_log("xbased-native", "cpu: guest memory must be at host address 0 (it is at %p)", (void *)cfg->membase);
         return nullptr;
     }
     auto *cpu = new NcCpu();
     cpu->cfg = *cfg;
     cpu->fs_base = fs_base;
     ZydisDecoderInit(&cpu->dec, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32);
+    static bool rsqrt_probed;
+    if (!rsqrt_probed) {
+        rsqrt_probed = true;
+        g_rsqrt_model = !rsqrt_host_is_model();
+        nc_log("xbased-native", "cpu: RSQRTSS/RSQRTPS %s", g_rsqrt_model ? "by the Pentium III's table (the host's differ)"
+                                                                         : "native (the host's are the Pentium III's)");
+    }
 
     cpu->region = (uint8_t *)VirtualAlloc(nullptr, REGION_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
     if (!cpu->region) {
-        nc_log("hakuX-native", "cpu: no translation buffer (%lu)", GetLastError());
+        nc_log("xbased-native", "cpu: no translation buffer (%lu)", GetLastError());
         delete cpu;
         return nullptr;
     }
@@ -2181,19 +2340,19 @@ extern "C" NcCpu *nc_cpu_create(const NcCpuConfig *cfg, uint32_t fs_base)
     if (const char *e = getenv("NC_SMC_CHECK")) {
         g_smc_check = atoi(e) != 0;
         if (g_smc_check) {
-            nc_log("hakuX-native", "cpu: NC_SMC_CHECK: every block checked against its code as it is entered (slow)");
+            nc_log("xbased-native", "cpu: NC_SMC_CHECK: every block checked against its code as it is entered (slow)");
         }
     }
 #endif
     cpu->veh = AddVectoredExceptionHandler(1, poll_handler);
-    nc_log("hakuX-native", "cpu: x86-64 translator, TSC %.1f MHz, KPCR at %08x", tsc_hz() / 1e6, fs_base);
+    nc_log("xbased-native", "cpu: x86-64 translator, TSC %.1f MHz, KPCR at %08x", tsc_hz() / 1e6, fs_base);
     return cpu;
 }
 
 /* ------------------------------------------------------------ profile */
 
 #ifdef _WIN32
-/* HAKUX_PROF=<start s>,<seconds> (debug): the vCPU thread sampled at about
+/* XBASED_PROF=<start s>,<seconds> (debug): the vCPU thread sampled at about
  * 2 kHz over that window (suspended, its RIP read), and where its time
  * went logged at the end: translated code (and its hottest guest blocks),
  * the stubs, this executable's functions (offsets for llvm-symbolizer:
@@ -2212,7 +2371,7 @@ static DWORD WINAPI prof_thread(void *arg)
     delete (ProfArgs *)arg;
     Sleep(pa.start_s * 1000);
     DWORD tid = pa.cpu->thread_id;
-    if (const char *want = getenv("HAKUX_PROF_THREAD")) {
+    if (const char *want = getenv("XBASED_PROF_THREAD")) {
         /* another thread by its name (SetThreadDescription's), the same report */
         typedef HRESULT(WINAPI * GetDesc)(HANDLE, PWSTR *);
         auto get = (GetDesc)(void *)GetProcAddress(GetModuleHandleA("kernelbase.dll"), "GetThreadDescription");
@@ -2237,7 +2396,7 @@ static DWORD WINAPI prof_thread(void *arg)
             }
         }
         CloseHandle(snap);
-        nc_log("hakuX-prof", "sampling thread \"%s\" (%lu)", want, tid);
+        nc_log("xbased-prof", "sampling thread \"%s\" (%lu)", want, tid);
     }
     HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid);
     if (!th) {
@@ -2347,11 +2506,11 @@ static DWORD WINAPI prof_thread(void *arg)
     if (!n) {
         return 0;
     }
-    nc_log("hakuX-prof", "the vCPU thread ran %.1f%% of the time (%.0f M cycles a second)",
+    nc_log("xbased-prof", "the vCPU thread ran %.1f%% of the time (%.0f M cycles a second)",
            100.0 * (double)(cyc1 - cyc0) / (double)(tsc1 - tsc0), (double)(cyc1 - cyc0) / pa.secs / 1e6);
     auto pct = [n](unsigned v) { return 100.0 * v / n; };
-    nc_log("hakuX-prof", "%u samples: idle (waiting for an interrupt) %.1f%%; busy: translated code %.1f%%, stubs %.1f%%, "
-           "hakux.exe %.1f%%, other modules %.1f%% (in system ops %.1f%%)", n, pct(idle), pct(jit), pct(stubs),
+    nc_log("xbased-prof", "%u samples: idle (waiting for an interrupt) %.1f%%; busy: translated code %.1f%%, stubs %.1f%%, "
+           "xbased.exe %.1f%%, other modules %.1f%% (in system ops %.1f%%)", n, pct(idle), pct(jit), pct(stubs),
            pct(in_exe), pct(other), pct(sysop));
     auto top = [&](auto &map, const char *what, unsigned max) {
         std::vector<std::pair<unsigned, typename std::decay_t<decltype(map)>::key_type>> v;
@@ -2361,9 +2520,9 @@ static DWORD WINAPI prof_thread(void *arg)
         std::sort(v.begin(), v.end(), [](const auto &x, const auto &y) { return x.first > y.first; });
         for (unsigned i = 0; i < v.size() && i < max; i++) {
             if constexpr (std::is_same_v<std::decay_t<decltype(v[i].second)>, std::string>) {
-                nc_log("hakuX-prof", "  %s %s %.1f%%", what, v[i].second.c_str(), pct(v[i].first));
+                nc_log("xbased-prof", "  %s %s %.1f%%", what, v[i].second.c_str(), pct(v[i].first));
             } else {
-                nc_log("hakuX-prof", "  %s %x %.1f%%", what, (unsigned)v[i].second, pct(v[i].first));
+                nc_log("xbased-prof", "  %s %x %.1f%%", what, (unsigned)v[i].second, pct(v[i].first));
             }
         }
     };
@@ -2388,7 +2547,7 @@ static DWORD WINAPI prof_thread(void *arg)
             ZYAN_SUCCESS(ZydisDecoderDecodeFull(&pa.cpu->dec, (const void *)(uintptr_t)at, 16, &in, ops))) {
             ZydisFormatterFormatInstruction(&fmt, &in, ops, in.operand_count_visible, txt, sizeof(txt), at, nullptr);
         }
-        nc_log("hakuX-prof", "  insn %08x %.1f%%  %s", at, pct(hot[i].first), txt);
+        nc_log("xbased-prof", "  insn %08x %.1f%%  %s", at, pct(hot[i].first), txt);
     }
     return 0;
 }
@@ -2399,7 +2558,7 @@ extern "C" void nc_cpu_prof_start(unsigned secs)
 {
 #ifndef _WIN32
     (void)secs;
-    nc_log("hakuX-native", "cpu: the profile is Windows-only");
+    nc_log("xbased-native", "cpu: the profile is Windows-only");
     return;
 #endif
 #ifdef _WIN32
@@ -2413,11 +2572,11 @@ extern "C" void nc_cpu_run(NcCpu *cpu, const NcCpuContext *c)
 {
     NcFrame *f = cpu->frame;
     cpu->thread_id = GetCurrentThreadId();
-#if HAKUX_DIAG && defined(_WIN32)
-    /* HAKUX_PROF (a build made to investigate): the environment was read at
+#if XBASED_DIAG && defined(_WIN32)
+    /* XBASED_PROF (a build made to investigate): the environment was read at
      * every entry here, one for each kernel call's return */
     static bool prof_started;
-    const char *pe = prof_started ? nullptr : getenv("HAKUX_PROF");
+    const char *pe = prof_started ? nullptr : getenv("XBASED_PROF");
     unsigned ps = 0, pn = 0;
     if (pe && sscanf(pe, "%u,%u", &ps, &pn) == 2 && pn) {
         prof_started = true;

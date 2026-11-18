@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — NV2A swizzle for the XG helpers (spec §4.9).
+ * xbased HLE GPU — NV2A swizzle for the XG helpers (spec §4.9).
  * Rect/box NULL = the whole texture; (px,py[,pz]) = destination point
  * (swizzle) or destination point in the linear image (unswizzle).
  */

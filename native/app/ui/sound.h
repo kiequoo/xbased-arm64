@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the dashboard's sounds (sound.c): sci-fi blips and
+ * xbased front end — the dashboard's sounds (sound.c): sci-fi blips and
  * chimes synthesized at start, no files.
  */
 #ifndef NATIVE_APP_UI_SOUND_H

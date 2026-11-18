@@ -1,11 +1,12 @@
 /*
- * hakuX front end — the dashboard (dash.h): its loop, input, lists, and
+ * xbased front end — the dashboard (dash.h): its loop, input, lists, and
  * the main, games and game screens. Settings, controls, memory and online
  * are in dash_settings.c, dash_memory.c.
  */
 #include "native/app/ui/dash.h"
 #include "native/app/ui/console_cfg.h"
 #include "native/app/ui/dash_int.h"
+#include "native/app/ui/pointer.h"
 #include "native/app/ui/shortcut.h"
 #include "native/app/ui/sound.h"
 #include "native/app/ui/update.h"
@@ -21,12 +22,14 @@
 #include "native/app/win_aslr.h"
 #endif
 
-#ifndef XBASED_VERSION
-#define XBASED_VERSION "1.0.104"
-#endif
+#include "xbased_version.h"         /* XBASED_VERSION (cmake/app_win.cmake) */
 
 Dash D;
 static SDL_Window *g_win;
+/* the in-game menu's (dash_ingame): a game runs, its kernel the EEPROM's
+ * writer till it ends; the settings meet the EEPROM back in the dashboard */
+static bool g_game_running;
+static float g_help_under;  /* under the last list begun: where its help goes (dash_help_draw) */
 static void (*g_fs_hook)(void);
 
 void dash_set_fullscreen_hook(void (*toggle)(void))
@@ -35,10 +38,16 @@ void dash_set_fullscreen_hook(void (*toggle)(void))
 }
 
 static bool (*g_ptr_hook)(float *x, float *y);
+static void (*g_pump_hook)(void);
 
 void dash_set_pointer_hook(bool (*where)(float *x, float *y))
 {
     g_ptr_hook = where;
+}
+
+void dash_set_pump_hook(void (*pump)(void))
+{
+    g_pump_hook = pump;
 }
 static UiTex *g_layer, *g_prev;   /* this screen's foreground, the last one's */
 static float g_trans = 1;               /* the transition's progress, 0-1 */
@@ -144,7 +153,13 @@ static int wrap_lines(const char *s, float size, int font, float max_w, char lin
         while (s[n] && n < 511) {
             line[n] = s[n];
             line[n + 1] = 0;
+            const unsigned char *u = (const unsigned char *)s + n;
             if (s[n] == ' ') {
+                last_space = n;
+            } else if (n > 0 && u[0] >= 0xE3 && u[0] <= 0xE9 && !(u[0] == 0xE3 && u[1] == 0x80)) {
+                /* before kana and CJK ideographs too (U+3040-9FFF), as
+                 * Japanese and Chinese break lines; not before their 、。」
+                 * marks (U+3000-303F); Korean breaks at its spaces */
                 last_space = n;
             }
             if (ui_text_width(line, size, font) > max_w) {
@@ -223,9 +238,6 @@ void dash_choose(const char *q, const char *const *choices, int n, void (*on_cho
     D.on_choice = on_choice;
 }
 
-/* the in-game menu's (dash_ingame): a game runs, its kernel the EEPROM's
- * writer till it ends; the settings meet the EEPROM back in the dashboard */
-static bool g_game_running;
 
 void dash_save_cfg(void)
 {
@@ -295,17 +307,34 @@ static void poll_input(void)
     memset(in, 0, sizeof(*in));
     in->pad = pad;
     in->pad_button = -1;
+    if (g_pump_hook) {
+        g_pump_hook();  /* the session frame's mouse, as this window's events (win_main.c) */
+    }
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
         case SDL_EVENT_QUIT:
             D.quit = true;
             break;
+        case SDL_EVENT_WINDOW_FOCUS_GAINED:
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            /* Alt+Tab's Alt let go elsewhere: not taken as still held (#276) */
+            SDL_SetModState(SDL_GetModState() & ~(SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_SHIFT | SDL_KMOD_GUI));
+            break;
         case SDL_EVENT_KEY_DOWN: {
             in->pad = false;
             cursor(false);
             in->key = e.key.key;
             in->mod = e.key.mod;
+#ifdef _WIN32
+            /* Ctrl, Alt and Shift as held now: Alt+Tab's Alt let go in another
+             * window still read as held (#276) */
+            in->mod &= ~(SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_SHIFT);
+            in->mod |= (GetAsyncKeyState(VK_CONTROL) & 0x8000) ? SDL_KMOD_LCTRL : 0;
+            in->mod |= (GetAsyncKeyState(VK_MENU) & 0x8000) ? SDL_KMOD_LALT : 0;
+            in->mod |= (GetAsyncKeyState(VK_SHIFT) & 0x8000) ? SDL_KMOD_LSHIFT : 0;
+            e.key.mod = (SDL_Keymod)in->mod;
+#endif
             in->repeat |= e.key.repeat;
             in->any = true;
             const SDL_Keycode k = e.key.key;
@@ -486,7 +515,7 @@ static void poll_input(void)
         SDL_GetMouseState(&mx, &my);
         dpi = SDL_GetWindowPixelDensity(g_win);
     }
-    in->mx = g_cursor_at > 0 ? mx * dpi / ui_scale() : -1;
+    in->mx = g_cursor_at > 0 ? (mx * dpi - ui_ox()) / ui_scale() : -1;
     in->my = g_cursor_at > 0 ? my * dpi / ui_scale() : -1;
     if (g_cursor_at <= 0) {
         in->moved = in->click = in->rclick = false;
@@ -504,9 +533,9 @@ static void poll_input(void)
     }
 }
 
-/* Scripted input and pictures (tests): HAKUX_AUTO_CMD=<file>, a command a
+/* Scripted input and pictures (tests): XBASED_AUTO_CMD=<file>, a command a
  * line as it grows: UP DOWN LEFT RIGHT OK BACK X Y LB RB, "shot <name>" (a
- * BMP in HAKUX_AUTO_DIR), "quit"; real input events too: "KEY <name>",
+ * BMP in XBASED_AUTO_DIR), "quit"; real input events too: "KEY <name>",
  * "MOUSE x y" (720p units), CLICK, RCLICK, "WHEEL n". */
 static char g_shot_req[256];
 static long long g_auto_off = -1;   /* -1: from the file's end at the next look */
@@ -515,7 +544,7 @@ static void auto_poll(void)
 {
     long long off = g_auto_off;
     static double seen;
-    const char *path = getenv("HAKUX_AUTO_CMD");
+    const char *path = getenv("XBASED_AUTO_CMD");
     if (!path || ui_time() - seen < 0.1) {
         return;
     }
@@ -585,7 +614,7 @@ static void auto_poll(void)
                 }
             }
         } else if (!strncmp(line, "shot ", 5)) {
-            const char *dir = getenv("HAKUX_AUTO_DIR");
+            const char *dir = getenv("XBASED_AUTO_DIR");
             snprintf(g_shot_req, sizeof(g_shot_req), "%s/shot_%s.bmp", dir ? dir : ".", line + 5);
         } else if (!strncmp(line, "size ", 5)) {
             int w = 0, h = 0;
@@ -614,6 +643,7 @@ static void auto_poll(void)
             float x = 0, y = 0;
             if (sscanf(line + 6, "%f %f", &x, &y) == 2) {
                 const float k = ui_scale() / SDL_GetWindowPixelDensity(g_win);
+                x += ui_ox() / ui_scale();      /* (the 4:3 area's left edge) */
                 SDL_WarpMouseInWindow(g_win, x * k, y * k);
                 SDL_Event e = {0};
                 e.type = SDL_EVENT_MOUSE_MOTION;
@@ -663,7 +693,7 @@ static void auto_shot(void)
 /* ------------------------------------------------------------ drawing helpers */
 
 static const char *const k_key[6] = {"Enter", "Esc", "Del", "Tab", "Z / C", "V"};
-static const char *const k_pad_wide[6] = {NULL, NULL, NULL, NULL, "LT / RT", "View"};
+static const char *const k_pad_wide[6] = {NULL, NULL, NULL, NULL, "LT / RT", "Back"};  /* the original controller's name for it (#322) */
 
 void draw_button_glyph(float x, float y, int which, float size)
 {
@@ -672,7 +702,7 @@ void draw_button_glyph(float x, float y, int which, float size)
     static const char *const k_pad[4] = {"A", "B", "X", "Y"};
     static const char *const k_key[4] = {"Enter", "Esc", "Del", "Tab"};
     if (D.in.pad && which >= 4) {
-        /* the triggers, the View button: their names on a dark key */
+        /* the triggers, the Back button: their names on a dark key */
         const float w = ui_text_width(k_pad_wide[which], size * 0.56f, UI_FONT_BOLD) + size * 0.7f;
         ui_round(x, y + size * 0.08f, w, size * 0.84f, size * 0.42f, ui_alpha((UiColor){0x30, 0x34, 0x30, 0xFF}, 0.95f));
         ui_text(x + w / 2, y + size * 0.19f, k_pad_wide[which], size * 0.56f, UI_FONT_BOLD, UI_WHITE, UI_ALIGN_CENTER);
@@ -847,6 +877,8 @@ void list_begin(List *l, float x, float y, float w, float h, float row_h)
     l->scroll = &D.scroll[dash_top()];
     l->visible = (int)(h / row_h);
     l->focused = !D.ask;
+    dash_help(NULL, HELP_NOW);  /* a list's rows give this frame's (another screen's went with it) */
+    g_help_under = y + h + 30;  /* its frame (14) and a gap */
     ui_round(x - 14, y - 14, w + 28, h + 28, 14, UI_PANEL);
     ui_round_outline(x - 14, y - 14, w + 28, h + 28, 14, 1.5f, ui_alpha(UI_GREEN, 0.35f));
     ui_clip(x - 12, y - 4, w + 24, h + 8);
@@ -898,17 +930,27 @@ bool list_row(List *l, const char *label, const char *value, int *delta)
     const int i = l->count;
     if (row_common(l, delta, &ry, &sel)) {
         const float ty = ry + (l->row_h - 26) / 2 - 2;
+        /* the label and the value share the row: each its width while
+         * they fit, else the value at least half of it, the label the rest
+         * (#336: a long label cut while a short value left room, a game's
+         * "global (...)" values cut beside short labels) */
+        const bool arrows = delta && sel;
+        const int vfont = arrows ? UI_FONT_BOLD : UI_FONT_REGULAR, lfont = sel ? UI_FONT_BOLD : UI_FONT_REGULAR;
+        const float lw = ui_text_width(label, 26, lfont), lfree = l->w - 24 - lw - (arrows ? 52 : 0) - 40;
+        const float vmax = lfree > l->w * 0.5f ? lfree : l->w * 0.5f;
+        const float vwant = value ? ui_text_width(value, 26, vfont) : 0;
+        const float vroom = value ? (vwant < vmax ? vwant : vmax) + (arrows ? 52 : 0) + 28 : 0;
         ui_text_fit(l->x + 12, ty, label, 26, sel ? UI_FONT_BOLD : UI_FONT_REGULAR, sel ? UI_WHITE : UI_GREY,
-                    UI_ALIGN_LEFT, value ? l->w * 0.55f : l->w - 24);
+                    UI_ALIGN_LEFT, l->w - 24 - vroom);
         if (value) {
             const float vx = l->w - 12;
             UiColor vc = sel ? UI_GREEN_HI : UI_GREEN;
-            if (delta && sel) {
+            if (arrows) {
                 ui_text(l->x + vx, ty, ">", 26, UI_FONT_BOLD, vc, UI_ALIGN_RIGHT);
-                const float vw = ui_text_fit(l->x + vx - 22, ty, value, 26, UI_FONT_BOLD, vc, UI_ALIGN_RIGHT, l->w * 0.4f);
+                const float vw = ui_text_fit(l->x + vx - 22, ty, value, 26, UI_FONT_BOLD, vc, UI_ALIGN_RIGHT, vmax);
                 ui_text(l->x + vx - 30 - vw, ty, "<", 26, UI_FONT_BOLD, vc, UI_ALIGN_RIGHT);
             } else {
-                ui_text_fit(l->x + vx, ty, value, 26, UI_FONT_REGULAR, vc, UI_ALIGN_RIGHT, l->w * 0.42f);
+                ui_text_fit(l->x + vx, ty, value, 26, UI_FONT_REGULAR, vc, UI_ALIGN_RIGHT, vmax);
             }
         }
         /* mouse: a click on a value's arrows changes it */
@@ -1024,7 +1066,147 @@ void list_end(List *l)
     }
 }
 
+/* ------------------------------------------------------------ the help */
+
+/* The selected row's help (dash_help), drawn under the list by
+ * dash_help_draw: plain text on the backdrop, three lines in sight; a
+ * longer one scrolls up through the rest, holds, and comes back (#336:
+ * cut at three lines, the end of the longer ones couldn't be read). */
+static const char *g_help;
+static int g_help_when;
+static uint32_t g_help_seen;    /* the text shown (a hash): a new one from its top */
+static double g_help_t0;
+
+void dash_help(const char *text, int when)
+{
+    g_help = text && text[0] ? text : NULL;
+    g_help_when = when;
+}
+
+float dash_help_top(void)
+{
+    return ui_h() - 156;
+}
+
+float dash_list_h(float y, float row_h)
+{
+    /* the list's frame (list_begin: 14 round it) and a gap over the help */
+    const int rows = (int)((dash_help_top() - 26 - y) / row_h);
+    return (rows < 3 ? 3 : rows) * row_h;
+}
+
+void dash_help_draw(void)
+{
+    const char *s = g_help;
+    const int when = g_help_when;
+    g_help = NULL;
+    if (!s || (D.toast[0] && ui_time() < D.toast_until)) {
+        return;     /* a notice in its place */
+    }
+    /* in a game's menu: when the setting takes effect */
+    const char *note = !g_game_running ? NULL
+                       : when == HELP_NEXT_START ? T(S_NEEDS_RESTART)
+                       : when == HELP_ON_RESUME ? T(S_H_APPLIES_NOW) : NULL;
+    const float W = ui_w(), x = 76, tw = W - 172, fs = 20, lh = 28;
+    const float top = g_help_under < dash_help_top() ? g_help_under : dash_help_top();
+    enum { VIS = 3, MAXL = 16 };
+    static char lines[MAXL][512];
+    const int nt = wrap_lines(s, fs, UI_FONT_REGULAR, tw, lines, MAXL - 2);
+    const int n = nt + (note ? wrap_lines(note, fs, UI_FONT_BOLD, tw, lines + nt, MAXL - nt) : 0);
+    uint32_t h = 2166136261u;
+    for (const char *c = s; *c; c++) {
+        h = (h ^ (unsigned char)*c) * 16777619u;
+    }
+    h = (h ^ (uint32_t)(note != NULL)) * 16777619u;
+    if (h != g_help_seen) {
+        g_help_seen = h;
+        g_help_t0 = ui_time();
+    }
+    /* longer than its place: held at the top, up to its end at a reading
+     * pace, held, faded back to the top */
+    float off = 0, a = 1;
+    const float travel = n > VIS ? (n - VIS) * lh : 0;
+    if (travel > 0) {
+        const double hold = 2.8, speed = 14, fade = 0.35, run = travel / speed;
+        const double t = fmod(ui_time() - g_help_t0, hold + run + hold + 2 * fade);
+        if (t < hold) {
+            off = 0;
+        } else if (t < hold + run) {
+            off = (float)((t - hold) * speed);
+        } else if (t < hold + run + hold) {
+            off = travel;
+        } else if (t < hold + run + hold + fade) {
+            off = travel;
+            a = (float)(1 - (t - hold - run - hold) / fade);
+        } else {
+            a = (float)((t - hold - run - hold - fade) / fade);
+        }
+    }
+    /* a thin green mark beside it: whose the text is */
+    ui_round(60, top + 3, 3, (n < VIS ? n : VIS) * lh - 8, 1.5f, ui_alpha(UI_GREEN, 0.55f));
+    ui_clip(x - 2, top - 2, tw + 8, VIS * lh);
+    for (int i = 0; i < n; i++) {
+        const float y = top + i * lh - off;
+        if (y < top - lh || y > top + VIS * lh) {
+            continue;
+        }
+        const bool is_note = i >= nt;
+        ui_text(x, y, lines[i], fs, is_note ? UI_FONT_BOLD : UI_FONT_REGULAR,
+                ui_alpha(is_note ? UI_GREEN_HI : UI_WHITE, a), UI_ALIGN_LEFT);
+    }
+    ui_unclip();
+    if (travel > 0) {
+        /* where in it the lines in sight are */
+        const float th = VIS * lh - 8, bh = th * VIS / n, by = top + 3 + (th - bh) * off / travel;
+        ui_round(W - 66, top + 3, 3, th, 1.5f, ui_alpha(UI_GREEN, 0.15f));
+        ui_round(W - 66, by, 3, bh, 1.5f, ui_alpha(UI_GREEN_HI, 0.8f));
+    }
+}
+
 /* ------------------------------------------------------------ option rows */
+
+/* each option's help (#336), and when it takes effect in a game's menu */
+static const struct {
+    enum UiStr label, help;
+    int when;
+} k_opt_help[] = {
+    {S_RENDER_SCALE, S_H_SCALE, HELP_NEXT_START}, {S_ASPECT, S_H_ASPECT, HELP_NOW},
+    {S_OVERSCAN, S_H_OVERSCAN, HELP_NOW}, {S_CROP_H, S_H_CROP, HELP_NOW}, {S_CROP_V, S_H_CROP, HELP_NOW},
+    {S_FXAA, S_H_FXAA, HELP_NOW}, {S_ANISO, S_H_ANISO, HELP_NEXT_START}, {S_UPSCALE, S_H_UPSCALE, HELP_NOW},
+    {S_CRT, S_H_CRT, HELP_NOW}, {S_FULLSCREEN, S_H_FULLSCREEN, HELP_NEXT_START},
+    {S_SHOW_FPS, S_H_SHOW_FPS, HELP_NOW}, {S_VSYNC, S_H_VSYNC, HELP_NOW}, {S_FSRATE, S_H_FSRATE, HELP_NEXT_START},
+    {S_MAXFPS, S_H_MAXFPS, HELP_NEXT_START}, {S_AUDIO_OUTPUT, S_H_AUDIO_OUT, HELP_NEXT_START},
+    {S_VOLUME, S_H_VOLUME, HELP_ON_RESUME}, {S_MUTE_BG, S_H_MUTE_BG, HELP_ON_RESUME},
+    {S_UI_SOUNDS, S_H_UI_SOUNDS, HELP_NOW}, {S_CONSOLE_LANG, S_H_CONSOLE_LANG, HELP_NEXT_START},
+    {S_WIDESCREEN, S_H_WIDESCREEN, HELP_NEXT_START}, {S_P480, S_H_VMODE, HELP_NEXT_START},
+    {S_P720, S_H_VMODE, HELP_NEXT_START}, {S_I1080, S_H_VMODE, HELP_NEXT_START},
+    {S_PAL_GAMES, S_H_PAL, HELP_NEXT_START}, {S_RAM_SIZE, S_H_RAM, HELP_NEXT_START},
+    {S_AVPACK, S_H_AVPACK, HELP_NEXT_START}, {S_DISC_SPEED, S_H_DISC, HELP_NEXT_START},
+    {S_SHADERS_MODE, S_H_SHADERS, HELP_NEXT_START}, {S_PREBUILD, S_H_PREBUILD, HELP_NEXT_START},
+    {S_UI_LANG, S_H_UI_LANG, HELP_NOW}, {S_COVERS_ONLINE, S_H_COVERS, HELP_NOW},
+    {S_ANIMATED_BG, S_H_ANIM_BG, HELP_NOW}, {S_TRANSITIONS, S_H_TRANSITIONS, HELP_NOW},
+    {S_UI_43, S_H_UI43, HELP_NOW}, {S_CHECK_UPDATES, S_H_CHECK_UPDATES, HELP_NOW},
+    {S_SHOW_HIDDEN, S_H_SHOW_HIDDEN, HELP_NOW}, {S_CLOCK_12H, S_H_CLOCK12, HELP_NOW},
+    {S_FAV_FIRST, S_H_FAV_FIRST, HELP_NOW}, {S_LAST_FIRST, S_H_LAST_FIRST, HELP_NOW},
+    {S_DEADZONE, S_H_DEADZONE, HELP_ON_RESUME}, {S_INVERT_RSTICK, S_H_INVERT, HELP_ON_RESUME},
+    {S_INVERT_LSTICK, S_H_INVERT, HELP_ON_RESUME}, {S_RUMBLE, S_H_RUMBLE, HELP_ON_RESUME},
+};
+
+/* the option's help when its row is the selected one */
+static void opt_help(const List *l, enum UiStr label)
+{
+    if (!list_selected(l)) {
+        return;
+    }
+    for (size_t i = 0; i < sizeof(k_opt_help) / sizeof(k_opt_help[0]); i++) {
+        if (k_opt_help[i].label == label) {
+            /* a game's volume: its own, over the others' */
+            const enum UiStr h = label == S_VOLUME && D.editing_game ? S_H_GAME_VOLUME : k_opt_help[i].help;
+            dash_help(T(h), k_opt_help[i].when);
+            return;
+        }
+    }
+}
 
 static Config *edited(void)
 {
@@ -1074,6 +1256,7 @@ void opt_choice(List *l, enum UiStr label, const char *key, const char *const *v
     value_text(D.editing_game ? v : (v ? v : def), gv ? gv : def, choice_name, &ctx, text, sizeof(text));
     int delta = 0;
     const bool chosen = list_row(l, T(label), text, &delta);
+    opt_help(l, label);
     if (chosen) {
         delta = 1;
     }
@@ -1102,6 +1285,8 @@ void opt_choice(List *l, enum UiStr label, const char *key, const char *const *v
             dash_toast(T(S_RAM_WARN));      /* retail titles meet a debug kit's memory map */
         } else if (!strcmp(key, "fsrate") && !strcmp(now_v, "60")) {
             dash_toast(T(S_FSRATE_TIP));    /* what it does, and the switch's black moment */
+        } else if (!strcmp(key, "shaders") && !strcmp(now_v, "async")) {
+            dash_toast(T(S_ASYNC_WARN));    /* draws wait for no shader: they are skipped */
         }
     }
 }
@@ -1120,7 +1305,9 @@ void opt_bool(List *l, enum UiStr label, const char *key, bool def, bool flag_st
     value_text(D.editing_game ? v : (v ? v : def ? "1" : "0"), gv ? gv : def ? "1" : "0", bool_name, NULL, text,
                sizeof(text));
     int delta = 0;
-    if (list_row(l, T(label), text, &delta)) {
+    const bool chosen = list_row(l, T(label), text, &delta);
+    opt_help(l, label);
+    if (chosen) {
         delta = 1;
     } else if (D.in.repeat) {
         /* an on/off row steps once a press: a held direction's repeat went on
@@ -1144,9 +1331,6 @@ void opt_bool(List *l, enum UiStr label, const char *key, bool def, bool flag_st
         cfg_set(c, key, on ? "0" : "1");
     } else {
         cfg_set(c, key, on ? "0" : "1");
-    }
-    if (!on && !strcmp(key, "asyncpipe")) {
-        dash_toast(T(S_ASYNC_WARN));    /* draws wait for no shader: they are skipped */
     }
 }
 
@@ -1175,11 +1359,17 @@ void opt_int(List *l, enum UiStr label, const char *key, int lo, int hi, int ste
     value_text(D.editing_game ? v : (v ? v : dv), gv ? gv : dv, int_name, &ctx, text, sizeof(text));
     int delta = 0;
     list_row(l, T(label), text, &delta);
+    opt_help(l, label);
     if (delta) {
-        int x = v ? atoi(v) : gv ? atoi(gv) : def;
+        const int g = gv ? atoi(gv) : def;
+        int x = v ? atoi(v) : g;
         x += delta * step;
         x = x < lo ? lo : x > hi ? hi : x;
-        cfg_set_int(c, key, x);
+        if (D.editing_game && x == g) {
+            cfg_unset(c, key);      /* a game's back at the global value: the global setting again */
+        } else {
+            cfg_set_int(c, key, x);
+        }
     }
 }
 
@@ -1197,7 +1387,9 @@ void opt_videoflag(List *l, enum UiStr label, unsigned bit)
         snprintf(text, sizeof(text), "%s", flags & bit ? T(S_ON) : T(S_OFF));
     }
     int delta = 0;
-    if (list_row(l, T(label), text, &delta)) {
+    const bool chosen = list_row(l, T(label), text, &delta);
+    opt_help(l, label);
+    if (chosen) {
         delta = 1;
     }
     if (delta) {
@@ -2150,6 +2342,11 @@ static void rename_row(List *l, LibGame *g)
     }
 }
 
+void dash_cover_from_file(void)
+{
+    dash_browse_file(T(S_CHOOSE_COVER), "png;jpg;jpeg", cover_file_cb, NULL);
+}
+
 static void scr_game(void)
 {
     LibGame *g = D.cur;
@@ -2211,7 +2408,7 @@ static void scr_game(void)
         lib_fetch_cover(g);
     }
     if (list_row(&l, T(S_CHOOSE_COVER), NULL, NULL)) {
-        dash_browse_file(T(S_CHOOSE_COVER), "png;jpg;jpeg", cover_file_cb, NULL);
+        dash_cover_open(g);
     }
     if (list_row(&l, T(g->fav ? S_REMOVE_FAV : S_ADD_FAV), NULL, NULL)) {
         lib_set_favorite(g, !g->fav);
@@ -2249,23 +2446,78 @@ static void scr_game(void)
     draw_hints(T(S_SELECT), T(S_BACK), NULL, NULL);
 }
 
+static void update_chosen(Dash *d, int choice);
+static bool g_upd_asked;    /* the newer release asked about (update_ask) */
+static bool g_upd_manual;   /* About's check asked for: its answer shown there */
+
+/* a newer release: update now, not now, or no more checks */
+static void update_ask(void)
+{
+    g_upd_asked = true;
+    char msg[256];
+    snprintf(msg, sizeof(msg), T(S_UPDATE_AVAILABLE), upd_version(), XBASED_VERSION);
+    const char *choices[3] = {T(S_UPDATE_NOW), T(S_NOT_NOW), T(S_DONT_ASK)};
+    dash_choose(msg, choices, 3, update_chosen);
+}
+
 static void scr_about(void)
 {
     const float W = ui_w(), H = ui_h();
     draw_header(T(S_ABOUT), NULL);
-    ui_orb(W / 2, H * 0.36f, 60, 0);
+    ui_orb(W / 2, H * 0.30f, 48, 0);
     char v[96];
     snprintf(v, sizeof(v), "%s %s", T(S_VERSION), XBASED_VERSION);
-    ui_text(W / 2, H * 0.52f, "xbased", 54, UI_FONT_BOLD, UI_GREEN_HI, UI_ALIGN_CENTER);
-    ui_text(W / 2, H * 0.62f, v, 22, UI_FONT_REGULAR, UI_WHITE, UI_ALIGN_CENTER);
-    ui_text_fit(W / 2, H * 0.67f, T(S_BASED_ON), 20, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_CENTER, W - 80);
-    ui_text(W / 2, H * 0.715f, "github.com/crazyriddler/xbased", 20, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_CENTER);
-    ui_text(W / 2, H * 0.77f, "Fonts: Play (SIL OFL). Box art: libretro-thumbnails.", 18, UI_FONT_REGULAR, UI_GREY,
-            UI_ALIGN_CENTER);
-    if (D.in.back || D.in.ok) {
+    ui_text(W / 2, H * 0.44f, "xbased", 54, UI_FONT_BOLD, UI_GREEN_HI, UI_ALIGN_CENTER);
+    ui_text(W / 2, H * 0.535f, v, 22, UI_FONT_REGULAR, UI_WHITE, UI_ALIGN_CENTER);
+    ui_text_fit(W / 2, H * 0.585f, T(S_BASED_ON), 20, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_CENTER, W - 80);
+    ui_text(W / 2, H * 0.63f, "github.com/crazyriddler/xbased", 20, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_CENTER);
+    ui_text_fit(W / 2, H * 0.675f, "Fonts: Play (SIL OFL). Box art: libretro-thumbnails.", 18, UI_FONT_REGULAR,
+                UI_GREY, UI_ALIGN_CENTER, W - 80);
+    /* the update check (#336): its button, chosen with A, a click or X;
+     * its answer under it */
+    const UpdState st = upd_state();
+    const bool busy = st == UPD_CHECKING || st == UPD_INSTALLING || st == UPD_INSTALLED;
+    const char *bl = T(S_CHECK_NOW);
+    const float tw = ui_text_width(bl, 24, UI_FONT_BOLD);
+    const float bw = tw + 96 > 340 ? tw + 96 : 340, bh = 52, bx = (W - bw) / 2, by = H * 0.735f;
+    const bool over = D.in.mx >= bx && D.in.mx < bx + bw && D.in.my >= by && D.in.my < by + bh;
+    const float pulse = 0.75f + 0.25f * sinf((float)ui_time() * 4);
+    ui_glow(W / 2, by + bh / 2, bw * 0.6f, ui_alpha(UI_GREEN, (busy ? 0.10f : 0.22f) * pulse));
+    ui_round(bx, by, bw, bh, bh / 2, busy ? (UiColor){0x14, 0x3A, 0x08, 0xFF} : (UiColor){0x3C, 0x9A, 0x12, 0xFF});
+    ui_round_outline(bx, by, bw, bh, bh / 2, 2, ui_alpha(busy ? UI_GREEN_DIM : UI_GREEN_HI, busy ? 1 : pulse));
+    float lx = W / 2;
+    if (st == UPD_CHECKING) {
+        /* working: an orbit turning beside the words */
+        ui_ring(bx + bw / 2 - tw / 2 - 6, by + bh / 2, 10, 4, (float)ui_time() * 4.0f, 2, UI_GREEN_HI);
+        lx += 14;
+    }
+    ui_text(lx, by + 12, bl, 24, UI_FONT_BOLD, busy ? UI_GREY : UI_WHITE, UI_ALIGN_CENTER);
+    if (!busy && (D.in.ok || D.in.x || (over && D.in.click))) {
+        g_upd_manual = true;
+        g_upd_asked = false;
+        upd_check_start(XBASED_VERSION);
+    }
+    char ans[160] = "";
+    UiColor ac = UI_GREY;
+    if (st == UPD_AVAILABLE) {
+        snprintf(ans, sizeof(ans), T(S_UPD_FOUND), upd_version());
+        ac = UI_GREEN_HI;
+        if (g_upd_manual && !g_upd_asked && !D.ask) {
+            update_ask();
+        }
+    } else if (g_upd_manual && st == UPD_CHECKING) {
+        snprintf(ans, sizeof(ans), "%s", T(S_UPD_CHECKING));
+    } else if (g_upd_manual && st == UPD_IDLE) {
+        snprintf(ans, sizeof(ans), "%s", T(upd_version()[0] ? S_UPD_LATEST : S_UPD_NO_ANSWER));
+        ac = upd_version()[0] ? UI_GREEN : UI_GREY;
+    }
+    if (ans[0]) {
+        ui_text_fit(W / 2, by + bh + 16, ans, 20, UI_FONT_REGULAR, ac, UI_ALIGN_CENTER, W - 80);
+    }
+    if (D.in.back) {
         dash_pop();
     }
-    draw_hints(NULL, T(S_BACK), NULL, NULL);
+    draw_hints(T(S_CHECK_NOW), T(S_BACK), NULL, NULL);
 }
 
 /* ------------------------------------------------------------ the question */
@@ -2361,15 +2613,12 @@ static void update_chosen(Dash *d, int choice)
  * its install's progress, and the new version started in this one's place. */
 static void update_poll(void)
 {
-    static bool asked, failed;
+    static bool failed;
     char msg[256];
     switch (upd_state()) {
     case UPD_AVAILABLE:
-        if (!asked && !D.ask && dash_top() == SCR_MAIN) {
-            asked = true;
-            snprintf(msg, sizeof(msg), T(S_UPDATE_AVAILABLE), upd_version(), XBASED_VERSION);
-            const char *choices[3] = {T(S_UPDATE_NOW), T(S_NOT_NOW), T(S_DONT_ASK)};
-            dash_choose(msg, choices, 3, update_chosen);
+        if (!g_upd_asked && !D.ask && dash_top() == SCR_MAIN) {
+            update_ask();
         }
         break;
     case UPD_INSTALLING:
@@ -2410,11 +2659,12 @@ int dash_run(SDL_Window *win, const char *exe)
 {
     memset(&D, 0, sizeof(D));
     g_win = win;
+    ptr_install(win);   /* xbased's pointer (pointer.h) */
     SDL_HideCursor();   /* it shows when the mouse moves (poll_input) */
     g_cursor_at = 0;
     snprintf(D.exe, sizeof(D.exe), "%s", exe);
     char p[1200];
-    snprintf(p, sizeof(p), "%sxbased.ini", cfg_data_dir());
+    snprintf(p, sizeof(p), "%s", cfg_global_path());
     cfg_load(&D.global, p);
     const bool up = upscale_migrate(&D.global), sh = cfg_shaders_migrate(&D.global);
     if (up || sh) {
@@ -2509,6 +2759,7 @@ int dash_run(SDL_Window *win, const char *exe)
             /* into the game: the screen's picture breaks; the game's window
              * comes up on the black it leaves */
             const float k = (float)((ui_time() - g_go.t0) / GO_OUT);
+            ui_set_frame43(cfg_bool(&D.global, "ui.43", false));
             ui_begin();
             ui_fx_shatter(g_go.pic, k);
             auto_shot();
@@ -2526,6 +2777,7 @@ int dash_run(SDL_Window *win, const char *exe)
         }
         const int sp_before = D.sp;
         const enum Screen top_before = dash_top();
+        ui_set_frame43(cfg_bool(&D.global, "ui.43", false));
         ui_begin();
         if (go_pic || go_back) {
             g_go.pic = ui_layer_begin(g_go.pic);
@@ -2552,6 +2804,7 @@ int dash_run(SDL_Window *win, const char *exe)
         case SCR_ABOUT: scr_about(); break;
         case SCR_BROWSE: scr_browse(); break;
         case SCR_FIND: scr_find(); break;
+        case SCR_COVER: scr_cover(); break;
         default: break;
         }
         ui_layer_end();
@@ -2639,6 +2892,7 @@ int dash_run(SDL_Window *win, const char *exe)
 /* ------------------------------------------------------------ the in-game menu */
 
 UiTex *load_bmp(const char *path);
+UiTex *load_thumb(const char *dir, int slot);
 void states_forget(void);
 
 static int g_ig_result, g_ig_slot;
@@ -2716,9 +2970,7 @@ static void scr_ingame_slots(void)
                 ui_texture_free(g_ig_thumb[i]);
                 g_ig_thumb[i] = NULL;
             }
-            char p[1200];
-            snprintf(p, sizeof(p), "%s/slot%d.bmp", dir, i);
-            g_ig_thumb[i] = load_bmp(p);
+            g_ig_thumb[i] = load_thumb(dir, i);
         }
     }
     List l;
@@ -2765,10 +3017,11 @@ int dash_ingame(SDL_Window *win, const char *key, const char *title, const char 
     memset(&D, 0, sizeof(D));
     g_game_running = true;
     g_win = win;
+    ptr_install(win);   /* xbased's pointer (pointer.h) */
     SDL_HideCursor();   /* it shows when the mouse moves (poll_input) */
     g_cursor_at = 0;
     char p[1200];
-    snprintf(p, sizeof(p), "%sxbased.ini", cfg_data_dir());
+    snprintf(p, sizeof(p), "%s", cfg_global_path());
     cfg_load(&D.global, p);
     const bool up = upscale_migrate(&D.global), sh = cfg_shaders_migrate(&D.global);
     if (up || sh) {
@@ -2848,6 +3101,7 @@ int dash_ingame(SDL_Window *win, const char *key, const char *title, const char 
                 snd_play(SND_MOVE);
             }
         }
+        ui_set_frame43(cfg_bool(&D.global, "ui.43", false));
         ui_begin();
         /* the paused game under a green veil: blurred, over the overlay */
         if (ov) {
@@ -2858,7 +3112,7 @@ int dash_ingame(SDL_Window *win, const char *key, const char *title, const char 
         } else if (frame) {
             ui_fill(frame, UI_WHITE);
         }
-        ui_rect_grad(0, 0, ui_w(), ui_h(), (UiColor){0, 12, 0, ov ? 150 : 200}, (UiColor){0, 24, 0, ov ? 190 : 225});
+        ui_fill_grad((UiColor){0, 12, 0, ov ? 150 : 200}, (UiColor){0, 24, 0, ov ? 190 : 225});
         ui_glow(ui_w() / 2, ui_h() / 2, ui_h() * 0.8f, ui_alpha(UI_GREEN, 0.10f));
         switch (dash_top()) {
         case SCR_INGAME: scr_ingame(); break;

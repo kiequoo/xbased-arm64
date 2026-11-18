@@ -1,7 +1,9 @@
 /*
- * hakuX native core — boot and run a title.
+ * xbased native core — boot and run a title.
  */
 #include "native/core/core.h"
+
+void (*nc_crash_hook)(void);
 #include "native/dev/dev.h"
 #include "native/dev/usb.h"
 #include "native/hle/hle_native.h"
@@ -86,11 +88,11 @@ static bool title_update(const NcDisc *disc, const char *path, char *out, size_t
         fclose(fp);
     }
     if (!read || !xbe_title(u, sizeof(u), &utid, &uver) || utid != tid || uver < ver) {
-        nc_log("hakuX-native-frontier", "title update %s: not this title's newer version (title %08x version %x, "
+        nc_log("xbased-native-frontier", "title update %s: not this title's newer version (title %08x version %x, "
                "the disc's %08x %x): the disc's boots", out, read ? utid : 0, read ? uver : 0, tid, ver);
         return false;
     }
-    nc_log("hakuX-native-frontier", "title update: %s (version %x, the disc's %x) boots for %s", out, uver, ver, path);
+    nc_log("xbased-native-frontier", "title update: %s (version %x, the disc's %x) boots for %s", out, uver, ver, path);
     return true;
 }
 
@@ -122,7 +124,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
             if (nc_disc_find(&d, "default.xbe", &f) && nc_disc_read(&d, &f, 0, h, sizeof(h)) &&
                 !memcmp(h, "XBEH", 4) && (nc_rd32(h + 0x124) & 4)) {
                 ram = NC_RAM_RETAIL;
-                nc_log("hakuX-native", "memory: the title is marked for 64 MiB (as a debug kit runs it): 64 MiB");
+                nc_log("xbased-native", "memory: the title is marked for 64 MiB (as a debug kit runs it): 64 MiB");
             }
             nc_disc_close(&d);
         } else if (fd >= 0) {
@@ -182,7 +184,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
             snprintf(xbe_path, sizeof(xbe_path), "%s", info.xbe_path);
             snprintf(c->kernel.image_path, sizeof(c->kernel.image_path), "%s", info.xbe_path);
         }
-        nc_log("hakuX-native-frontier", "savestate: booting %s for %s", xbe_path, g_loadstate);
+        nc_log("xbased-native-frontier", "savestate: booting %s for %s", xbe_path, g_loadstate);
     } else if (g_relaunch) {
         char file[512];
         nc_kernel_relaunch_file(file, sizeof(file));
@@ -194,13 +196,13 @@ bool nc_core_boot(NcCore *c, int disc_fd)
         }
         if (have_page && nc_kernel_launch_xbe(page, xbe_path, sizeof(xbe_path))) {
             snprintf(c->kernel.image_path, sizeof(c->kernel.image_path), "%s", xbe_path);
-            nc_log("hakuX-native-frontier", "relaunch: %s (launch type %u)", c->kernel.image_path,
+            nc_log("xbased-native-frontier", "relaunch: %s (launch type %u)", c->kernel.image_path,
                    *(const uint32_t *)page);
         } else {
             have_page = false;
             snprintf(xbe_path, sizeof(xbe_path), "%s", g_dashboard ? NC_DASHBOARD_PATH : "\\default.xbe");
             snprintf(c->kernel.image_path, sizeof(c->kernel.image_path), "%s", g_dashboard ? NC_DASHBOARD_PATH : "");
-            nc_log("hakuX-native-frontier", "relaunch: no launch data page, booting %s", xbe_path);
+            nc_log("xbased-native-frontier", "relaunch: no launch data page, booting %s", xbe_path);
         }
     }
     /* a disc XBE with a title update installed: the update (a savestate's
@@ -247,6 +249,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
             }
         }
         nc_io_title_device_time(c->xbe.info.title_id, name);
+        nc_dev_nv2a_title_pace(c->xbe.info.title_id, name);
     }
 
     NcCpuConfig cfg = {
@@ -274,7 +277,7 @@ bool nc_core_boot(NcCore *c, int disc_fd)
     if (!g_boot) {
         return boot_failed("The emulated CPU couldn't start.");
     }
-    nc_log("hakuX-native-frontier", "stage S1 entry %08x, stack %08x-%08x, fs %08x",
+    nc_log("xbased-native-frontier", "stage S1 entry %08x, stack %08x-%08x, fs %08x",
            c->xbe.info.entry, g_boot->stack_limit, g_boot->stack_base, c->kernel.kpcr_va);
 
     /* The HLE GPU layer: its hooks come from the title's signature scan. */
@@ -308,16 +311,16 @@ void nc_core_run(NcCore *c)
     nc_cpu_run(c->cpu, start ? start : &g_boot->ctx);
     const NcKernel *k = &c->kernel;
     if (k->stop) {
-        nc_log("hakuX-native-frontier", "stop: %s", k->stop_reason);
+        nc_log("xbased-native-frontier", "stop: %s", k->stop_reason);
     } else {
-        nc_log("hakuX-native-frontier", "stop: guest executed HLT");
+        nc_log("xbased-native-frontier", "stop: guest executed HLT");
     }
     unsigned threads = 0;
     for (unsigned i = 0; i < NC_MAX_THREADS; i++) {
         threads += k->threads[i].state != NC_T_FREE;
     }
     const NcKExport *first = nc_kernel_export(k->first_ordinal);
-    nc_log("hakuX-native-frontier", "summary stage=%s kernel_calls=%llu first_call=%s threads=%u",
+    nc_log("xbased-native-frontier", "summary stage=%s kernel_calls=%llu first_call=%s threads=%u",
            k->first_ordinal ? "S2" : "S1", (unsigned long long)k->calls,
            first ? first->name : "-", threads);
 }
@@ -341,7 +344,7 @@ static bool fault_report(NcCore *c, uintptr_t pc, uint64_t va, const char *what)
     if (!nc_cpu_sample_pc(c->cpu, pc, &eip) || !eip) {
         return false;
     }
-    nc_log("hakuX-native-frontier", "host fault: %s at guest %08llx, eip %08x (host pc %p)", what,
+    nc_log("xbased-native-frontier", "host fault: %s at guest %08llx, eip %08x (host pc %p)", what,
            (unsigned long long)va, eip, (void *)pc);
     nc_kernel_dump_recent(-1);
     nc_kernel_dump_threads(&c->kernel, -1);
@@ -440,7 +443,7 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
         /* Doom 3 keeps a critical section at 0x00BFD88E: RtlEnterCriticalSection's
          * lock inc of its LockCount (0x00BFD89E) took the core down */
         if (__atomic_fetch_add(&g_nc_faults_unaligned, 1, __ATOMIC_RELAXED) < 4) {
-            nc_log("hakuX-native", "unaligned atomic at guest %08llx, eip %08x",
+            nc_log("xbased-native", "unaligned atomic at guest %08llx, eip %08x",
                    (unsigned long long)nc_vm_guest_of(&c->vm, info->si_addr), nc_cpu_guest_eip_at(c->cpu, pc));
         }
         return true;
@@ -472,7 +475,7 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
                         n += snprintf(fr + n, sizeof(fr) - (size_t)n, " %x:%08x", i * 4, w);
                     }
                 }
-                nc_log("hakuX-native-watch", "  esp %08x stack%s", esp, fr);
+                nc_log("xbased-native-watch", "  esp %08x stack%s", esp, fr);
             }
         }
     }
@@ -501,27 +504,34 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
     if (sig != SIGSEGV || va == UINT64_MAX) {
         return fault_report(c, pc, (uint64_t)(uintptr_t)info->si_addr, "outside the guest");
     }
-    if (nc_vm_phys(&c->vm, (uint32_t)va) != UINT32_MAX) {
+    /* A store to a page the title made read-only (PAGE_READONLY): its fault,
+     * as a missing page's below. Rainbow Six: Lockdown commits the pages of
+     * its own swapped memory read-only and takes a store's fault as the page
+     * written, which it then writes to its swap file before it lets the page
+     * go (#275). */
+    const bool ro_store = nc_vm_phys(&c->vm, (uint32_t)va) != UINT32_MAX && wrapped == UINT64_MAX &&
+                          nc_vm_guest_ro_has(&c->vm, (uint32_t)va);
+    if (nc_vm_phys(&c->vm, (uint32_t)va) != UINT32_MAX && !ro_store) {
         return fault_report(c, pc, va, wrapped != UINT64_MAX ? "wrapped, to a mapped page" : "mapped page");
     }
-    if (nc_paging_fault(&c->kernel, (uint32_t)va)) {
+    if (!ro_store && nc_paging_fault(&c->kernel, (uint32_t)va)) {
         /* mapped now; the wrapped access would only fault again */
         return wrapped == UINT64_MAX || fault_report(c, pc, va, "wrapped, to a page the tables map");
     }
     NcFrame *f = nc_cpu_fault_frame(c->cpu, ucontext);
     if (!f) {
-        nc_kernel_call_fault(&c->kernel, (uint32_t)va, nc_cpu_fault_is_write(ucontext));
+        nc_kernel_call_fault(&c->kernel, (uint32_t)va, ro_store || nc_cpu_fault_is_write(ucontext));
         return false;
     }
     if (wrapped != UINT64_MAX) {
-        nc_log("hakuX-native-frontier", "guest fault at %08x (wrapped address), eip %08x", (uint32_t)va,
+        nc_log("xbased-native-frontier", "guest fault at %08x (wrapped address), eip %08x", (uint32_t)va,
                nc_frame_eip(f));
     }
-    if (!nc_kernel_page_fault(&c->kernel, f, (uint32_t)va, nc_cpu_fault_is_write(ucontext))) {
+    if (!nc_kernel_page_fault(&c->kernel, f, (uint32_t)va, ro_store || nc_cpu_fault_is_write(ucontext))) {
         /* no page-fault handler of the title's: an access violation, to the
          * thread's exception handlers (a __try around a probe, a title's own
          * crash handler), as the Xbox kernel raises it */
-        const bool write = nc_cpu_fault_is_write(ucontext);
+        const bool write = ro_store || nc_cpu_fault_is_write(ucontext);
         const uint32_t at = nc_frame_eip(f);
         if (!nc_seh_fault(&c->kernel, f, NC_STATUS_ACCESS_VIOLATION, at, 2, write, (uint32_t)va)) {
             return fault_report(c, pc, va, "the title doesn't handle it");
@@ -529,7 +539,7 @@ bool nc_core_fault(NcCore *c, int sig, siginfo_t *info, void *ucontext)
         static unsigned told;
         if (told++ < 4) {
             /* the first few with what led to them: a title that goes on may still be lost */
-            nc_log("hakuX-native-frontier", "guest access violation: %s of %08x at eip %08x, taken by the title's handlers",
+            nc_log("xbased-native-frontier", "guest access violation: %s of %08x at eip %08x, taken by the title's handlers",
                    write ? "write" : "read", (uint32_t)va, at);
             nc_kernel_dump_recent(-1);
         }

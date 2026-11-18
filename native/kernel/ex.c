@@ -1,5 +1,5 @@
 /*
- * hakuX native core — executive, HAL, AV and title services.
+ * xbased native core — executive, HAL, AV and title services.
  *
  * Ex pool and non-volatile (EEPROM) settings, XBE section loading, object
  * references, DbgPrint, the HAL and AV calls the titles make, and the DPC and
@@ -335,6 +335,16 @@ static void eeprom_reidentify(void)
     eeprom_store();
 }
 
+/* The video standard of a console the running title is for (the EEPROM's word:
+ * XGetVideoStandard reads its second byte): PAL-I for a PAL disc, NTSC-J for a
+ * disc for Japan alone (a Japanese console's: NTSC-M there had a Japanese
+ * title on a console it never runs on, the XDK's XGetVideoStandard), NTSC-M
+ * else; 60 Hz but PAL. */
+static uint32_t video_standard(const NcKernel *k)
+{
+    return k->game_region == 4 ? 0x00800300u : k->game_region == 2 ? 0x00400200u : 0x00400100u;
+}
+
 /* A new console's EEPROM: English, stereo, no parental limits, the region
  * of the first title it runs, an identity of its own but the HD key all
  * have. */
@@ -344,7 +354,7 @@ static void eeprom_create(NcKernel *k)
     memset(g_eeprom, 0, sizeof(g_eeprom));
     memset(g_sec, 0, sizeof(g_sec));
     nc_wr32(g_sec + 0x2C, k->game_region ? k->game_region : 1);
-    nc_wr32(g_eeprom + 0x58, pal ? 0x00800300u : 0x00400100u); /* PAL-I / NTSC-M */
+    nc_wr32(g_eeprom + 0x58, video_standard(k)); /* PAL-I / NTSC-J / NTSC-M */
     nc_wr32(g_eeprom + 0x90, 1);                                 /* English */
     nc_wr32(g_eeprom + 0xBC, pal ? 2 : 1);                       /* DVD region */
     eeprom_identity(k_legacy_hd_key);
@@ -363,7 +373,7 @@ static void eeprom_upgrade(void)
         return;
     }
     eeprom_reidentify();
-    nc_log("hakuX-native", "ex: the console has an identity of its own for the network (its HD key kept)");
+    nc_log("xbased-native", "ex: the console has an identity of its own for the network (its HD key kept)");
 }
 
 /* The app asked for a new identity (<hdd>/eeprom.renew): another console on
@@ -378,7 +388,7 @@ static void eeprom_renew(void)
     }
     eeprom_reidentify();
     unlink(p);
-    nc_log("hakuX-native", "ex: a new identity for the console, as the app asked (its HD key kept)");
+    nc_log("xbased-native", "ex: a new identity for the console, as the app asked (its HD key kept)");
 }
 
 /* The image, whole or not at all: a new file put in the old one's place. */
@@ -397,7 +407,7 @@ static void eeprom_store(void)
         ok = fclose(out) == 0 && ok;
     }
     if (!ok || rename(tmp, p) != 0) {
-        nc_log("hakuX-native", "ex: can't keep the EEPROM in %s", p);
+        nc_log("xbased-native", "ex: can't keep the EEPROM in %s", p);
         unlink(tmp);
     }
 }
@@ -417,6 +427,19 @@ static void eeprom_sync_record(void)
     }
 }
 
+/* PAL titles that stay at 50 Hz on a console with PAL-60 on (they ask D3D
+ * for its default refresh, 50 Hz for PAL) yet pace their frames by the flag
+ * as if at 60: the console's PAL-60 is off for them, which changes nothing on
+ * screen but their pacing. Halo's PAL release with the flag times its frames
+ * by KeTickCount, sleeping 40 ms less 0.83 of the frame's ms, ~41 ms a frame
+ * against 40 ms of two vblanks: one frame in 12 to 15 was a vblank late (60
+ * ms, 24.2 fps; turning the camera, a judder). Without it, it waits for the
+ * vblanks: every frame 40.0 ms apart. */
+static bool title_pal50(uint32_t title_id)
+{
+    return title_id == 0x4D530004u;     /* Halo: Combat Evolved */
+}
+
 static uint8_t *eeprom(NcKernel *k)
 {
     if (!g_eeprom_ready) {
@@ -429,7 +452,7 @@ static uint8_t *eeprom(NcKernel *k)
         }
         if (!have && in) {
             eeprom_create(k);                   /* the file kept as it is: someone's, maybe a real console's */
-            nc_log("hakuX-native", "ex: %s isn't a whole EEPROM: a new one for this run", p);
+            nc_log("xbased-native", "ex: %s isn't a whole EEPROM: a new one for this run", p);
         } else if (!have) {
             eeprom_create(k);
             /* set as the app's settings have the console (a game's own
@@ -443,7 +466,7 @@ static uint8_t *eeprom(NcKernel *k)
             eeprom_seal();
             eeprom_store();
             eeprom_sync_record();
-            nc_log("hakuX-native", "ex: new console EEPROM in %s", p);
+            nc_log("xbased-native", "ex: new console EEPROM in %s", p);
         } else {
             g_sec_plain = !sec_decrypt();
             if (g_sec_plain) {
@@ -461,7 +484,7 @@ static uint8_t *eeprom(NcKernel *k)
         if (g_sec_plain) {
             memcpy(g_eeprom + 0x2C, g_sec + 0x2C, 4);
         }
-        nc_wr32(g_eeprom + 0x58, pal ? 0x00800300u : 0x00400100u);
+        nc_wr32(g_eeprom + 0x58, video_standard(k));
         nc_wr32(g_eeprom + 0xBC, pal ? 2 : 1);
         /* So do the video settings: the app's (widescreen, 480p...). */
         if (g_video_flags >= 0) {
@@ -471,17 +494,25 @@ static uint8_t *eeprom(NcKernel *k)
          * (the app's default; 50 Hz the other choice): the flag the console's
          * dashboard sets, which the titles read to offer or take 60 Hz. */
         if (pal) {
+            const bool pal60 = g_pal60 && !title_pal50(k->title_id);
             const uint32_t v = nc_rd32(g_eeprom + 0x94);
-            nc_wr32(g_eeprom + 0x94, g_pal60 ? v | NC_VIDEO_PAL60 : v & ~NC_VIDEO_PAL60);
+            nc_wr32(g_eeprom + 0x94, pal60 ? v | NC_VIDEO_PAL60 : v & ~NC_VIDEO_PAL60);
+            if (g_pal60 && !pal60) {
+                nc_log("xbased-native", "ex: PAL-60 off for %08x: it stays at 50 Hz and paces itself by the flag",
+                       k->title_id);
+            }
         }
         if (g_language) {
             nc_wr32(g_eeprom + 0x90, (uint32_t)g_language);
         }
         /* The audio, the app's: stereo (0), or Dolby Digital on
-         * (XC_AUDIO_FLAGS_ENABLE_AC3), the games mixing six channels.
+         * (XC_AUDIO_FLAGS_ENABLE_AC3), the games mixing six channels, with
+         * the analog side at Dolby Surround (XC_AUDIO_FLAGS_SURROUND): the
+         * XDK's XGetAudioFlags has AC3 only with SURROUND, and a title that
+         * offers its 5.1 options on a SURROUND basic mode saw stereo.
          * Not what an EEPROM kept: one left at surround or mono by another
          * console played that way without a word in the settings. */
-        nc_wr32(g_eeprom + 0x98, g_audio_surround ? 0x00010000u : 0);
+        nc_wr32(g_eeprom + 0x98, g_audio_surround ? 0x00010002u : 0);
         /* A disc without the console's language plays in English, as a
          * console set to it would have the title choose. Its files in
          * English under the language's name (io.c's fallback) weren't
@@ -492,10 +523,10 @@ static uint8_t *eeprom(NcKernel *k)
         const uint32_t lang = nc_rd32(g_eeprom + 0x90);
         if (lang >= 2 && nc_io_disc_lacks_language(k->disc, (int)lang)) {
             if (g_language_fixed) {
-                nc_log("hakuX-native", "ex: the disc seems to lack the console's language (%u), kept: the game's own setting", lang);
+                nc_log("xbased-native", "ex: the disc seems to lack the console's language (%u), kept: the game's own setting", lang);
             } else {
                 nc_wr32(g_eeprom + 0x90, 1);
-                nc_log("hakuX-native", "ex: the disc hasn't the console's language (%u): English (set the language in the "
+                nc_log("xbased-native", "ex: the disc hasn't the console's language (%u): English (set the language in the "
                                        "game's settings to keep it)", lang);
             }
         }
@@ -511,7 +542,7 @@ static uint8_t *eeprom(NcKernel *k)
             if (g_sec_plain) {
                 memcpy(g_eeprom + 0x2C, g_sec + 0x2C, 4);
             }
-            nc_log("hakuX-native", "ex: a disc for several regions, the language %u's: Japan", lang_now);
+            nc_log("xbased-native", "ex: a disc for several regions, the language %u's: Japan", lang_now);
         }
         /* And the time zone, the phone's: its offset from UTC now as the
          * bias (UTC = local time + bias, minutes), without daylight saving
@@ -522,9 +553,9 @@ static uint8_t *eeprom(NcKernel *k)
         memset(g_eeprom + 0x88, 0, 8);
         eeprom_seal();
         g_eeprom_ready = true;
-        nc_log("hakuX-native", "ex: video flags %08x, AV pack %d, language %u, time zone bias %d min",
+        nc_log("xbased-native", "ex: video flags %08x, AV pack %d, language %u, time zone bias %d min",
                nc_rd32(g_eeprom + 0x94), g_av_pack, nc_rd32(g_eeprom + 0x90), (int32_t)nc_rd32(g_eeprom + 0x64));
-        nc_log("hakuX-native", "ex: console serial %.12s, MAC %02x:%02x:%02x:%02x:%02x:%02x%s", g_eeprom + 0x34,
+        nc_log("xbased-native", "ex: console serial %.12s, MAC %02x:%02x:%02x:%02x:%02x:%02x%s", g_eeprom + 0x34,
                g_eeprom[0x40], g_eeprom[0x41], g_eeprom[0x42], g_eeprom[0x43], g_eeprom[0x44], g_eeprom[0x45],
                g_sec_plain ? " (an image from before: its section in the clear)" : "");
     }
@@ -553,7 +584,7 @@ static uint64_t ExQueryNonVolatileSetting(NcKernel *k, NcFrame *f, const uint32_
 {
     const NvSetting *s = nv_find(a[0]);
     if (!s) {
-        nc_log("hakuX-native", "ex: non-volatile setting 0x%x not known", a[0]);
+        nc_log("xbased-native", "ex: non-volatile setting 0x%x not known", a[0]);
         return 0xC0000034u; /* STATUS_OBJECT_NAME_NOT_FOUND */
     }
     if (a[1]) {
@@ -590,7 +621,7 @@ static uint64_t ExSaveNonVolatileSetting(NcKernel *k, NcFrame *f, const uint32_t
     eeprom_seal();
     disk_checksums();
     eeprom_store();
-    nc_log("hakuX-native", "ex: the title saved setting %x (%u bytes) in the EEPROM", s->index, n);
+    nc_log("xbased-native", "ex: the title saved setting %x (%u bytes) in the EEPROM", s->index, n);
     return NC_STATUS_SUCCESS;
 }
 
@@ -611,7 +642,7 @@ static uint64_t XeLoadSection(NcKernel *k, NcFrame *f, const uint32_t *a)
     uint32_t refs = nc_vm_rd32(k->vm, s + 0x18);
     nc_vm_wr32(k->vm, s + 0x18, refs + 1);
     const uint32_t va = nc_vm_rd32(k->vm, s + 0x04), vsize = nc_vm_rd32(k->vm, s + 0x08);
-    nc_log("hakuX-native", "ex: load section %.8s %08x+%x (refs %u)", section_name(k, s), va, vsize, refs + 1);
+    nc_log("xbased-native", "ex: load section %.8s %08x+%x (refs %u)", section_name(k, s), va, vsize, refs + 1);
     if (refs) {
         return NC_STATUS_SUCCESS;
     }
@@ -663,7 +694,7 @@ static uint64_t XeUnloadSection(NcKernel *k, NcFrame *f, const uint32_t *a)
         return NC_STATUS_INVALID_PARAMETER;
     }
     nc_vm_wr32(k->vm, s + 0x18, refs - 1);
-    nc_log("hakuX-native", "ex: unload section %.8s (refs %u)", section_name(k, s), refs - 1);
+    nc_log("xbased-native", "ex: unload section %.8s (refs %u)", section_name(k, s), refs - 1);
     if (refs == 1) {
         const uint32_t va = nc_vm_rd32(k->vm, s + 0x04), vsize = nc_vm_rd32(k->vm, s + 0x08);
         section_release(k, s, va, vsize);
@@ -769,13 +800,13 @@ static uint64_t DbgPrint(NcKernel *k, NcFrame *f, const uint32_t *a)
         n--;
     }
     out[n] = 0;
-    nc_log("hakuX-native-dbg", "%s", out);
+    nc_log("xbased-native-dbg", "%s", out);
     return 0;
 }
 
 static uint64_t DbgBreakPoint(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    nc_log("hakuX-native-dbg", "DbgBreakPoint from %08x", nc_vm_rd32(k->vm, nc_frame_gpr(f, NC_ESP)));
+    nc_log("xbased-native-dbg", "DbgBreakPoint from %08x", nc_vm_rd32(k->vm, nc_frame_gpr(f, NC_ESP)));
     return 0;
 }
 
@@ -797,14 +828,14 @@ static uint64_t AvGetSavedDataAddress(NcKernel *k, NcFrame *f, const uint32_t *a
 {
     static unsigned s_logged;
     if (s_logged++ < 4) {
-        nc_log("hakuX-native", "AvGetSavedDataAddress: %08x", g_av_saved);
+        nc_log("xbased-native", "AvGetSavedDataAddress: %08x", g_av_saved);
     }
     return g_av_saved;
 }
 
 static uint64_t AvSetSavedDataAddress(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    nc_log("hakuX-native", "AvSetSavedDataAddress %08x", a[0]);
+    nc_log("xbased-native", "AvSetSavedDataAddress %08x", a[0]);
     g_av_saved = a[0];
     return 0;
 }
@@ -852,7 +883,7 @@ static uint64_t AvSendTVEncoderOption(NcKernel *k, NcFrame *f, const uint32_t *a
     static uint32_t s_logged;
     if (!(s_logged & (1u << (a[1] & 31)))) {
         s_logged |= 1u << (a[1] & 31);
-        nc_log("hakuX-native", "av: TV encoder option %u param %08x -> %08x", a[1], a[2], r);
+        nc_log("xbased-native", "av: TV encoder option %u param %08x -> %08x", a[1], a[2], r);
     }
     if (a[3]) {
         nc_vm_wr32(k->vm, a[3], r);
@@ -860,15 +891,101 @@ static uint64_t AvSendTVEncoderOption(NcKernel *k, NcFrame *f, const uint32_t *a
     return 0;
 }
 
+/* The title's own shape, 16:9 or 4:3: D3DPRESENT_PARAMETERS.Flags'
+ * D3DPRESENTFLAG_WIDESCREEN (0x10), which a title that draws anamorphic 16:9
+ * sets (the XDK: "set this flag if the title is supporting widescreen mode").
+ * The AV mode tells it only on a standard-definition output (its WSS flag,
+ * which D3D sets from it); a 480p or HD mode is the same for both shapes (the
+ * XDK's mode table: AV_MODE_640x480_TO_480P with and without
+ * AV_FLAGS_WIDESCREEN), and D3D sets the mode from no frame that still holds
+ * the parameters. A title keeps them for its Reset (a global in its data, or
+ * on its heap): the structure is found in RAM by its shape, a display mode's
+ * size, a back buffer count of 0 - 3, Windowed and EnableAutoDepthStencil 0
+ * or 1, a format, no flag but D3D's own (0x3F1), a refresh of 0, 50 or 60.
+ * Of several, the one whose PROGRESSIVE and 10X11PIXELASPECTRATIO flags fit
+ * the AV mode (0: none). Hitman Blood Money at 480p (0x150: widescreen,
+ * progressive, 10x11), Hitman 2 on a standard-definition output (0x130, the
+ * mode's WSS set), Vice City (0x20, no WSS). */
+static bool present_params(const uint8_t *p)
+{
+    const uint32_t w = nc_rd32(p), h = nc_rd32(p + 4), fmt = nc_rd32(p + 8), count = nc_rd32(p + 12);
+    const uint32_t windowed = nc_rd32(p + 28), autods = nc_rd32(p + 32), flags = nc_rd32(p + 40);
+    const uint32_t hz = nc_rd32(p + 44);
+    return (w == 640 || w == 720 || w == 1280 || w == 1920) && (h == 480 || h == 576 || h == 720 || h == 1080) &&
+           fmt && fmt < 0x80 && count <= 3 && windowed <= 1 && autods <= 1 && !(flags & ~0x3F1u) &&
+           (hz == 0 || hz == 50 || hz == 60);
+}
+
+/* ... or on the frames above the call (their first 4 KiB: the structure, or a
+ * pointer to it), as D3D sets the mode from a title's CreateDevice or Reset
+ * with the parameters a local (XIII: 0x101) */
+static uint32_t stack_present_flags(NcKernel *k, NcFrame *f)
+{
+    const uint32_t esp = nc_frame_gpr(f, NC_ESP);
+    for (uint32_t i = 0; i < 1024; i++) {
+        const uint32_t s = esp + 4 * i;
+        if (nc_vm_phys(k->vm, s) == UINT32_MAX) {
+            break;
+        }
+        const uint32_t v = nc_vm_rd32(k->vm, s);
+        for (int j = 0; j < 2; j++) {
+            const uint32_t at = j ? s : v;
+            const uint32_t pa = (at & 3) ? UINT32_MAX : nc_vm_phys(k->vm, at);
+            if (pa != UINT32_MAX && nc_vm_phys(k->vm, at + 0x30) == pa + 0x30 && present_params(k->vm->ram + pa)) {
+                return nc_rd32(k->vm->ram + pa + 40);
+            }
+        }
+    }
+    return UINT32_MAX;
+}
+
+void nc_kernel_av_title_scan(NcKernel *k, NcFrame *f)
+{
+    const uint32_t sf = f ? stack_present_flags(k, f) : UINT32_MAX;
+    if (sf != UINT32_MAX) {
+        nc_dev_nv2a_av_title_set(sf & 0x10u ? 2 : 1);
+        nc_log("xbased-native", "av: the title's presentation flags %08x (its call): %s", sf,
+               sf & 0x10u ? "16:9" : "4:3");
+        return;
+    }
+    const uint8_t *ram = k->vm->ram;
+    const uint32_t m = nc_dev_nv2a_av_mode(), reg = (m >> 16) & 0xFFu;
+    const bool hd = (m & 0x80000000u) != 0, fpar = reg >= 0x0F && reg <= 0x12;
+    uint32_t best = UINT32_MAX;
+    int best_score = -1;
+    for (uint32_t pa = 0; pa + 0x34 <= k->vm->ram_size; pa += 4) {
+        const uint32_t w = nc_rd32(ram + pa);
+        if ((w != 640 && w != 720 && w != 1280 && w != 1920) || !present_params(ram + pa)) {
+            continue;
+        }
+        const uint32_t fl = nc_rd32(ram + pa + 40);
+        const int score = !m ? 0 : (hd == ((fl & 0x40u) != 0)) * 2 + (fpar == ((fl & 0x100u) != 0));
+        if (score > best_score) {
+            best_score = score;
+            best = fl;
+        }
+    }
+    if (best == UINT32_MAX) {
+        /* (the shape the title gave at an earlier mode stays: XIII and Conker
+         * set the mode again later with no parameters left in reach) */
+        nc_log("xbased-native", "av: the title's presentation parameters not found");
+    } else {
+        nc_dev_nv2a_av_title_set(best & 0x10u ? 2 : 1);
+        nc_log("xbased-native", "av: the title's presentation flags %08x: %s", best, best & 0x10u ? "16:9" : "4:3");
+    }
+}
+
 /* AvSetDisplayMode(RegisterBase, Step, Mode, Format, Pitch, FrameBuffer) */
 static uint64_t AvSetDisplayMode(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    nc_log("hakuX-native", "av: display mode %08x format %08x pitch %u fb %08x", a[2], a[3], a[4], a[5]);
+    nc_log("xbased-native", "av: display mode %08x format %08x pitch %u fb %08x", a[2], a[3], a[4], a[5]);
     if (a[2]) {
         /* AV mode bit 30: the 50 Hz modes (PAL 576-line timings, as
          * 0x58030314 is); the 480-line, 480p and HD modes are 60 Hz. */
         nc_dev_nv2a_refresh(a[2] & 0x40000000u ? 50 : 60);
+        nc_dev_nv2a_av_mode_set(a[2]);
         nc_dev_nv2a_display_mode(a[4], a[3], a[2] & 0x40000000u ? 50 : 60, a[5]);
+        nc_kernel_av_title_scan(k, f);
     }
     return 0;
 }
@@ -876,7 +993,7 @@ static uint64_t AvSetDisplayMode(NcKernel *k, NcFrame *f, const uint32_t *a)
 /* HalReadWritePCISpace(BusNumber, SlotNumber, RegisterNumber, Buffer, Length, WritePCISpace) */
 static uint64_t HalReadWritePCISpace(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    nc_log("hakuX-native", "hal: PCI %s bus %u slot %u reg %02x len %u", a[5] & 0xff ? "write" : "read", a[0], a[1],
+    nc_log("xbased-native", "hal: PCI %s bus %u slot %u reg %02x len %u", a[5] & 0xff ? "write" : "read", a[0], a[1],
            a[2], a[4]);
     if (!(a[5] & 0xff)) {
         memset(nc_vm_host(k->vm, a[3]), 0, a[4]);
@@ -976,7 +1093,7 @@ void nc_kernel_launch_page_restore(NcKernel *k, const uint8_t page[NC_LAUNCH_PAG
     const uint32_t slot = data_va(k, "LaunchDataPage");
     const uint32_t va = slot ? nc_mm_contig_alloc(k, NC_LAUNCH_PAGE) : 0;
     if (!va) {
-        nc_log("hakuX-native", "relaunch: no launch data page for the title");
+        nc_log("xbased-native", "relaunch: no launch data page for the title");
         return;
     }
     memcpy(nc_vm_host(k->vm, va), page, NC_LAUNCH_PAGE);
@@ -1017,7 +1134,7 @@ static uint64_t HalReturnToFirmware(NcKernel *k, NcFrame *f, const uint32_t *a)
             nc_kernel_request_stop(k, f, "relaunch into %s (launch type %u)", xbe, nc_vm_rd32(k->vm, page));
             return 0;
         }
-        nc_log("hakuX-native", "relaunch: can't write %s", path);
+        nc_log("xbased-native", "relaunch: can't write %s", path);
     }
     char launch[LAUNCH_PATH_LEN + 1] = "";
     if (page) {
@@ -1077,9 +1194,21 @@ static uint64_t HalReadSMCTrayState(NcKernel *k, NcFrame *f, const uint32_t *a)
 
 /* ------------------------------------------------- caches, network PHY */
 
+/* The file cache's size in pages, as XSetFileCacheSize last set it (the
+ * XDK's default 64 KiB): read back by XGetFileCacheSize. The cache itself is
+ * the host's. */
+static uint32_t g_fsc_pages = 16;
+
 static uint64_t FscGetCacheSize(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    return 16;
+    return g_fsc_pages;
+}
+
+/* FscSetCacheSize(NumberOfCachePages) */
+static uint64_t FscSetCacheSize(NcKernel *k, NcFrame *f, const uint32_t *a)
+{
+    g_fsc_pages = a[0];
+    return NC_STATUS_SUCCESS;
 }
 
 static uint64_t KeBugCheck(NcKernel *k, NcFrame *f, const uint32_t *a)
@@ -1171,6 +1300,7 @@ void nc_kernel_title_loaded(NcKernel *k, const NcDisc *disc, const NcDiscFile *x
     const uint32_t region = cert_ok ? nc_vm_rd32(k->vm, cert + 0xA0) : 0;
     k->game_regions = region;
     k->game_region = region & 1 ? 1 : region & 2 ? 2 : region & 4 ? 4 : 1;
+    k->title_id = cert_ok && nc_vm_phys(k->vm, cert + 0x0B) != UINT32_MAX ? nc_vm_rd32(k->vm, cert + 0x08) : 0;
 
     /* XeImageFileName: ANSI_STRING { Length, MaximumLength, Buffer }. */
     const char *path = k->image_path[0] ? k->image_path : "\\Device\\CdRom0\\default.xbe";
@@ -1243,7 +1373,7 @@ void nc_ex_register(NcKernel *k)
     nc_kernel_impl(k, "HalReadSMCTrayState", HalReadSMCTrayState);
     nc_kernel_impl(k, "HalEnableSecureTrayEject", HalNothing);     /* the tray never opens */
     nc_kernel_impl(k, "FscGetCacheSize", FscGetCacheSize);
-    nc_kernel_impl(k, "FscSetCacheSize", HalNothing);
+    nc_kernel_impl(k, "FscSetCacheSize", FscSetCacheSize);
     nc_kernel_impl(k, "PhyGetLinkState", PhyGetLinkState);
     nc_kernel_impl(k, "PhyInitialize", PhyInitialize);
     nc_kernel_impl(k, "KeBugCheck", KeBugCheck);

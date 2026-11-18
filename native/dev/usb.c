@@ -1,5 +1,5 @@
 /*
- * hakuX native core — USB device side: endpoint 0 control transfers and the
+ * xbased native core — USB device side: endpoint 0 control transfers and the
  * standard requests (USB 1.1, chapter 9).
  */
 #include "native/dev/usb.h"
@@ -65,7 +65,7 @@ static int standard(NcUsbDev *d, const uint8_t *s, int wlen)
         return 0;
     case REQ_SET_CONFIGURATION:
         d->config = (uint8_t)value;
-        nc_log("hakuX-native-usb", "%s@%u: configuration %u", d->name, d->addr, d->config);
+        nc_log("xbased-native-usb", "%s@%u: configuration %u", d->name, d->addr, d->config);
         return 0;
     case REQ_GET_CONFIGURATION:
         d->buf[0] = d->config;
@@ -135,7 +135,7 @@ int nc_usb_ep0_in(NcUsbDev *d, uint8_t *buf, int len)
     if (d->pending_addr >= 0) {
         d->addr = (uint8_t)d->pending_addr;
         d->pending_addr = -1;
-        nc_log("hakuX-native-usb", "%s: address %u", d->name, d->addr);
+        nc_log("xbased-native-usb", "%s: address %u", d->name, d->addr);
     }
     return 0;
 }

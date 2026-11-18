@@ -1,5 +1,5 @@
 /*
- * hakuX on Windows: the BSD socket API on Winsock 2, for native/net and
+ * xbased on Windows: the BSD socket API on Winsock 2, for native/net and
  * libslirp. Sockets are SOCKETs: closed with nc_sock_close, their errors
  * read through nc_sock_errno (as errno values), made non-blocking with
  * nc_sock_nonblock.

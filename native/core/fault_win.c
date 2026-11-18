@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the core's faults on Windows: a vectored exception
+ * xbased native core — the core's faults on Windows: a vectored exception
  * handler hands access violations to nc_core_fault (MMIO, the dirty
  * tracking, a title's pager, a guest's own page fault) as Android's
  * SIGSEGV handler does, the exception's CONTEXT as the ucontext. Anything
@@ -53,7 +53,10 @@ static LONG WINAPI on_crash(PEXCEPTION_POINTERS ep)
     const EXCEPTION_RECORD *er = ep->ExceptionRecord;
     HMODULE self = GetModuleHandleW(NULL);
     CONTEXT c = *ep->ContextRecord;
-    nc_log("hakuX-native", "crash: exception %08lx at %p (exe+%llx), address %p, thread %lu",
+    if (nc_crash_hook) {
+        nc_crash_hook();                /* a driver crash in a shader build: noted (precision.h) */
+    }
+    nc_log("xbased-native", "crash: exception %08lx at %p (exe+%llx), address %p, thread %lu",
            er->ExceptionCode, er->ExceptionAddress, (unsigned long long)((uintptr_t)er->ExceptionAddress - (uintptr_t)self),
            er->NumberParameters > 1 ? (void *)er->ExceptionInformation[1] : NULL, GetCurrentThreadId());
     for (int k = 0; k < 24 && c.Rip; k++) {
@@ -65,7 +68,7 @@ static LONG WINAPI on_crash(PEXCEPTION_POINTERS ep)
             GetModuleFileNameA(m, name, sizeof(name));
         }
         const char *base = strrchr(name, '\\');
-        nc_log("hakuX-native", "crash:   #%d %s+%llx", k, base ? base + 1 : name,
+        nc_log("xbased-native", "crash:   #%d %s+%llx", k, base ? base + 1 : name,
                (unsigned long long)(c.Rip - (uintptr_t)m));
         DWORD64 img = 0;
         PRUNTIME_FUNCTION fe = RtlLookupFunctionEntry(c.Rip, &img, NULL);

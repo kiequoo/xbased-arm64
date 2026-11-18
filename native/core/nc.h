@@ -1,8 +1,8 @@
 /*
- * hakuX native core — common definitions.
+ * xbased native core — common definitions.
  *
  * The native core runs an Xbox title without QEMU: FEXCore (fork, branch
- * hakuX) executes the 32-bit guest behind a guest memory base, and the Xbox
+ * xbased) executes the 32-bit guest behind a guest memory base, and the Xbox
  * kernel is reimplemented in native/kernel. See
  * docs/superpowers/plans/2026-10-12-native-core-00-roadmap.md.
  */

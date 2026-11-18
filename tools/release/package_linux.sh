@@ -23,7 +23,7 @@ cp -r "$REPO/native/app/ui/fonts" "$APPDIR/usr/bin/fonts"
 cp -r "$REPO/mods" "$APPDIR/usr/bin/mods"
 cp -r "$REPO/cheats" "$APPDIR/usr/bin/cheats"
 mv "$APPDIR/usr/bin/mods/README.md" "$APPDIR/usr/share/doc/xbased/MODS.md"   # how to add patches
-README=$REPO/docs/xbased/README.md; [ -f "$README" ] || README=$REPO/README.md
+README=$REPO/docs/README.md; [ -f "$README" ] || README=$REPO/README.md
 cp "$README" "$REPO/COPYING" "$REPO/LICENSE" "$APPDIR/usr/share/doc/xbased/"
 cp -r "$REPO/licenses" "$APPDIR/usr/share/doc/xbased/licenses"
 

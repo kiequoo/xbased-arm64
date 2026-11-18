@@ -1,5 +1,5 @@
 /*
- * hakuX native core — XDVDFS (Xbox game disc filesystem) reader.
+ * xbased native core — XDVDFS (Xbox game disc filesystem) reader.
  *
  * Reads files from an Xbox disc image: an extracted XISO or a full disc dump
  * (the game partition at one of the XGD1/2/3 offsets).

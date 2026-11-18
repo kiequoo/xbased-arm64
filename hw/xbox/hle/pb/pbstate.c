@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — push-buffer mode in a savestate (pbstate.h; native core
+ * xbased HLE GPU — push-buffer mode in a savestate (pbstate.h; native core
  * only): the PBD section.
  */
 #include "hw/xbox/hle/base.h"
@@ -51,7 +51,7 @@ bool nc_pbd_state_load(NcRd *r, unsigned v)
         return false;
     }
     if (active != hle_pb_active()) {
-        hle_log("hakuX-hle-pb", "savestate: saved %s push-buffer mode, this run %s", active ? "in" : "out of",
+        hle_log("xbased-hle-pb", "savestate: saved %s push-buffer mode, this run %s", active ? "in" : "out of",
                 hle_pb_active() ? "in it" : "out of it");
         return false;
     }
@@ -63,7 +63,7 @@ bool nc_pbd_state_load(NcRd *r, unsigned v)
     if (!hle_pbd_state_set(&pd, imm, inl, idx)) {
         return false;
     }
-    hle_log("hakuX-hle-pb", "savestate: decoder at GET %08x%s%s, %llu swaps", pb.get,
+    hle_log("xbased-hle-pb", "savestate: decoder at GET %08x%s%s, %llu swaps", pb.get,
             pb.flip_wait ? " (flip stall)" : "", pb.trap_wait ? " (trap)" : "", (unsigned long long)pd.swaps);
     return true;
 }

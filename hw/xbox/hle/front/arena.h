@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — upload arena allocator (§5.3): a ring of allocations,
+ * xbased HLE GPU — upload arena allocator (§5.3): a ring of allocations,
  * each tagged with the timeline value of the submission that reads it,
  * reclaimed when the GPU passes that value. Consumers arrive in P3.
  */

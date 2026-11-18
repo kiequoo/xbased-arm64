@@ -1,5 +1,5 @@
 /*
- * hakuX native core — a game folder as a disc (fold_image.h).
+ * xbased native core — a game folder as a disc (fold_image.h).
  *
  * The image is laid out as an XDVDFS writer would: the volume descriptor at
  * sector 32, then each folder's directory table (a binary tree of its
@@ -200,7 +200,7 @@ static bool table_build(Node *dir, uint8_t **out)
     uint8_t *t = at <= 0x40000u ? malloc(size) : NULL;
     if (!t) {
         if (at > 0x40000u) {
-            nc_log("hakuX-native", "disc: the folder %s has more files (%u) than a disc's folder can list",
+            nc_log("xbased-native", "disc: the folder %s has more files (%u) than a disc's folder can list",
                    dir->name[0] ? dir->name : "of the game", dir->nkids);
         }
         free(order);
@@ -360,7 +360,7 @@ bool nc_fold_attach(int fd)
     char dir[1024];
     if (!f || !fd_dir(fd, dir, sizeof(dir))) {
         pthread_mutex_unlock(&g_mu);
-        nc_log("hakuX-native", "disc: a game folder can't be read (%s)", f ? "its path" : "too many open");
+        nc_log("xbased-native", "disc: a game folder can't be read (%s)", f ? "its path" : "too many open");
         return false;
     }
     Node root;
@@ -394,7 +394,7 @@ bool nc_fold_attach(int fd)
         free(files);
         free(meta);
         pthread_mutex_unlock(&g_mu);
-        nc_log("hakuX-native", "disc: the game folder %s can't be read", dir);
+        nc_log("xbased-native", "disc: the game folder %s can't be read", dir);
         return false;
     }
     memset(f, 0, sizeof(*f));
@@ -409,7 +409,7 @@ bool nc_fold_attach(int fd)
         f->cache_fd[i] = -1;
     }
     pthread_mutex_unlock(&g_mu);
-    nc_log("hakuX-native", "disc: the game folder %s (%u files, %llu MiB) as a disc", dir, nfiles,
+    nc_log("xbased-native", "disc: the game folder %s (%u files, %llu MiB) as a disc", dir, nfiles,
            (unsigned long long)(f->size >> 20));
     return true;
 }
@@ -513,7 +513,7 @@ bool nc_fold_read(int fd, void *buf, size_t len, uint64_t off)
                     got += (size_t)r;
                 }
                 if (got < m) {
-                    nc_log("hakuX-native", "disc: reading %s failed", ff->host);
+                    nc_log("xbased-native", "disc: reading %s failed", ff->host);
                     ok = false;
                     break;
                 }

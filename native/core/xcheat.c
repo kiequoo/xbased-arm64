@@ -1,5 +1,5 @@
 /*
- * hakuX native core — Xbox cheat files (xcheat.h).
+ * xbased native core — Xbox cheat files (xcheat.h).
  *
  * The format, as XBMC4Xbox reads it (xbmc/utils/Trainer.cpp): at 0x0A the
  * offset of the options' states, at 0x0E of a table of text offsets (the
@@ -214,11 +214,11 @@ static uint32_t install_one(struct NcKernel *k, struct NcVm *vm, uint32_t entry,
 {
     NcXCheat x;
     if (!nc_xcheat_load(g_path, &x)) {
-        nc_log("hakuX-native", "cheats: %s can't be read", g_path);
+        nc_log("xbased-native", "cheats: %s can't be read", g_path);
         return entry;
     }
     if (!nc_xcheat_for_title(&x, title_id)) {
-        nc_log("hakuX-native", "cheats: %s is for titles %08x %08x %08x, not %08x", g_path, x.title_ids[0],
+        nc_log("xbased-native", "cheats: %s is for titles %08x %08x %08x, not %08x", g_path, x.title_ids[0],
                x.title_ids[1], x.title_ids[2], title_id);
         nc_xcheat_free(&x);
         return entry;
@@ -241,7 +241,7 @@ static uint32_t install_one(struct NcKernel *k, struct NcVm *vm, uint32_t entry,
     const uint32_t va = nc_mm_contig_alloc(k, (total + NC_PAGE - 1) & ~(NC_PAGE - 1));
     uint8_t *h = va ? nc_vm_host(vm, va) : NULL;
     if (!h) {
-        nc_log("hakuX-native", "cheats: no memory for %s", g_path);
+        nc_log("xbased-native", "cheats: no memory for %s", g_path);
         nc_xcheat_free(&x);
         return entry;
     }
@@ -306,7 +306,7 @@ static uint32_t install_one(struct NcKernel *k, struct NcVm *vm, uint32_t entry,
             wr32(store, va);
         }
     }
-    nc_log("hakuX-native", "cheats: %s (%s), %d of %d options on, at %08x", g_path, x.name, on, x.nopts, base);
+    nc_log("xbased-native", "cheats: %s (%s), %d of %d options on, at %08x", g_path, x.name, on, x.nopts, base);
     nc_xcheat_free(&x);
     return start;
 }

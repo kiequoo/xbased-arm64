@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the APU's output: 48 kHz 16-bit stereo on AAudio.
+ * xbased native core — the APU's output: 48 kHz 16-bit stereo on AAudio.
  *
  * The frame thread pushes each EP frame (256 samples, 1024 bytes) into a
  * ring; AAudio's data callback drains it. One producer and one consumer, so
@@ -161,7 +161,7 @@ static bool start_locked(void)
 {
     const aaudio_result_t r = AAudioStream_requestStart(g_out.stream);
     if (r != AAUDIO_OK) {
-        nc_log("hakuX-apu", "output stream: start failed (%s)", AAudio_convertResultToText(r));
+        nc_log("xbased-apu", "output stream: start failed (%s)", AAudio_convertResultToText(r));
     }
     return r == AAUDIO_OK;
 }
@@ -205,13 +205,13 @@ static void *reopen_thread(void *arg)
                 }
                 pthread_mutex_unlock(&g_out.mu);
                 if (ok) {
-                    nc_log("hakuX-apu", "output stream open again");
+                    nc_log("xbased-apu", "output stream open again");
                     return NULL;
                 }
                 AAudioStream_close(s);
             } else if (!said) {
                 said = true;
-                nc_log("hakuX-apu", "no output stream (AAudio: %s); draining without sound, "
+                nc_log("xbased-apu", "no output stream (AAudio: %s); draining without sound, "
                        "trying again each second", AAudio_convertResultToText(r));
             }
         }
@@ -247,7 +247,7 @@ static void on_error(AAudioStream *s, void *user, aaudio_result_t error)
     const bool current = s == g_out.stream;
     pthread_mutex_unlock(&g_out.mu);
     if (current && reopen()) {
-        nc_log("hakuX-apu", "output stream lost (%s); opening it again",
+        nc_log("xbased-apu", "output stream lost (%s); opening it again",
                AAudio_convertResultToText(error));
     }
 }
@@ -349,7 +349,7 @@ int apu_out_open(int capacity_bytes, int samples, pthread_cond_t *wake)
         g_sdl = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, on_sdl, NULL);
     }
     if (!g_sdl) {
-        nc_log("hakuX-apu", "no output stream (SDL: %s); draining without sound", SDL_GetError());
+        nc_log("xbased-apu", "no output stream (SDL: %s); draining without sound", SDL_GetError());
         pthread_t t;
         apu_thread_start(&t, "apu.drain", drain_thread, NULL, false);
     } else {
@@ -366,7 +366,7 @@ int apu_out_open(int capacity_bytes, int samples, pthread_cond_t *wake)
         SDL_AudioSpec got = {0};
         int got_frames = 0;
         SDL_GetAudioDeviceFormat(dev, &got, &got_frames);
-        nc_log("hakuX-apu", "output stream: %s (%s), %d frames a callback asked, %d channels; "
+        nc_log("xbased-apu", "output stream: %s (%s), %d frames a callback asked, %d channels; "
                             "the device: %d frames a period, %d channels, %d Hz",
                SDL_GetAudioDeviceName(dev), SDL_GetCurrentAudioDriver(), samples, g_apu_out_channels, got_frames,
                got.channels, got.freq);

@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — strip batching (see batch.c).
+ * xbased HLE GPU — strip batching (see batch.c).
  */
 #ifndef HW_XBOX_HLE_VK_BATCH_H
 #define HW_XBOX_HLE_VK_BATCH_H
@@ -13,8 +13,8 @@
  * the device's entry points are loaded). */
 void hle_batch_install(struct VolkDeviceTable *t);
 
-/* The index buffer, once the device is up; off (HAKUX_HLE_BATCH=0 or
- * debug.hakux.batch=0) records every draw as it comes. */
+/* The index buffer, once the device is up; off (XBASED_HLE_BATCH=0 or
+ * debug.xbased.batch=0) records every draw as it comes. */
 void hle_batch_init(void);
 
 /* A command buffer starts for frame slot `slot`, whose previous recording

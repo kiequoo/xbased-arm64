@@ -1,5 +1,5 @@
 /*
- * hakuX native core — savestates (push-buffer mode).
+ * xbased native core — savestates (push-buffer mode).
  *
  * A state is a header and versioned sections. What a section stores is
  * described by field tables (the .def files in native/state, expanded by def.h in the

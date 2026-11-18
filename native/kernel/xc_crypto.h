@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the crypto behind the kernel's Xc exports: SHA-1,
+ * xbased native core — the crypto behind the kernel's Xc exports: SHA-1,
  * HMAC-SHA1, RC4, DES / triple DES and modular exponentiation. Plain
  * functions over host memory, unit-tested on the host (tests/native/xc).
  */

@@ -1,10 +1,10 @@
-# hakuX native core (QEMU-free): FEXCore fork + reimplemented Xbox kernel.
+# xbased native core (QEMU-free): FEXCore fork + reimplemented Xbox kernel.
 #
-# hakux_native is the core library; xboxrun runs a title from the command
+# xbased_native is the core library; xboxrun runs a title from the command
 # line on the device (adb shell) for the frontier loop. Cross-compiled with
 # the NDK into build/native/core; the steps are in android/README.md.
 cmake_minimum_required(VERSION 3.20)
-project(hakux_native C CXX)
+project(xbased_native C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
@@ -13,8 +13,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ThinLTO for Release builds of everything but FEX (its own ENABLE_LTO stays
 # off, fex.cmake): the decoder and the renderer ~2% lighter (the RP5, DOA2).
 # The cache keeps relinking after a change to the files changed.
-option(HAKUX_LTO "ThinLTO in Release builds (FEX excepted)" ON)
-if(HAKUX_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
+option(XBASED_LTO "ThinLTO in Release builds (FEX excepted)" ON)
+if(XBASED_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
   include(CheckIPOSupported)
   check_ipo_supported(RESULT nc_ipo LANGUAGES C CXX)
   if(nc_ipo)
@@ -37,14 +37,14 @@ if(NC_LINUX_X64)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/linux.cmake")
 elseif(NC_LINUX_ARM64)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/linux_arm64.cmake")
-  set(NC_XXHASH_DIR "${HAKUX_FEX_DIR}/External/xxhash")
+  set(NC_XXHASH_DIR "${XBASED_FEX_DIR}/External/xxhash")
 elseif(WIN32)
   # Windows x64: the guest CPU is the core's own x86-32 -> x86-64 translator
   # (cpu/cpu_x86.cpp, on Zydis) instead of FEX; cmake/win.cmake.
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/win.cmake")
 else()
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/fex.cmake")
-  set(NC_XXHASH_DIR "${HAKUX_FEX_DIR}/External/xxhash")
+  set(NC_XXHASH_DIR "${XBASED_FEX_DIR}/External/xxhash")
 endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/hle.cmake")
 
@@ -108,7 +108,7 @@ else()
   set(NC_SYS_LIBS log)
 endif()
 
-add_library(hakux_native STATIC
+add_library(xbased_native STATIC
   ${NC_PLATFORM_SOURCES}
   core/log.c
   core/xdvdfs.c
@@ -158,20 +158,20 @@ add_library(hakux_native STATIC
   state/cache.c
   "${NC_REPO}/hw/xbox/hle/core/xbe.c"
 )
-target_include_directories(hakux_native PUBLIC "${NC_REPO}")
+target_include_directories(xbased_native PUBLIC "${NC_REPO}")
 # xxhash (single header, FEX's copy): the savestates' blob store (state/cache.c)
-target_include_directories(hakux_native PRIVATE "${NC_XXHASH_DIR}")
+target_include_directories(xbased_native PRIVATE "${NC_XXHASH_DIR}")
 # The HLE layer's pure modules build without QEMU in this mode.
-target_compile_definitions(hakux_native PRIVATE HLE_HOST_TEST)
+target_compile_definitions(xbased_native PRIVATE HLE_HOST_TEST)
 # Cross-compiling: no system libz in sysroot; zlibstatic is wired up below (after
 # libchdr's add_subdirectory builds it).  Native and CI builds use the system -lz.
 if(NOT CMAKE_CROSSCOMPILING)
-  target_link_libraries(hakux_native PUBLIC ${NC_CPU_LIB} hakux_hle hakux_apu nc_slirp ${NC_SYS_LIBS} z)
+  target_link_libraries(xbased_native PUBLIC ${NC_CPU_LIB} xbased_hle xbased_apu nc_slirp ${NC_SYS_LIBS} z)
 else()
-  target_link_libraries(hakux_native PUBLIC ${NC_CPU_LIB} hakux_hle hakux_apu nc_slirp ${NC_SYS_LIBS})
+  target_link_libraries(xbased_native PUBLIC ${NC_CPU_LIB} xbased_hle xbased_apu nc_slirp ${NC_SYS_LIBS})
 endif()
-target_compile_options(hakux_native PRIVATE -Wall -Wno-unused-parameter)
-target_sources(hakux_native PRIVATE core/chd_image.c core/fold_image.c)
+target_compile_options(xbased_native PRIVATE -Wall -Wno-unused-parameter)
+target_sources(xbased_native PRIVATE core/chd_image.c core/fold_image.c core/nbd_image.c)
 
 # libchdr (NC_DEPS/libchdr, BSD-3, unmodified): CHD disc images
 # (core/chd_image.c), with its own LZMA, Zstandard and FLAC decoders and the
@@ -208,13 +208,13 @@ if(EXISTS "${NC_DEPS}/libchdr/CMakeLists.txt")
   set(INSTALL_STATIC_LIBS OFF CACHE BOOL "" FORCE)
   add_subdirectory("${NC_DEPS}/libchdr" "${CMAKE_BINARY_DIR}/libchdr" EXCLUDE_FROM_ALL)
   target_compile_options(chdr-static PRIVATE -w)
-  target_link_libraries(hakux_native PRIVATE chdr-static)
-  target_compile_definitions(hakux_native PRIVATE NC_HAVE_CHD)
-  # Cross-compiling: also link static zlib and expose its headers to hakux_native
+  target_link_libraries(xbased_native PRIVATE chdr-static)
+  target_compile_definitions(xbased_native PRIVATE NC_HAVE_CHD)
+  # Cross-compiling: also link static zlib and expose its headers to xbased_native
   # so that state/cache.c (which includes <zlib.h> directly) finds them.
   if(CMAKE_CROSSCOMPILING AND TARGET zlibstatic)
-    target_link_libraries(hakux_native PRIVATE zlibstatic)
-    target_include_directories(hakux_native PRIVATE
+    target_link_libraries(xbased_native PRIVATE zlibstatic)
+    target_include_directories(xbased_native PRIVATE
       "${NC_DEPS}/zlib"
       "${CMAKE_BINARY_DIR}/zlib"  # zconf.h lives here after configure
     )
@@ -226,16 +226,16 @@ endif()
 # (cmake/app.cmake).
 if(WIN32 OR NC_LINUX_X64 OR NC_LINUX_ARM64)
   add_executable(xboxrun EXCLUDE_FROM_ALL run/xboxrun.c run/capture.c)
-  target_link_libraries(xboxrun PRIVATE hakux_native hakux_hle z)
+  target_link_libraries(xboxrun PRIVATE xbased_native xbased_hle z)
 else()
   add_executable(xboxrun run/xboxrun.c run/capture.c app/vkdriver.c app/vklayer.c)
-  target_link_libraries(xboxrun PRIVATE hakux_native hakux_hle z log)
+  target_link_libraries(xboxrun PRIVATE xbased_native xbased_hle z log)
 endif()
-target_link_libraries(hakux_hle PUBLIC hakux_native)
-target_link_libraries(nc_slirp PRIVATE hakux_native)   # nc_log
+target_link_libraries(xbased_hle PUBLIC xbased_native)
+target_link_libraries(nc_slirp PRIVATE xbased_native)   # nc_log
 
-# The hakuX app's native core library (native/app, cmake/app.cmake); on
-# Windows and Linux the hakuX executable (native/app/win_main.c, cmake/app_win.cmake).
+# The xbased app's native core library (native/app, cmake/app.cmake); on
+# Windows and Linux the xbased executable (native/app/win_main.c, cmake/app_win.cmake).
 if(WIN32 OR NC_LINUX_X64 OR NC_LINUX_ARM64)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/app_win.cmake")
 else()
@@ -255,36 +255,36 @@ if(WIN32)
   nc_win_compat(cputest)
 endif()
 # The translator's diagnostics in the app itself (NC_SMC_CHECK): off, and
-# never in a release; -DHAKUX_CPU_DIAG=ON for a build to investigate a title.
-option(HAKUX_CPU_DIAG "the translator's diagnostics in the app (not for releases)" OFF)
-if(HAKUX_CPU_DIAG)
-  target_compile_definitions(hakux_native PRIVATE NC_CPU_DIAG=1)
+# never in a release; -DXBASED_CPU_DIAG=ON for a build to investigate a title.
+option(XBASED_CPU_DIAG "the translator's diagnostics in the app (not for releases)" OFF)
+if(XBASED_CPU_DIAG)
+  target_compile_definitions(xbased_native PRIVATE NC_CPU_DIAG=1)
 endif()
 # The statistics a run keeps and logs as it goes (the kernel's and the
 # decoder's counts and their lines every few seconds, the stutter monitor,
 # the GPU event trace, the debug properties' polls): off, and never in a
-# release; -DHAKUX_DIAG=ON for a build to investigate a title. What a
+# release; -DXBASED_DIAG=ON for a build to investigate a title. What a
 # report needs stays in every build: the log, a fault's last kernel calls
 # and threads, the frame rate's line.
-option(HAKUX_DIAG "the run's statistics and traces (not for releases)" OFF)
-if(HAKUX_DIAG)
-  add_compile_definitions(HAKUX_DIAG=1)
+option(XBASED_DIAG "the run's statistics and traces (not for releases)" OFF)
+if(XBASED_DIAG)
+  add_compile_definitions(XBASED_DIAG=1)
 else()
-  add_compile_definitions(HAKUX_DIAG=0)
+  add_compile_definitions(XBASED_DIAG=0)
 endif()
 
 if(WIN32)
-  nc_win_compat(hakux_native hakux_hle hakux_apu nc_glib nc_slirp xboxrun)
-  if(TARGET hakux)
-    nc_win_compat(hakux)
+  nc_win_compat(xbased_native xbased_hle xbased_apu nc_glib nc_slirp xboxrun)
+  if(TARGET xbased)
+    nc_win_compat(xbased)
   endif()
 elseif(NC_LINUX_X64 OR NC_LINUX_ARM64)
-  nc_linux_compat(hakux_native hakux_hle hakux_apu nc_glib nc_slirp xboxrun hakux)
+  nc_linux_compat(xbased_native xbased_hle xbased_apu nc_glib nc_slirp xboxrun xbased)
 endif()
 
-# On arm64 the CPU backend is FEX, so hakux_native doesn't pull in Zydis the way
+# On arm64 the CPU backend is FEX, so xbased_native doesn't pull in Zydis the way
 # x86-64/Windows do; app/mod_fit.c still decodes the guest's x86-32 XBE on any
-# host, so link Zydis (and its include dirs) straight into hakux here.
+# host, so link Zydis (and its include dirs) straight into xbased here.
 if(NC_LINUX_ARM64)
-  target_link_libraries(hakux PRIVATE nc_zydis)
+  target_link_libraries(xbased PRIVATE nc_zydis)
 endif()

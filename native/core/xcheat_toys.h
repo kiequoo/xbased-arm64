@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the support routines .xbtf cheat files call (xcheat.c):
+ * xbased native core — the support routines .xbtf cheat files call (xcheat.c):
  * the SMBus write, the code patch and hook, the in-game keys and the LCD
  * writes (those two as stubs here: no LCD), as XBMC4Xbox loads them beside a cheat file (xbmc/Util.cpp, its
  * trainer support, GPL-2.0-or-later: Team XBMC, the loader donated by Team

@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — guest RAM in GPU-importable memory (G0.3 strategy (a)).
+ * xbased HLE GPU — guest RAM in GPU-importable memory (G0.3 strategy (a)).
  */
 #ifndef HW_XBOX_HLE_UMA_UMA_H
 #define HW_XBOX_HLE_UMA_UMA_H

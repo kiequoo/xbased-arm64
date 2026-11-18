@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Kelvin values that come in a surface's own format.
+ * xbased HLE GPU — Kelvin values that come in a surface's own format.
  */
 #ifndef HW_XBOX_HLE_PB_KVFMT_H
 #define HW_XBOX_HLE_PB_KVFMT_H

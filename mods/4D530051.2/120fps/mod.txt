@@ -1,6 +1,6 @@
 name: 120 fps
 description: The game at 120 frames a second (on a 120 Hz screen) instead of 30. The game steps by the time each frame took, so it keeps its speed when the device can't hold 120; what it counts in whole sixtieths of a second (many timers and countdowns) still moves 60 times a second. Use it instead of the 60 fps mod, not with it.
-author: hakuX
+author: xbased
 refresh: 120
 
 [default.xbe]

@@ -6,7 +6,7 @@ LAST = 'code_end'
 
 HEADER = """name: 60 fps
 description: Lifts the 30 fps cap in gameplay: up to 60 frames a second, the game at its normal speed; characters, vehicles and objects are drawn between the game's 30 updates a second (particles and effects still move 30 times a second). Use it instead of the 120 fps mod, not with it.
-author: hakuX
+author: xbased
 
 # Halo 2's frame limiter (0x12B0E0) waits N vblanks a frame: N is the video
 # settings' interval mode (1, as in the menus), but at least 2 while a game

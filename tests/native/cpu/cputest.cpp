@@ -25,6 +25,7 @@
  */
 #include "native/cpu/cpu.h"
 #include "native/cpu/x64asm.h"
+#include "native/cpu/rsqrt_p3.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -800,8 +801,17 @@ static void define_tests()
                                         0x0F, 0xAE, 0x83, 0x00, 0x02, 0x00, 0x00,       /* fxsave [ebx+512] */
                                         0xD9, 0xEE, 0x0F, 0x57, 0xC0,   /* fldz; xorps xmm0, xmm0 */
                                         0x0F, 0xAE, 0x8B, 0x00, 0x02, 0x00, 0x00});     /* fxrstor [ebx+512] */
-        /* pointers as above; XMM8-15's and the reserved bytes: 64-bit mode's FXSAVE writes more of the image */
-        t.ignore = {{DATA + 0x1000 + 512 + 6, 18}, {DATA + 0x1000 + 512 + 288, 224}};
+        /* pointers as above; XMM8-15's and the reserved bytes: 64-bit mode's FXSAVE writes more of the image;
+         * MXCSR_MASK the Pentium III's (0), not the host's */
+        t.ignore = {{DATA + 0x1000 + 512 + 6, 18}, {DATA + 0x1000 + 512 + 28, 4}, {DATA + 0x1000 + 512 + 288, 224}};
+        t.check = [](const State &, const State &, std::string &why) {
+            uint32_t mask;
+            memcpy(&mask, (const void *)(uintptr_t)(DATA + 0x1000 + 512 + 28), 4);
+            if (mask) {
+                why = "MXCSR_MASK " + std::to_string(mask) + ", not 0";
+            }
+            return mask == 0;
+        };
     }
     T("mmx", {0x0F, 0x6F, 0x03,                 /* movq mm0, [ebx] */
               0x0F, 0x6F, 0x4B, 0x08,           /* movq mm1, [ebx+8] */
@@ -839,6 +849,90 @@ static void define_tests()
                   0x0F, 0xAE, 0x13,                     /* ldmxcsr [ebx] */
                   0xF3, 0x0F, 0x2D, 0x43, 0x10});       /* cvtss2si eax, [ebx+16] */
     T("nops", {0x90, 0x0F, 0x1F, 0x40, 0x00, 0xF3, 0x90, 0x66, 0x90, 0x8D, 0x76, 0x00});
+
+    /* RSQRTSS / RSQRTPS: the Pentium III's (rsqrt_p3.h), whatever the host's
+     * own give: checked against the model, not the processor */
+    {
+        auto lane = [](const uint8_t *x, int i) {
+            uint32_t v;
+            memcpy(&v, x + 4 * i, 4);
+            return v;
+        };
+        Test &t = T("rsqrtss, rsqrtps", {0x0F, 0x52, 0xC1,          /* rsqrtps xmm0, xmm1 */
+                                         0xF3, 0x0F, 0x52, 0x13,    /* rsqrtss xmm2, [ebx] */
+                                         0x0F, 0x52, 0x1E,          /* rsqrtps xmm3, [esi] */
+                                         0xF3, 0x0F, 0x52, 0xE5});  /* rsqrtss xmm4, xmm5 */
+        t.no_native = true;
+        t.setup = [](State &s) {
+            /* the special values in xmm1's lanes on some runs, random ones else */
+            static const uint32_t sp[] = {0, 0x80000000u, 0x7F800000u, 0xFF800000u, 0x7F800001u,
+                                          0xFFC00000u, 0x00000001u, 0xBF800000u, 0x3F800000u, 0x007FFFFFu};
+            if (rnd() & 1) {
+                for (int i = 0; i < 4; i++) {
+                    memcpy(s.fx + 160 + 16 + 4 * i, &sp[rnd() % 10], 4);
+                }
+            }
+        };
+        t.check = [lane](const State &in, const State &out, std::string &why) {
+            const uint8_t *xi = in.fx + 160, *xo = out.fx + 160;
+            const uint8_t *mb = (const uint8_t *)(uintptr_t)(DATA + 0x1000), *ms = (const uint8_t *)(uintptr_t)(DATA + 0x2000);
+            char b[160];
+            for (int i = 0; i < 4; i++) {
+                const uint32_t want[4][2] = {
+                    {lane(xo, i), nc_rsqrt_model(lane(xi + 16, i))},
+                    {lane(xo + 32, i), i ? lane(xi + 32, i) : nc_rsqrt_model(lane(mb, 0))},
+                    {lane(xo + 48, i), nc_rsqrt_model(lane(ms, i))},
+                    {lane(xo + 64, i), i ? lane(xi + 64, i) : nc_rsqrt_model(lane(xi + 80, 0))}};
+                for (int r = 0; r < 4; r++) {
+                    if (want[r][0] != want[r][1]) {
+                        snprintf(b, sizeof(b), "register %d lane %d %08x, the model's %08x; ", r, i, want[r][0], want[r][1]);
+                        why += b;
+                    }
+                }
+            }
+            for (int r : {1, 5, 6, 7}) {
+                if (memcmp(xi + 16 * r, xo + 16 * r, 16)) {
+                    why += "xmm" + std::to_string(r) + " changed; ";
+                }
+            }
+            if ((in.eflags ^ out.eflags) & FLAGS_ALL) {
+                why += "the flags changed; ";
+            }
+            return why.empty();
+        };
+    }
+    {
+        /* the same over 512 blocks of random memory: movaps xmm1, [esi]; rsqrtps xmm0, xmm1;
+         * movaps [edi], xmm0; rsqrtss xmm2, [esi+4]; movss [edi+0x2000], xmm2; add esi, 16;
+         * add edi, 16; dec ecx; jnz */
+        Test &t = T("rsqrtps over memory", Code({0xB9}).d(512)({0x0F, 0x28, 0x0E, 0x0F, 0x52, 0xC1, 0x0F, 0x29, 0x07,
+                                                              0xF3, 0x0F, 0x52, 0x56, 0x04,
+                                                              0xF3, 0x0F, 0x11, 0x97, 0x00, 0x20, 0x00, 0x00,
+                                                              0x83, 0xC6, 0x10, 0x83, 0xC7, 0x10, 0x49, 0x75, 0xE1}));
+        t.no_native = true;
+        t.setup = [](State &s) {
+            s.r[ESI] = DATA;
+            s.r[EDI] = DATA + 0x2000;
+        };
+        t.check = [](const State &, const State &, std::string &why) {
+            const uint8_t *m = (const uint8_t *)(uintptr_t)DATA;
+            unsigned bad = 0;
+            char b[160];
+            for (uint32_t i = 0; i < 512; i++) {
+                for (uint32_t l = 0; l < 5; l++) {
+                    uint32_t x, y;
+                    memcpy(&x, m + 16 * i + 4 * (l < 4 ? l : 1), 4);
+                    memcpy(&y, m + (l < 4 ? 0x2000 + 16 * i + 4 * l : 0x4000 + 16 * i), 4);
+                    if (y != nc_rsqrt_model(x) && bad++ < 3) {
+                        snprintf(b, sizeof(b), "rsqrt%s(%08x) %08x, the model's %08x; ", l < 4 ? "ps" : "ss", x, y,
+                                 nc_rsqrt_model(x));
+                        why += b;
+                    }
+                }
+            }
+            return bad == 0;
+        };
+    }
 
     {
         /* all eight MMX registers in use (the x87 stack full) when an

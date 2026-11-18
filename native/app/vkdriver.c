@@ -1,5 +1,5 @@
 /*
- * hakuX native core — a custom Vulkan driver for the HLE GPU (Turnip),
+ * xbased native core — a custom Vulkan driver for the HLE GPU (Turnip),
  * through adrenotools: the app's GPU driver setting ("vkdriver=" from
  * NativeCoreActivity), and xboxrun's.
  */
@@ -56,7 +56,7 @@ static bool driver_is_mesa(const char *dir)
  * preempts them (0 in 12 minutes); at its lowest priority there, 7, the
  * dispatcher still runs the compositor's work first (2 late frames in 6
  * minutes; priority 1, the first ringbuffer, preempts the compositor: 433).
- * debug.hakux.kgslprio: another priority (1..15), 0 for the driver's own. */
+ * debug.xbased.kgslprio: another priority (1..15), 0 for the driver's own. */
 static int kgsl_priority(const char *dir)
 {
     /* KGSL only: the pack's vendor says "Mesa" for Turnip and for Mesa's
@@ -66,7 +66,7 @@ static int kgsl_priority(const char *dir)
         return -1;
     }
     char v[PROP_VALUE_MAX] = "";
-    hle_prop_get("debug.hakux.kgslprio", v);
+    hle_prop_get("debug.xbased.kgslprio", v);
     int prio = v[0] ? atoi(v) : 7;
     return prio >= 1 && prio <= 15 ? prio : -1;
 }
@@ -75,22 +75,22 @@ static int kgsl_priority(const char *dir)
 void nc_vk_driver_load(const char *spec)
 {
 #ifdef NC_ADRENOTOOLS
-    /* Turnip's debug flags for A/B runs (debug.hakux.tu_debug, e.g.
+    /* Turnip's debug flags for A/B runs (debug.xbased.tu_debug, e.g.
      * "sysmem"): read when the driver creates its device. */
     char tu[PROP_VALUE_MAX] = "";
-    hle_prop_get("debug.hakux.tu_debug", tu);
+    hle_prop_get("debug.xbased.tu_debug", tu);
     if (tu[0]) {
         setenv("TU_DEBUG", tu, 1);
-        nc_log("hakuX-app", "TU_DEBUG=%s", tu);
+        nc_log("xbased-app", "TU_DEBUG=%s", tu);
     }
-    /* debug.hakux.vkdriver: "system", the system driver for this run; a
+    /* debug.xbased.vkdriver: "system", the system driver for this run; a
      * directory, the driver library of the setting's name from there (another
      * build unpacked); the setting kept (A/B: a driver's bug or the HLE's,
      * one driver build against another) */
     char sel[PROP_VALUE_MAX] = "";
-    hle_prop_get("debug.hakux.vkdriver", sel);
+    hle_prop_get("debug.xbased.vkdriver", sel);
     if (!strcmp(sel, "system")) {
-        nc_log("hakuX-app", "Vulkan driver: the system's (debug.hakux.vkdriver=system)");
+        nc_log("xbased-app", "Vulkan driver: the system's (debug.xbased.vkdriver=system)");
         return;
     }
     char dir[1024];
@@ -110,14 +110,14 @@ void nc_vk_driver_load(const char *spec)
         if (gipa) {
             nc_hle_set_vk_loader(nc_vk_layers(gipa));
         }
-        nc_log("hakuX-app", "Vulkan driver %s from %s%s: %s", lib, from, from == sel ? " (debug.hakux.vkdriver)" : "",
+        nc_log("xbased-app", "Vulkan driver %s from %s%s: %s", lib, from, from == sel ? " (debug.xbased.vkdriver)" : "",
                gipa ? "loaded" : "failed, the system driver it is");
         if (gipa && prio > 0) {
             g_kgsl_prio = prio;
-            nc_log("hakuX-app", "its kgsl draw contexts at priority %d (ringbuffer %d of 0-3)", prio, prio / 4);
+            nc_log("xbased-app", "its kgsl draw contexts at priority %d (ringbuffer %d of 0-3)", prio, prio / 4);
         }
     }
 #else
-    nc_log("hakuX-app", "Vulkan driver requested, but this build has no adrenotools");
+    nc_log("xbased-app", "Vulkan driver requested, but this build has no adrenotools");
 #endif
 }

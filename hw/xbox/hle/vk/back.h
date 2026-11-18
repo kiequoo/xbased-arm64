@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — back end (spec §5): render thread, timeline, surfaces.
+ * xbased HLE GPU — back end (spec §5): render thread, timeline, surfaces.
  * No Vulkan types; callable from any HLE module.
  */
 #ifndef HW_XBOX_HLE_VK_BACK_H
@@ -21,6 +21,11 @@ void hle_back_urgent(void);
 uint64_t hle_tl_completed(void);
 uint64_t hle_tl_submitted(void);
 void hle_tl_wait(uint64_t value);
+/* The device has geometry shaders (vk/draw.c: the NV2A lines, flat-shaded quads). */
+bool hle_back_caps_gs(void);
+/* Smooth strips and fans are drawn as they are with the NV2A's corner order
+ * (caps.pv_last: their triangles need not be lists for it, pb/pbdraw.c draw) */
+bool hle_back_caps_pv_last(void);
 /* The device lost (hle_vk_lose): every value counts as reached, so no
  * thread waits on the GPU any more. */
 void hle_tl_lose(void);

@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the Xbox kernel (xboxkrnl), reimplemented.
+ * xbased native core — the Xbox kernel (xboxkrnl), reimplemented.
  *
  * Kernel memory lives at VA 0x80010000 (physical 0x10000), where the real
  * kernel image sits. Each function export has a trampoline there,
@@ -213,6 +213,7 @@ struct NcKernel {
     uint32_t xbe_size;                    /* SizeOfImage */
     uint32_t game_region;                 /* from the XBE certificate: 1 NA, 2 JP, 4 elsewhere */
     uint32_t game_regions;                /* the certificate's: every region the disc plays in */
+    uint32_t title_id;                    /* the certificate's */
     uint32_t kprocess;                    /* the one KPROCESS, every thread's ApcState.Process */
     uint32_t tramp_va[NC_KORDINAL_MAX];
     uint32_t data_va[NC_KORDINAL_MAX];
@@ -388,7 +389,7 @@ void nc_ps_slice_end(NcKernel *k, uint64_t now);
 /* The running thread gives way (Sleep(0), polling) to a ready thread of its
  * priority or above: rescheduled at the back of its priority's queue. */
 void nc_ps_yield(NcKernel *k);
-/* debug (debug.hakux.ncresume=<id>): NtResumeThread on thread t<id> */
+/* debug (debug.xbased.ncresume=<id>): NtResumeThread on thread t<id> */
 void nc_ps_debug_resume(NcKernel *k, unsigned id);
 void nc_ps_terminate_current(NcKernel *k, uint32_t status);
 
@@ -533,6 +534,11 @@ void nc_ke_init_event(NcKernel *k, uint32_t event, unsigned type, bool signaled)
  * timeout); nc_ke_wake ends it with the call's status. */
 void nc_ke_block(NcKernel *k);
 void nc_ke_wake(NcKernel *k, NcThread *t, uint32_t status);
+/* Whether a waiting thread waits on object (an object freed meanwhile:
+ * ob.c release). */
+bool nc_ke_object_waited(NcKernel *k, uint32_t object);
+/* A timer object out of the timer queue before its memory goes (ob.c). */
+void nc_timer_forget(NcKernel *k, uint32_t timer);
 
 /* FILE_OBJECT.Event (a KEVENT): what a wait on a file handle waits for, set
  * when an I/O on the file issued without an event of its own completes. */
@@ -612,6 +618,9 @@ unsigned nc_io_cache_partitions(void);
  * context the guest CPU starts from. */
 void nc_kstate_capture_frame(NcKernel *k, const NcFrame *f, bool idle);
 const NcCpuContext *nc_kstate_start_context(NcKernel *k);
+/* The title's own shape (16:9 or 4:3) from its presentation parameters in RAM
+ * (ex.c): at each display mode, and once a state has loaded */
+void nc_kernel_av_title_scan(NcKernel *k, NcFrame *f);
 /* Refreshes KeTickCount, KeInterruptTime and KeSystemTime. */
 void nc_ke_update_time(NcKernel *k);
 /* The same at a kernel entry, from the published time (no clock read) when
@@ -726,17 +735,19 @@ bool nc_kernel_trap(NcKernel *k, NcFrame *f, unsigned vector, uint32_t ret_eip);
  * buffer [va, va+len) with host I/O, which fails rather than faults on a
  * page the guest doesn't have: such a page is paged in as for the kernel's
  * own access on the Xbox. The title's tables are walked; failing that, #PF
- * goes to the title's handler with the call's trampoline as the faulting
+ * goes to the title's handler (or, with none, an access violation to its
+ * exception handlers) with the call's trampoline as the faulting
  * instruction, so the call runs again once the page is in. False then: the
  * call returns at once, before any effect. */
 bool nc_kernel_resident(NcKernel *k, uint32_t va, uint32_t len, bool write);
-/* A kernel call can touch a page the title pages in itself, as the code it
- * stands for would have, faulting into the title's handler. When the title
- * has a page-fault handler of its own, the call runs in a fault scope: on
- * that fault, nc_kernel_call_fault (from the host fault handler) jumps out
- * of the call, which raises #PF at the guest instruction that entered it,
- * so it runs again once the page is in, as QEMU restarts a helper's guest
- * instruction. Otherwise nc_kernel_call_fault returns. */
+/* A kernel call can touch a page the title pages in or commits itself, as
+ * the code it stands for would have, faulting into the title's handler. The
+ * call runs in a fault scope: on that fault, nc_kernel_call_fault (from the
+ * host fault handler) jumps out of the call, which raises #PF (the title's
+ * page-fault handler) or else an access violation (its exception handlers)
+ * at the guest instruction that entered it, so it runs again once the page
+ * is in, as QEMU restarts a helper's guest instruction. Outside a call
+ * nc_kernel_call_fault returns. */
 void nc_kernel_call_fault(NcKernel *k, uint32_t va, bool write);
 
 /* x86mmio.c: device accesses from translated code without host faults. The

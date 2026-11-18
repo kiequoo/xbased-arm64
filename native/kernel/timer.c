@@ -1,5 +1,5 @@
 /*
- * hakuX native core — timers and DPCs.
+ * xbased native core — timers and DPCs.
  *
  * KTIMER (nxdk xboxkrnl.h, CC0): Header 0x00 (Type 8 notification / 9
  * synchronization, Inserted 0x03, SignalState 0x04), DueTime 0x10 (interrupt
@@ -206,7 +206,7 @@ void nc_dpc_return(NcKernel *k)
             g_dpc_run.logged = 0;
         }
         if (g_dpc_run.logged++ < 20) {
-            nc_log("hakuX-native-dpc", "dpc %08x waited %.1f ms, ran %.1f ms (the one before: %08x, %.1f ms; "
+            nc_log("xbased-native-dpc", "dpc %08x waited %.1f ms, ran %.1f ms (the one before: %08x, %.1f ms; "
                    "refused meanwhile: %u for a DPC running, %u for the IRQL (%u))",
                    g_dpc_run.routine, wait / 1e6, run / 1e6, g_dpc_run.prev_routine, g_dpc_run.prev_run_ns / 1e6,
                    g_dpc_run.run_refused_dpc, g_dpc_run.run_refused_irql, g_dpc_run.run_refused_irql_val);
@@ -265,6 +265,11 @@ static bool timer_cancel(NcKernel *k, uint32_t timer)
     return true;
 }
 
+void nc_timer_forget(NcKernel *k, uint32_t timer)
+{
+    timer_cancel(k, timer);
+}
+
 static void timer_init(NcKernel *k, uint32_t timer, uint32_t type)
 {
     uint8_t *t = nc_vm_host(k->vm, timer);
@@ -297,7 +302,7 @@ static bool timer_set(NcKernel *k, uint32_t timer, int64_t due, uint32_t period_
     nc_vm_wr32(k->vm, timer + KT_DUE + 4, (uint32_t)(at >> 32));
 
     if (g_ntimers == MAX_TIMERS) {
-        nc_log("hakuX-native", "ke: out of timer slots");
+        nc_log("xbased-native", "ke: out of timer slots");
         return was;
     }
     g_timers[g_ntimers] = (NcTimerEntry){.timer = timer,

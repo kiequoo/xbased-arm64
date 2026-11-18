@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the console's language and video flags, the settings'
+ * xbased front end — the console's language and video flags, the settings'
  * and the EEPROM's made one.
  *
  * The kernel serves the titles the EEPROM <hdd>/eeprom.bin holds, with the
@@ -126,14 +126,14 @@ bool cc_sync(Config *global)
         snprintf(v, sizeof(v), "%u", (unsigned)ee_lang);
         cfg_set(global, "lang", v);
         changed = true;
-        nc_log("hakuX-app", "console language %u from the EEPROM (it was %u): the settings take it", ee_lang, was_lang);
+        nc_log("xbased-app", "console language %u from the EEPROM (it was %u): the settings take it", ee_lang, was_lang);
     }
     if (known && ee_video != (was_video & CC_VIDEO_USER)) {
         char v[16];
         snprintf(v, sizeof(v), "0x%x", (cc_video(global) & ~CC_VIDEO_USER) | ee_video);
         cfg_set(global, "video", v);
         changed = true;
-        nc_log("hakuX-app", "video flags %08x from the EEPROM (they were %08x): the settings take them", ee_video,
+        nc_log("xbased-app", "video flags %08x from the EEPROM (they were %08x): the settings take them", ee_video,
                was_video & CC_VIDEO_USER);
     }
     if (changed) {
@@ -148,7 +148,7 @@ bool cc_sync(Config *global)
         wr32(ee + EE_VIDEO, (rd32(ee + EE_VIDEO) & ~CC_VIDEO_USER) | video);
         wr32(ee + EE_USER_SUM, checksum(ee + EE_USER_SUM + 4, 0x5C));
         if (!write_file(ee_path, ee, sizeof(ee))) {
-            nc_log("hakuX-app", "can't write the console settings to %s", ee_path);
+            nc_log("xbased-app", "can't write the console settings to %s", ee_path);
             return changed;
         }
     }

@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the GLib libslirp (the NAT backend, native/net/nat.c)
+ * xbased native core — the GLib libslirp (the NAT backend, native/net/nat.c)
  * uses beyond the HLE layer's subset (native/compat/glib): strings, a random
  * source, messages to the log, and failing stubs for the process spawning
  * only its guestfwd exec takes (never configured here). libslirp's sources
@@ -60,7 +60,7 @@ typedef struct GDebugKey {
     guint value;
 } GDebugKey;
 
-/* Messages: to the log as hakuX-native-slirp; g_error aborts, as GLib's. */
+/* Messages: to the log as xbased-native-slirp; g_error aborts, as GLib's. */
 enum { G_SLIRP_ERROR, G_SLIRP_CRITICAL, G_SLIRP_WARNING, G_SLIRP_DEBUG };
 void g_slirp_log(int level, const gchar *fmt, ...) G_GNUC_PRINTF(2, 3);
 #define g_debug(...) g_slirp_log(G_SLIRP_DEBUG, __VA_ARGS__)

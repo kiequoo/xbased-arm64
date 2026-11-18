@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — runtime state and the host-facing API.
+ * xbased HLE GPU — runtime state and the host-facing API.
  */
 #ifndef HW_XBOX_HLE_HLE_H
 #define HW_XBOX_HLE_HLE_H
@@ -36,7 +36,7 @@ void hle_init(void);
 const char *hle_posture_name(HlePosture p);
 void hle_log(const char *tag, const char *fmt, ...) G_GNUC_PRINTF(2, 3);
 
-/* The HLE GPU renders the titles (HAKUX_HLE_MODE=replace). */
+/* The HLE GPU renders the titles (XBASED_HLE_MODE=replace). */
 static inline bool hle_active(void)
 {
     return g_hle.posture != HLE_POSTURE_OFF;

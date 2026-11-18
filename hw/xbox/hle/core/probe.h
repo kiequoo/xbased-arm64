@@ -1,11 +1,11 @@
 /*
- * hakuX HLE — debug probes on title code.
+ * xbased HLE — debug probes on title code.
  *
- * HAKUX_HLE_PROBE="va[:n],va[:n]..." (hex VAs, at most 8; n default 16):
+ * XBASED_HLE_PROBE="va[:n],va[:n]..." (hex VAs, at most 8; n default 16):
  * each time execution reaches va, the registers and the top eight stack
- * words are logged (hakuX-hle-probe) for the first n times and every
+ * words are logged (xbased-hle-probe) for the first n times and every
  * 1000th after, and the title's code runs on (set it through
- * debug.hakux.env).
+ * debug.xbased.env).
  */
 #ifndef HW_XBOX_HLE_CORE_PROBE_H
 #define HW_XBOX_HLE_CORE_PROBE_H

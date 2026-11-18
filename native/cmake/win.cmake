@@ -1,4 +1,4 @@
-# hakuX native core on Windows x64 (MinGW-w64 clang, MSYS2 CLANG64).
+# xbased native core on Windows x64 (MinGW-w64 clang, MSYS2 CLANG64).
 #
 # No FEX: the guest CPU is cpu/cpu_x86.cpp, which translates the title's
 # x86-32 code to x86-64 with Zydis (its decoder and encoder), from

@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — the window's presenter (swapchain.h): the front frame
+ * xbased HLE GPU — the window's presenter (swapchain.h): the front frame
  * (display.h) drawn into the app's window through a Vulkan swapchain, once
  * per display refresh, on the window's thread (native/app/present.c).
  *
@@ -37,6 +37,12 @@
 #include "hw/xbox/hle/vk/display.h"
 #include "hw/xbox/hle/vk/quirks.h"
 #include "hw/xbox/hle/vk/swapchain.h"
+
+/* the pictures a player keeps (screenshots, savestates' thumbnails) as JPEG:
+ * a 32-bit BMP of a scaled frame is 14 MB */
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "native/third_party/stb/stb_image_write.h"
 
 #include "hw/xbox/hle/vk/native_window.h"
 #ifdef _WIN32
@@ -243,19 +249,30 @@ static const char k_fs_crt[] =
     "  float y = uv.y * size.y - 0.5;\n"
     "  float dy = fwidth(y);\n"
     "  scan *= smoothstep(1.2, 2.2, 1.0 / max(dy, 1e-4));\n"
-    "  /* the beam (brighter lines are wider) over the pixel's height, four\n"
-    "   * samples across it: taken at its centre alone, lines of 2-3 pixels\n"
-    "   * beat with the pixel rows where the tube curves (moire, #151) */\n"
+    "  /* the beam (brighter lines are wider), filtered over the pixel and its\n"
+    "   * neighbours' halves (a tent, eight samples): lines of 2-4 pixels beat\n"
+    "   * with the pixel rows where the tube curves (moire, #151). Under 4.5\n"
+    "   * pixels a line, the beam's profile goes to a cosine through its peak\n"
+    "   * and trough (its sharper shape's harmonics fold into waves there) */\n"
+    "  float soft = 1.0 - smoothstep(2.5, 4.5, 1.0 / max(dy, 1e-4));\n"
     "  vec3 lit = vec3(0.0);\n"
-    "  for (int k = 0; k < 4; k++) {\n"
-    "    float ys = y + dy * (float(k) - 1.5) * 0.25;\n"
+    "  float wsum = 0.0;\n"
+    "  for (int k = 0; k < 8; k++) {\n"
+    "    float t = (float(k) + 0.5) * 0.25 - 1.0;\n"
+    "    float wt = 1.0 - abs(t);\n"
+    "    float ys = y + dy * t;\n"
     "    float fy = fract(ys);\n"
     "    vec2 at0 = vec2(uv.x, (floor(ys) + 0.5) / size.y), at1 = at0 + vec2(0.0, 1.0 / size.y);\n"
     "    vec3 c0 = texture(u_tex, at0).rgb, c1 = texture(u_tex, at1).rgb;\n"
     "    vec3 w0 = exp(-pow(fy / (0.32 + 0.22 * c0), vec3(2.0)) * 2.0);\n"
     "    vec3 w1 = exp(-pow((1.0 - fy) / (0.32 + 0.22 * c1), vec3(2.0)) * 2.0);\n"
-    "    lit += (c0 * w0 + c1 * w1) * 0.25;\n"
+    "    vec3 cm = mix(c0, c1, fy), sm = 0.32 + 0.22 * cm;\n"
+    "    vec3 pk = 1.0 + exp(-2.0 / (sm * sm)), tr = 2.0 * exp(-0.5 / (sm * sm));\n"
+    "    vec3 cs = cm * (0.5 * (pk + tr) + 0.5 * (pk - tr) * cos(6.2831853 * fy));\n"
+    "    lit += mix(c0 * w0 + c1 * w1, cs, soft) * wt;\n"
+    "    wsum += wt;\n"
     "  }\n"
+    "  lit /= wsum;\n"
     "  vec3 flat_ = texture(u_tex, uv).rgb;\n"
     "  vec3 col = mix(flat_, lit * 1.35, scan);\n"
     "  /* the mask: an aperture grille's stripes, R G B */\n"
@@ -674,7 +691,7 @@ static bool init(void)
     }
     g_ps.pipe[P_FXAA] = pipeline(g_ps.fs[P_FXAA], VK_FORMAT_R8G8B8A8_UNORM);
     g_ps.pipe[P_EASU] = pipeline(g_ps.fs[P_EASU], VK_FORMAT_R8G8B8A8_UNORM);
-    hle_log("hakuX-hle-back", "present: ready (shaders: bilinear %d, averaging %d, FSR %d, FXAA %d)",
+    hle_log("xbased-hle-back", "present: ready (shaders: bilinear %d, averaging %d, FSR %d, FXAA %d)",
             g_ps.fs[P_BILINEAR] != VK_NULL_HANDLE, g_ps.fs[P_AREA] != VK_NULL_HANDLE,
             g_ps.fs[P_RCAS] != VK_NULL_HANDLE && g_ps.pipe[P_EASU] != VK_NULL_HANDLE,
             g_ps.pipe[P_FXAA] != VK_NULL_HANDLE);
@@ -748,7 +765,7 @@ static bool make_swapchain(uint32_t w, uint32_t h)
     VkBool32 ok = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(g_hvk.phys, g_hvk.qfam, g_ps.surf, &ok);
     if (!ok || vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_hvk.phys, g_ps.surf, &caps) != VK_SUCCESS) {
-        hle_log("hakuX-hle-back", "present: the window's surface can't be presented to");
+        hle_log("xbased-hle-back", "present: the window's surface can't be presented to");
         return false;
     }
     VkSurfaceFormatKHR fmts[32];
@@ -844,13 +861,13 @@ static bool make_swapchain(uint32_t w, uint32_t h)
     g_ps.sc = sc;
     if (r != VK_SUCCESS) {
         g_ps.sc = VK_NULL_HANDLE;
-        hle_log("hakuX-hle-back", "present: vkCreateSwapchainKHR %ux%u: %d", w, h, r);
+        hle_log("xbased-hle-back", "present: vkCreateSwapchainKHR %ux%u: %d", w, h, r);
         return false;
     }
     static VkPresentModeKHR s_told = (VkPresentModeKHR)-1;
     if (pm != s_told) {
         s_told = pm;
-        hle_log("hakuX-hle-back", "present: V-Sync %s", pm == VK_PRESENT_MODE_FIFO_KHR ? "on" :
+        hle_log("xbased-hle-back", "present: V-Sync %s", pm == VK_PRESENT_MODE_FIFO_KHR ? "on" :
                 pm == VK_PRESENT_MODE_IMMEDIATE_KHR ? "off (immediate)" : "off (mailbox)");
     }
     uint32_t ni = 0;
@@ -860,7 +877,7 @@ static bool make_swapchain(uint32_t w, uint32_t h)
         ri = T.vkGetSwapchainImagesKHR(g_hvk.dev, sc, &ni, imgs);
     }
     if (!imgs || ri != VK_SUCCESS) {
-        hle_log("hakuX-hle-back", "present: the swapchain's %u images: %d", ni, ri);
+        hle_log("xbased-hle-back", "present: the swapchain's %u images: %d", ni, ri);
         g_free(imgs);
         T.vkDestroySwapchainKHR(g_hvk.dev, sc, NULL);
         g_ps.sc = VK_NULL_HANDLE;
@@ -891,7 +908,7 @@ static bool make_swapchain(uint32_t w, uint32_t h)
         g_ps.pipe_fmt = fmt.format;
     }
     g_ps.fmt = fmt.format;
-    hle_log("hakuX-hle-back", "present: swapchain %ux%u (the window %ux%u, turned %u degrees), %u images, "
+    hle_log("xbased-hle-back", "present: swapchain %ux%u (the window %ux%u, turned %u degrees), %u images, "
             "format %d", w, h, g_ps.wsize.width, g_ps.wsize.height, turn * 90, ni, fmt.format);
     return g_ps.pipe[P_BILINEAR] != VK_NULL_HANDLE;
 }
@@ -990,11 +1007,29 @@ static bool shot_buf(VkDeviceSize size)
     return true;
 }
 
-/* The picture copied out (the pass done) as a 32-bit top-down BMP. */
+/* The picture copied out (the pass done) as a 32-bit top-down BMP, or a
+ * JPEG (quality 90) for a path ending in .jpg. */
 static void shot_write(uint32_t w, uint32_t h)
 {
     void *map = NULL;
     if (T.vkMapMemory(g_hvk.dev, g_ps.shot_mem, 0, VK_WHOLE_SIZE, 0, &map) != VK_SUCCESS) {
+        return;
+    }
+    const size_t pl = strlen(g_ps.shot_path);
+    if (pl > 4 && !strcasecmp(g_ps.shot_path + pl - 4, ".jpg")) {
+        const bool rgba = g_ps.fmt == VK_FORMAT_R8G8B8A8_UNORM || g_ps.fmt == VK_FORMAT_R8G8B8A8_SRGB;
+        const uint8_t *src = map;
+        uint8_t *rgb = g_malloc((size_t)w * h * 3);
+        for (size_t i = 0; i < (size_t)w * h; i++) {
+            rgb[i * 3] = src[i * 4 + (rgba ? 0 : 2)];
+            rgb[i * 3 + 1] = src[i * 4 + 1];
+            rgb[i * 3 + 2] = src[i * 4 + (rgba ? 2 : 0)];
+        }
+        if (stbi_write_jpg(g_ps.shot_path, (int)w, (int)h, 3, rgb, 90)) {
+            hle_log("xbased-hle-back", "present: picture %ux%u in %s", w, h, g_ps.shot_path);
+        }
+        g_free(rgb);
+        T.vkUnmapMemory(g_hvk.dev, g_ps.shot_mem);
         return;
     }
     FILE *f = fopen(g_ps.shot_path, "wb");
@@ -1024,7 +1059,7 @@ static void shot_write(uint32_t w, uint32_t h)
         }
         g_free(row);
         fclose(f);
-        hle_log("hakuX-hle-back", "present: picture %ux%u in %s", w, h, g_ps.shot_path);
+        hle_log("xbased-hle-back", "present: picture %ux%u in %s", w, h, g_ps.shot_path);
     }
     T.vkUnmapMemory(g_hvk.dev, g_ps.shot_mem);
 }
@@ -1184,7 +1219,7 @@ static bool remote_can(void)
     }
     if (reshade_loaded()) {
         can = 0;
-        hle_log("hakuX-hle-back", "present: ReShade is loaded: the window's own swapchain, for it to draw on");
+        hle_log("xbased-hle-back", "present: ReShade is loaded: the window's own swapchain, for it to draw on");
         return false;
     }
     VkPhysicalDeviceExternalSemaphoreInfo si = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO,
@@ -1204,7 +1239,7 @@ static bool remote_can(void)
     const bool images = r == VK_SUCCESS &&
                         (ep.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT);
     can = g_hvk.caps.share && g_hvk.caps.luid_valid && fences && images;
-    hle_log("hakuX-hle-back", "present: D3D12 pictures: images %s (%d, features %x), fences %s (features %x), LUID %s",
+    hle_log("xbased-hle-back", "present: D3D12 pictures: images %s (%d, features %x), fences %s (features %x), LUID %s",
             images ? "importable" : "NOT importable", (int)r, ep.externalMemoryProperties.externalMemoryFeatures,
             fences ? "importable" : "NOT importable", sp.externalSemaphoreFeatures,
             g_hvk.caps.luid_valid ? "valid" : "NOT valid");
@@ -1238,7 +1273,7 @@ static bool remote_fence(VkSemaphore *sem, uint64_t theirs)
     const VkResult r = T.vkImportSemaphoreWin32HandleKHR(g_hvk.dev, &ii);
     CloseHandle(h);     /* an NT handle's import doesn't take it */
     if (r != VK_SUCCESS) {
-        hle_log("hakuX-hle-back", "present: the frame's fence couldn't be imported (%d)", (int)r);
+        hle_log("xbased-hle-back", "present: the frame's fence couldn't be imported (%d)", (int)r);
     }
     return r == VK_SUCCESS;
 }
@@ -1256,12 +1291,12 @@ static bool remote_make(uint32_t w, uint32_t h)
         swprintf(n, 128, HLE_SHARE_EVENT_FMT, g_rm.token);
         g_rm.ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, n);
         if (!g_rm.sh || !g_rm.ev || g_rm.sh->magic != HLE_SHARE_MAGIC || g_rm.sh->version != HLE_SHARE_VERSION) {
-            hle_log("hakuX-hle-back", "present: the frame's block isn't there");
+            hle_log("xbased-hle-back", "present: the frame's block isn't there");
             return false;
         }
         g_rm.frame = OpenProcess(PROCESS_DUP_HANDLE, FALSE, g_rm.sh->frame_pid);
         if (!g_rm.frame) {
-            hle_log("hakuX-hle-back", "present: the frame's process can't be opened (%lu)", GetLastError());
+            hle_log("xbased-hle-back", "present: the frame's process can't be opened (%lu)", GetLastError());
             return false;
         }
         /* the source not shown (an older run's, or none): the newest shows */
@@ -1298,7 +1333,7 @@ static bool remote_make(uint32_t w, uint32_t h)
         char why[sizeof(g_rm.sh->why)];
         memcpy(why, g_rm.sh->why, sizeof(why) - 1);
         why[sizeof(why) - 1] = 0;
-        hle_log("hakuX-hle-back", "present: the frame made no images for %ux%u (%s)", w, h,
+        hle_log("xbased-hle-back", "present: the frame made no images for %ux%u (%s)", w, h,
                 made == -gen || g_rm.sh->failed ? why : "no answer in 5 s");
         return false;
     }
@@ -1316,14 +1351,14 @@ static bool remote_make(uint32_t w, uint32_t h)
             .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED };
         VkResult r = T.vkCreateImage(g_hvk.dev, &ici, NULL, &g_rm.img[i]);
         if (r != VK_SUCCESS) {
-            hle_log("hakuX-hle-back", "present: no image for the frame's (%d)", (int)r);
+            hle_log("xbased-hle-back", "present: no image for the frame's (%d)", (int)r);
             return false;
         }
         VkMemoryRequirements mr;
         T.vkGetImageMemoryRequirements(g_hvk.dev, g_rm.img[i], &mr);
         HANDLE hh = remote_handle(src->res[i]);
         if (!hh) {
-            hle_log("hakuX-hle-back", "present: the frame's image handle couldn't be had (%lu)", GetLastError());
+            hle_log("xbased-hle-back", "present: the frame's image handle couldn't be had (%lu)", GetLastError());
             return false;
         }
         VkMemoryWin32HandlePropertiesKHR hp = { .sType = VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR };
@@ -1351,7 +1386,7 @@ static bool remote_make(uint32_t w, uint32_t h)
         CloseHandle(hh);
         if (type == UINT32_MAX || r != VK_SUCCESS ||
             (r = T.vkBindImageMemory(g_hvk.dev, g_rm.img[i], g_rm.mem[i], 0)) != VK_SUCCESS) {
-            hle_log("hakuX-hle-back", "present: the frame's image couldn't be imported (%d, types %x of %x)", (int)r,
+            hle_log("xbased-hle-back", "present: the frame's image couldn't be imported (%d, types %x of %x)", (int)r,
                     hp.memoryTypeBits, mr.memoryTypeBits);
             return false;
         }
@@ -1388,7 +1423,7 @@ static bool remote_make(uint32_t w, uint32_t h)
         g_ps.pipe_fmt = fmt;
     }
     g_ps.fmt = fmt;
-    hle_log("hakuX-hle-back", "present: %ux%u pictures for the frame (D3D12, source %d)", w, h, g_rm.slot);
+    hle_log("xbased-hle-back", "present: %ux%u pictures for the frame (D3D12, source %d)", w, h, g_rm.slot);
     return g_ps.pipe[P_BILINEAR] != VK_NULL_HANDLE;
 }
 
@@ -1505,7 +1540,7 @@ bool hle_present_begin(struct ANativeWindow *win, uint32_t *w, uint32_t *h)
         g_ps.inited = true;
         if (!g_hvk.caps.swapchain || !init()) {
             g_ps.failed = true;
-            hle_log("hakuX-hle-back", "present: %s: nothing shown",
+            hle_log("xbased-hle-back", "present: %s: nothing shown",
                     g_hvk.caps.swapchain ? "setup failed" : "no Vulkan swapchain on this device");
             return false;
         }
@@ -1518,7 +1553,7 @@ bool hle_present_begin(struct ANativeWindow *win, uint32_t *w, uint32_t *h)
         if (!g_rm.failed) {
             return false;   /* not this refresh */
         }
-        hle_log("hakuX-hle-back", "present: the frame's pictures failed: the window's own swapchain");
+        hle_log("xbased-hle-back", "present: the frame's pictures failed: the window's own swapchain");
     }
 #endif
     /* a lost surface's window may come back at the same address: a while
@@ -1539,7 +1574,7 @@ bool hle_present_begin(struct ANativeWindow *win, uint32_t *w, uint32_t *h)
 #endif
                 g_ps.surf = VK_NULL_HANDLE;
                 g_ps.lost_ns = hle_now_ns();
-                hle_log("hakuX-hle-back", "present: no surface for the window");
+                hle_log("xbased-hle-back", "present: no surface for the window");
             } else {
                 g_ps.win = win;
             }
@@ -1577,7 +1612,7 @@ bool hle_present_begin(struct ANativeWindow *win, uint32_t *w, uint32_t *h)
         return false;                   /* timed out: the next refresh tries again */
     }
     if (g_ps.idx >= g_ps.nimg) {
-        hle_log("hakuX-hle-back", "present: acquired image %u of %u", g_ps.idx, g_ps.nimg);
+        hle_log("xbased-hle-back", "present: acquired image %u of %u", g_ps.idx, g_ps.nimg);
         g_ps.stale = true;
         return false;
     }
@@ -1650,7 +1685,7 @@ static bool img_target(PsImg *t, uint32_t w, uint32_t h, VkFormat fmt, const cha
     if (mt < 0 || T.vkAllocateMemory(g_hvk.dev, &mai, NULL, &t->mem) != VK_SUCCESS ||
         T.vkBindImageMemory(g_hvk.dev, t->img, t->mem, 0) != VK_SUCCESS ||
         T.vkCreateImageView(g_hvk.dev, &vci, NULL, &t->view) != VK_SUCCESS) {
-        hle_log("hakuX-hle-back", "present: no %ux%u %s image: %s off", w, h, what, what);
+        hle_log("xbased-hle-back", "present: no %ux%u %s image: %s off", w, h, what, what);
         T.vkDestroyImage(g_hvk.dev, t->img, NULL);
         t->img = VK_NULL_HANDLE;
         return false;
@@ -1789,7 +1824,7 @@ static void log_path(unsigned p, bool fxaa, uint32_t vw, uint32_t vh)
     s_h = g_ps.f.h;
     s_vw = vw;
     s_vh = vh;
-    hle_log("hakuX-hle-back", "present: %ux%u%s into %ux%u: %s", s_w, s_h, fxaa ? " after FXAA" : "", vw, vh,
+    hle_log("xbased-hle-back", "present: %ux%u%s into %ux%u: %s", s_w, s_h, fxaa ? " after FXAA" : "", vw, vh,
             p == P_AREA ? "averaged down" : p == P_RCAS ? "scaled up by FSR" : "bilinear");
 }
 
@@ -1868,7 +1903,7 @@ uint32_t hle_ov_tex_new(uint32_t w, uint32_t h)
             return i;
         }
     }
-    hle_log("hakuX-hle-back", "present: overlay textures all taken");
+    hle_log("xbased-hle-back", "present: overlay textures all taken");
     return 0;
 }
 
@@ -2021,7 +2056,7 @@ static bool ov_init(void)
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, .maxSets = sets,
         .poolSizeCount = 2, .pPoolSizes = ps };
     if (T.vkCreateDescriptorPool(g_hvk.dev, &pci, NULL, &g_ov.dp) != VK_SUCCESS) {
-        hle_log("hakuX-hle-back", "present: no overlay (descriptor pool)");
+        hle_log("xbased-hle-back", "present: no overlay (descriptor pool)");
         return false;
     }
     for (unsigned i = 0; i < PS_FRAMES; i++) {
@@ -2033,7 +2068,7 @@ static bool ov_init(void)
         VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                                             .descriptorPool = g_ov.dp, .descriptorSetCount = 12, .pSetLayouts = l };
         if (T.vkAllocateDescriptorSets(g_hvk.dev, &dai, s) != VK_SUCCESS) {
-            hle_log("hakuX-hle-back", "present: no overlay (descriptor sets)");
+            hle_log("xbased-hle-back", "present: no overlay (descriptor sets)");
             return false;
         }
         g_ps.fr[i].ovs[0] = s[0];
@@ -2043,14 +2078,14 @@ static bool ov_init(void)
     g_ov.vs = module(HLE_SHADER_VERTEX, "", k_vs_ov);
     g_ov.fs = module(HLE_SHADER_FRAGMENT, "", k_fs_ov);
     if (!g_ov.vs || !g_ov.fs || !g_ps.pipe[P_KDOWN] || !g_ps.pipe[P_KUP]) {
-        hle_log("hakuX-hle-back", "present: no overlay (shaders)");
+        hle_log("xbased-hle-back", "present: no overlay (shaders)");
         return false;
     }
     g_ov.tex[0] = (OvTex){ .w = 1, .h = 1, .state = 1 };
     static const uint32_t white = 0xFFFFFFFFu;
     hle_ov_tex_put(0, 0, 0, 1, 1, &white, 4);
     g_ov.ok = true;
-    hle_log("hakuX-hle-back", "present: overlay ready");
+    hle_log("xbased-hle-back", "present: overlay ready");
     return true;
 }
 
@@ -2188,7 +2223,7 @@ static void ov_textures(VkCommandBuffer cb, PsFrame *f)
         OvTex *t = &g_ov.tex[i];
         if (t->state == 1) {
             if (!ov_make(t)) {
-                hle_log("hakuX-hle-back", "present: no %ux%u overlay texture", t->w, t->h);
+                hle_log("xbased-hle-back", "present: no %ux%u overlay texture", t->w, t->h);
             }
             t->state = 2;               /* drawn as nothing if it failed */
         }
@@ -2767,7 +2802,7 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
         s_t0 = now;
     } else if (now - s_t0 >= 10000000000ll) {
         const double s = (now - s_t0) / 1e9;
-        hle_log("hakuX-hle-back", "present: the queue's lock waited for %.1f ms/s; the presenter's submits "
+        hle_log("xbased-hle-back", "present: the queue's lock waited for %.1f ms/s; the presenter's submits "
                 "held it %.1f ms/s, its presents %.1f; it waited %.1f ms/s for its passes (%s), %.1f for images",
                 hle_vk_queue_wait_ns() / 1e6 / s, g_submit_ns / 1e6 / s, g_present_ns / 1e6 / s,
                 g_wait_ns / 1e6 / s,

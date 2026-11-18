@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the interface's languages (i18n.c, the strings in
+ * xbased front end — the interface's languages (i18n.c, the strings in
  * i18n_strings.h). The system's language unless one is chosen.
  */
 #ifndef NATIVE_APP_UI_I18N_H

@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the MCPX Audio Codec Interface: an AC'97 controller
+ * xbased native core — the MCPX Audio Codec Interface: an AC'97 controller
  * (Intel ICH register set) at 0xFEC00000, IRQ 6, with a STAC9700 codec.
  * Mixer (NAM) registers at +0x000, bus master (NABM) at +0x100.
  *
@@ -113,7 +113,7 @@ typedef struct Aci {
 static Aci g_aci;
 static int g_trace; /* NC_TRACE_ACI: descriptor fetches, completions, interrupts (first 200) */
 
-#define TRACE(...)                                                                                                         do {                                                                                                                       if (g_trace > 0) {                                                                                                         g_trace--;                                                                                                             nc_log("hakuX-native-aci", __VA_ARGS__);                                                                           }                                                                                                                  } while (0)
+#define TRACE(...)                                                                                                         do {                                                                                                                       if (g_trace > 0) {                                                                                                         g_trace--;                                                                                                             nc_log("xbased-native-aci", __VA_ARGS__);                                                                           }                                                                                                                  } while (0)
 
 static void update_irq(Aci *a)
 {

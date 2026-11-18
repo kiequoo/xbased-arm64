@@ -1,5 +1,5 @@
 /*
- * hakuX front end — xemu's saves brought in (xemu_import.c): the games'
+ * xbased front end — xemu's saves brought in (xemu_import.c): the games'
  * saves (E:\UDATA, E:\TDATA) copied out of xemu's hard disk image into the
  * console's hard disk folder, and re-signed for xbased with the keys of the
  * user's own xemu files (its BIOS, MCPX boot ROM and EEPROM, as xemu.toml
@@ -21,6 +21,7 @@ typedef struct XiReport {
     int unsigned_files;     /* files whose signature wasn't found (left as they were) */
     int no_key;             /* titles whose game isn't in the library (left as they were) */
     bool no_cert;           /* no BIOS key: only the console-locked part could change */
+    bool folder;            /* from a folder (xi_start_folder), not xemu's disk */
 } XiReport;
 
 /* xemu's settings file where xemu keeps it, into out; false: not there. */
@@ -30,6 +31,11 @@ bool xi_find_toml(char *out, size_t n);
  * hard disk folder hdd (its Partition1 the E: drive). */
 void xi_start(const char *toml, const char *hdd);
 bool xi_running(void);
+/* Saves copied from an Xbox or xemu into a folder (its UDATA / TDATA, or
+ * title folders), copied in and re-signed with the keys of xemu's files
+ * (toml) and, for saves locked to another console, that console's
+ * eeprom.bin in the folder. The outcome as xi_take_report's. */
+void xi_start_folder(const char *folder, const char *toml, const char *hdd);
 /* The last import's outcome, once (true when there was one to take). */
 bool xi_take_report(XiReport *out);
 

@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — the retired things' table (hw/xbox/hle/vk/retire.c).
+ * xbased HLE GPU — the retired things' table (hw/xbox/hle/vk/retire.c).
  */
 #include "hle_test.h"
 

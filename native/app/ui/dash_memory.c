@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the dashboard's Memory: the games' own saves on the
+ * xbased front end — the dashboard's Memory: the games' own saves on the
  * console's hard disk (E:\UDATA\<title ID>\<save>, Partition1 of the hdd
  * folder), with the names and icons the games gave them (TitleMeta.xbx,
  * SaveMeta.xbx: UTF-16 Key=Value; TitleImage.xbx, SaveImage.xbx: XPR0),
@@ -71,24 +71,67 @@ static void import_yes(Dash *d)
     xi_start(g_xemu_toml, h);
 }
 
-static void import_ask(void)
+/* saves from a folder (#283): the folder chosen after xemu.toml (its files
+ * hold the keys) */
+static bool g_from_folder;
+static char g_save_folder[1100];
+static SDL_AtomicInt g_folder_picked;   /* 1: the folder dialog answered (g_save_folder, "" none) */
+
+static void SDLCALL folder_cb(void *ud, const char *const *files, int filter)
 {
-    if (xi_running()) {
-        return;
-    }
+    (void)ud;
+    (void)filter;
+    snprintf(g_save_folder, sizeof(g_save_folder), "%s", files && files[0] ? files[0] : "");
+    SDL_SetAtomicInt(&g_folder_picked, 1);
+}
+
+static void pick_folder(void)
+{
+    dash_toast(T(S_IMPORT_FOLDER_PICK));
+    SDL_ShowOpenFolderDialog(folder_cb, NULL, SDL_GetKeyboardFocus(), NULL, false);
+}
+
+static void import_from(Dash *d, int choice)
+{
+    (void)d;
+    g_from_folder = choice == 1;
     if (!xi_find_toml(g_xemu_toml, sizeof(g_xemu_toml))) {
         dash_toast(T(S_IMPORT_XEMU_PICK));
         dash_browse_file("xemu.toml", "toml", toml_cb, NULL);
         return;
     }
-    dash_ask(T(S_IMPORT_XEMU_ASK), import_yes);
+    if (g_from_folder) {
+        pick_folder();
+    } else {
+        dash_ask(T(S_IMPORT_XEMU_ASK), import_yes);
+    }
+}
+
+static void import_ask(void)
+{
+    if (xi_running()) {
+        return;
+    }
+    static const char *choices[2];
+    choices[0] = T(S_IMPORT_FROM_XEMU);
+    choices[1] = T(S_IMPORT_FROM_FOLDER);
+    dash_choose(T(S_IMPORT_SAVES_Q), choices, 2, import_from);
 }
 
 /* each frame on the Memory screens: a file chosen, an import done */
 static void import_poll(void)
 {
     if (SDL_CompareAndSwapAtomicInt(&g_toml_picked, 1, 0) && g_xemu_toml[0]) {
-        dash_ask(T(S_IMPORT_XEMU_ASK), import_yes);
+        if (g_from_folder) {
+            pick_folder();
+        } else {
+            dash_ask(T(S_IMPORT_XEMU_ASK), import_yes);
+        }
+    }
+    if (SDL_CompareAndSwapAtomicInt(&g_folder_picked, 1, 0) && g_save_folder[0] && !xi_running()) {
+        char h[1024];
+        hdd_dir(h, sizeof(h));
+        xi_start_folder(g_save_folder, g_xemu_toml, h);
     }
     XiReport r;
     if (!xi_take_report(&r)) {
@@ -98,7 +141,8 @@ static void import_poll(void)
     if (!r.ok) {
         snprintf(msg, sizeof(msg), "%s", r.error);
     } else {
-        int k = snprintf(msg, sizeof(msg), T(S_IMPORT_XEMU_DONE), r.titles, r.files, r.resigned);
+        int k = snprintf(msg, sizeof(msg), T(r.folder ? S_IMPORT_FOLDER_DONE : S_IMPORT_XEMU_DONE), r.titles, r.files,
+                         r.resigned);
         if (r.no_cert && k > 0 && k < (int)sizeof(msg)) {
             k += snprintf(msg + k, sizeof(msg) - (size_t)k, " %s", T(S_IMPORT_XEMU_NOBIOS));
         } else if (r.no_key && k > 0 && k < (int)sizeof(msg)) {
@@ -390,7 +434,7 @@ void scr_memory(void)
     if (D.in.back) {
         dash_pop();
     }
-    draw_hints(T(S_SELECT), T(S_BACK), T(S_DELETE), T(S_IMPORT_XEMU));
+    draw_hints(T(S_SELECT), T(S_BACK), T(S_DELETE), T(S_IMPORT_SAVES));
 }
 
 static void del_save(Dash *d)

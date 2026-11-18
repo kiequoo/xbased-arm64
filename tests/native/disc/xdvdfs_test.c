@@ -25,6 +25,10 @@ void nc_log(const char *tag, const char *fmt, ...)
     (void)fmt;
 }
 bool nc_chd_attach(int fd) { (void)fd; return false; }
+bool nc_nbd_attach(int fd) { (void)fd; return false; }
+void nc_nbd_detach(int fd) { (void)fd; }
+bool nc_nbd_is(int fd) { (void)fd; return false; }
+bool nc_nbd_read(int fd, void *buf, size_t len, uint64_t off) { (void)fd; (void)buf; (void)len; (void)off; return false; }
 void nc_chd_detach(int fd) { (void)fd; }
 bool nc_chd_is(int fd) { (void)fd; return false; }
 bool nc_chd_read(int fd, void *buf, size_t len, uint64_t off) { (void)fd; (void)buf; (void)len; (void)off; return false; }

@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — threads, locks, events and timers over pthreads, and the
+ * xbased HLE GPU — threads, locks, events and timers over pthreads, and the
  * monotonic clock.
  */
 #ifndef HW_XBOX_HLE_UTIL_THREAD_H

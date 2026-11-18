@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — the last GPU use per guest page: the timeline value of
+ * xbased HLE GPU — the last GPU use per guest page: the timeline value of
  * the last submission that reads it (the write barrier, mem/barrier.c).
  */
 #ifndef HW_XBOX_HLE_MEM_PAGEUSE_H

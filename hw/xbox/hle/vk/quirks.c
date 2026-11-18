@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Vulkan driver quirks (see quirks.h).
+ * xbased HLE GPU — Vulkan driver quirks (see quirks.h).
  */
 #include "hw/xbox/hle/base.h"
 #include "hw/xbox/hle/vk/quirks.h"
@@ -205,7 +205,7 @@ static const HleQuirk k_quirks[] = {
      * 2026-10-31): Morrowind lost the device 0.2 s into its loading screen,
      * every time, the kernel log "JS: Job Hard-Stopped (took more than 10
      * ticks)" and "GPU fault 0x4002 from job slot 0" (fragment). Its fixed-
-     * function draws are W-buffered (ZENABLE 2); HAKUX_HLE_DBGFLAGS=8 alone
+     * function draws are W-buffered (ZENABLE 2); XBASED_HLE_DBGFLAGS=8 alone
      * (W-buffering off) ran it at 60 fps, 4, 16 and 1|2|32 still hung, and
      * caps -bindless,-bda,-ahb,-vk13 and -cbc changed nothing. */
     { HLE_QUIRK_NO_WBUF, "no_wbuf", mali_g57 },
@@ -223,7 +223,7 @@ static const HleQuirk k_quirks[] = {
      * submitted command buffer done and the GPU idle for 251 ms. r40p0 (the
      * RG556's, no_wbuf above) and r54p1 (the X6858's) ran without it and the
      * releases between are untested, so on for Arm's driver before r40;
-     * HAKUX_HLE_QUIRKS=+no_sem_wait tries it elsewhere. */
+     * XBASED_HLE_QUIRKS=+no_sem_wait tries it elsewhere. */
     { HLE_QUIRK_NO_SEM_WAIT, "no_sem_wait", arm_before_r40 },
 };
 
@@ -264,7 +264,7 @@ static uint32_t apply(uint32_t mask, const char *spec)
             }
         }
         if (!bits) {
-            hle_log("hakuX-hle-back", "quirks: \"%s\" is not a quirk (ignored)", name);
+            hle_log("xbased-hle-back", "quirks: \"%s\" is not a quirk (ignored)", name);
         }
         mask = off ? mask & ~bits : mask | bits;
     }
@@ -277,7 +277,7 @@ static void set(uint32_t mask, const char *why)
     g_hle_quirks = mask;
     names(mask, on, sizeof(on));
     names(g_defaults, def, sizeof(def));
-    hle_log("hakuX-hle-back", "quirks: %s (driver defaults %s%s%s)", on, def, why ? "; " : "",
+    hle_log("xbased-hle-back", "quirks: %s (driver defaults %s%s%s)", on, def, why ? "; " : "",
             why ? why : "");
 }
 
@@ -294,10 +294,10 @@ void hle_quirks_init(VkPhysicalDevice phys)
             g_defaults |= k_quirks[i].bit;
         }
     }
-    hle_log("hakuX-hle-back", "vk: driver \"%s\" (id %u) %s", d.drv.driverName, d.drv.driverID,
+    hle_log("xbased-hle-back", "vk: driver \"%s\" (id %u) %s", d.drv.driverName, d.drv.driverID,
             d.drv.driverInfo);
-    const char *e = getenv("HAKUX_HLE_QUIRKS");
-    set(apply(g_defaults, e), e ? "HAKUX_HLE_QUIRKS" : NULL);
+    const char *e = getenv("XBASED_HLE_QUIRKS");
+    set(apply(g_defaults, e), e ? "XBASED_HLE_QUIRKS" : NULL);
 }
 
 void hle_quirks_poll(void)
@@ -309,10 +309,10 @@ void hle_quirks_poll(void)
         return;
     }
     char v[PROP_VALUE_MAX] = "";
-    hle_prop_get("debug.hakux.quirks", v);
+    hle_prop_get("debug.xbased.quirks", v);
     if (strcmp(v, last)) {
         strcpy(last, v);
-        set(apply(g_defaults, v), v[0] ? "debug.hakux.quirks" : NULL);
+        set(apply(g_defaults, v), v[0] ? "debug.xbased.quirks" : NULL);
     }
 #endif
 }

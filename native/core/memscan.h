@@ -1,5 +1,5 @@
 /*
- * hakuX native core — debug: guest memory scans (debug.hakux.memscan) for
+ * xbased native core — debug: guest memory scans (debug.xbased.memscan) for
  * writing mods and cheats; memscan.c lists the commands.
  */
 #ifndef NATIVE_CORE_MEMSCAN_H

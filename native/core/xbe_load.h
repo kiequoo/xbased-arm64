@@ -1,5 +1,5 @@
 /*
- * hakuX native core — XBE loader.
+ * xbased native core — XBE loader.
  *
  * Maps the title's executable the way the Xbox kernel does: headers at the
  * base address, preload sections at their virtual addresses, the kernel

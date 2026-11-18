@@ -1,5 +1,5 @@
 /*
- * hakuX native core — runtime library exports.
+ * xbased native core — runtime library exports.
  *
  * ANSI_STRING / UNICODE_STRING: { USHORT Length, USHORT MaximumLength,
  * Buffer }, lengths in bytes. TIME_FIELDS: Year, Month, Day, Hour, Minute,

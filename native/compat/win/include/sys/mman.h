@@ -1,5 +1,5 @@
 /*
- * hakuX on Windows: mmap for the core's own anonymous and file-backed
+ * xbased on Windows: mmap for the core's own anonymous and file-backed
  * memory (guest memory itself is core/vm_win.c's). compat/win/win.c.
  */
 #ifndef NC_WIN_MMAN_H

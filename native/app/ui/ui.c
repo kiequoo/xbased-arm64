@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the dashboard's drawing (ui.h).
+ * xbased front end — the dashboard's drawing (ui.h).
  *
  * Text: glyphs rasterized by stb_truetype at the size they are drawn at
  * (pixels: crisp at any window size) into one atlas texture, shelf-packed,
@@ -61,7 +61,10 @@ static struct {
     Glyph g[GLYPHS];
     int shelf_x, shelf_y, shelf_h;
     float scale;            /* pixels per 720p unit */
-    int pw, ph;
+    int pw, ph;             /* the drawing area's (4:3: inside the window, U.ox from its left) */
+    int ox;
+    int ww;                 /* the window's width (the 4:3 area's sides included) */
+    bool shifted;           /* the overlay's vertices moved by ox (ui_overlay_submit) */
     uint64_t t0;
     float alpha;            /* ui_set_alpha */
     SDL_Texture *targets[8];   /* the layers' render targets under the one drawn into */
@@ -75,6 +78,8 @@ static struct {
     HleOvCmd *c;
     int nv, cv, nc, cc;
 } U;
+
+static bool g_frame43;     /* ui_set_frame43 (kept past ui_init) */
 
 static UiTex g_scene = {.ov = HLE_OV_SCENE, .blend = UB_BLEND};
 static UiTex g_scene_blur = {.ov = HLE_OV_SCENE_BLUR, .blend = UB_BLEND};
@@ -312,10 +317,31 @@ UiTex *ui_scene(bool blurred)
     return t;
 }
 
+/* Drawing over the whole window, the 4:3 area's sides too (the window's
+ * picture under the in-game menu, #336: squeezed into the 4:3 area it
+ * read as the game narrowed); x0: the window's left edge in drawing
+ * pixels (the overlay's vertices move by ox later, ui_overlay_submit). */
+static float whole_begin(void)
+{
+    if (!U.ov && U.ox) {
+        SDL_SetRenderViewport(U.r, NULL);
+    }
+    return U.ov ? (float)-U.ox : 0.0f;
+}
+
+static void whole_end(void)
+{
+    if (!U.ov && U.ox) {
+        const SDL_Rect vp = {U.ox, 0, U.pw, U.ph};
+        SDL_SetRenderViewport(U.r, &vp);
+    }
+}
+
 void ui_fill(UiTex *t, UiColor c)
 {
-    const SDL_FRect d = {0, 0, (float)U.pw, (float)U.ph};
+    const SDL_FRect d = {whole_begin(), 0, (float)U.ww, (float)U.ph};
     blit(t, NULL, &d, c);
+    whole_end();
 }
 
 void ui_set_alpha(float a)
@@ -493,15 +519,40 @@ void ui_begin(void)
     } else {
         SDL_GetCurrentRenderOutputSize(U.r, &U.pw, &U.ph);
     }
+    /* the interface in a centered 4:3 area, the sides black (#289): a bezel
+     * or a shader's frame over a 4:3 picture covers no menu */
+    U.ox = 0;
+    U.ww = U.pw;
+    U.shifted = false;
+    if (g_frame43 && U.pw * 3 > U.ph * 4) {
+        const int w43 = U.ph * 4 / 3;
+        U.ox = (U.pw - w43) / 2;
+        U.pw = w43;
+    }
     U.scale = U.ph / 720.0f;
     if (U.pw / U.scale < 960) {
         U.scale = U.pw / 960.0f;   /* narrow windows: at least 960 units wide */
     }
     U.alpha = 1.0f;
     if (!U.ov) {
+        SDL_SetRenderViewport(U.r, NULL);
         SDL_SetRenderDrawColor(U.r, 0, 0, 0, 255);
         SDL_RenderClear(U.r);
+        if (U.ox) {
+            const SDL_Rect vp = {U.ox, 0, U.pw, U.ph};
+            SDL_SetRenderViewport(U.r, &vp);   /* everything after it inside, clip rects too */
+        }
     }
+}
+
+void ui_set_frame43(bool on)
+{
+    g_frame43 = on;
+}
+
+int ui_ox(void)
+{
+    return U.ox;
 }
 
 void ui_overlay_submit(bool cover)
@@ -513,6 +564,18 @@ void ui_overlay_submit(bool cover)
         /* nothing drawn, still covering: black, not the picture */
         HleOvVert *o = ov_room(0, UB_BLEND, 3);
         memset(o, 0, 3 * sizeof(*o));
+    }
+    if (U.ox && !U.shifted) {
+        /* the 4:3 area's place in the window (ui_begin) */
+        U.shifted = true;
+        for (int i = 0; i < U.nv; i++) {
+            U.v[i].x += (float)U.ox;
+        }
+        for (int i = 0; i < U.nc; i++) {
+            if (U.c[i].clip[2]) {
+                U.c[i].clip[0] += U.ox;
+            }
+        }
     }
     hle_present_set_overlay(U.v, (uint32_t)U.nv, U.c, (uint32_t)U.nc, cover ? HLE_OV_COVER : 0);
 }
@@ -754,6 +817,13 @@ void ui_rect(float x, float y, float w, float h, UiColor c)
 void ui_rect_grad(float x, float y, float w, float h, UiColor top, UiColor bottom)
 {
     quad(x, y, w, h, top, top, bottom, bottom);
+}
+
+void ui_fill_grad(UiColor top, UiColor bottom)
+{
+    const float x0 = whole_begin();
+    quad(x0 / U.scale, 0, U.ww / U.scale, U.ph / U.scale, top, top, bottom, bottom);
+    whole_end();
 }
 
 void ui_rect_hgrad(float x, float y, float w, float h, UiColor left, UiColor right)

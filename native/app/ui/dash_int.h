@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the dashboard's pieces (dash*.c): the input, the
+ * xbased front end — the dashboard's pieces (dash*.c): the input, the
  * screen stack, the lists every screen is made of.
  */
 #ifndef NATIVE_APP_UI_DASH_INT_H
@@ -32,7 +32,7 @@ typedef struct In {
 enum Screen {
     SCR_MAIN, SCR_GAMES, SCR_GAME, SCR_GAME_SETTINGS, SCR_MODS, SCR_STATES, SCR_SETTINGS, SCR_CONTROLS,
     SCR_REMAP, SCR_MEMORY, SCR_MEMORY_TITLE, SCR_ONLINE, SCR_ABOUT, SCR_INGAME, SCR_INGAME_SLOTS, SCR_STICKS,
-    SCR_TRIGGERS, SCR_BROWSE, SCR_FIND, SCR_COUNT
+    SCR_TRIGGERS, SCR_BROWSE, SCR_FIND, SCR_COVER, SCR_COUNT
 };
 
 typedef struct Dash {
@@ -104,6 +104,17 @@ bool list_row_icon(List *l, UiTex *icon, const char *label, const char *sub, con
 void list_end(List *l);
 bool list_selected(const List *l);   /* the last row is the selected one */
 
+/* The selected row's help under the list (#336): the option rows give
+ * their own (opt_*), a screen's other rows dash_help; when: in a game's
+ * menu, when the setting takes effect (said under it). dash_help_draw
+ * draws it once the list is done, then forgets it; dash_list_h: the
+ * height of a list from y in rows of row_h that ends above it. */
+enum { HELP_NOW, HELP_NEXT_START, HELP_ON_RESUME };
+void dash_help(const char *text, int when);
+void dash_help_draw(void);
+float dash_help_top(void);
+float dash_list_h(float y, float row_h);
+
 /* settings rows over D.global or (editing a game) D.game */
 void opt_choice(List *l, enum UiStr label, const char *key, const char *const *vals, const char *const *names, int n,
                 const char *def);
@@ -148,6 +159,18 @@ void dash_find_next_view(void);
 void dash_find_open(bool typing);
 void dash_find_clear(void);    /* no search, no filters */
 void scr_find(void);
+/* The on-screen keyboard (dash_find.c) at (x, y), keys of ks, typing into
+ * buf (cap) by the input given; true when Done is pressed. dash_text_type
+ * and dash_text_rub_out: a text field's typing and backspace. */
+bool dash_osk(float x, float y, float ks, const In *in, char *buf, size_t cap);
+void dash_text_type(char *buf, size_t cap, const char *s);
+void dash_text_rub_out(char *buf);
+/* The cover picker (dash_cover.c): box art to choose for g, by its name or
+ * a search, or a picture file of the user's (dash_cover_from_file, dash.c's
+ * file dialog, once the picker is closed). */
+void dash_cover_open(LibGame *g);
+void scr_cover(void);
+void dash_cover_from_file(void);
 /* The file browser (dash_browse.c), the dashboard's own for the gamepad,
  * the keyboard and the mouse: dash_browse_games adds folders and game
  * files to the library; dash_browse_file has one file chosen (exts:

@@ -1,6 +1,6 @@
 name: 120 fps
 description: The game at 120 frames a second (on a 120 Hz screen) instead of 30. Each frame shows at the next vblank and the game steps 1/120 s a frame; a frame the device doesn't finish in time shows late, and the game slows down with it. Use it instead of the 60 fps mod, not with it.
-author: hakuX
+author: xbased
 refresh: 120
 
 [default.xbe]

@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the savestate's sections, each saved and restored by
+ * xbased native core — the savestate's sections, each saved and restored by
  * the module that owns its state (save.c lists them in load order).
  */
 #ifndef NATIVE_STATE_SECTIONS_H

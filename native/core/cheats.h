@@ -1,5 +1,5 @@
 /*
- * hakuX native core — cheats: memory codes the app turns on and off
+ * xbased native core — cheats: memory codes the app turns on and off
  * (mods/README.md has the format). The engine is pure C: the guest's memory
  * through callbacks (mods.c gives it the VM's, the host tests a fake one).
  *

@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Kelvin's DMA contexts (kvdma.h).
+ * xbased HLE GPU — Kelvin's DMA contexts (kvdma.h).
  */
 #include "hw/xbox/hle/pb/kvdma.h"
 

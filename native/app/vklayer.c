@@ -1,8 +1,8 @@
 /*
- * hakuX native core, app front end — Vulkan layers over the custom driver
+ * xbased native core, app front end — Vulkan layers over the custom driver
  * (debug). adrenotools hands the core Turnip's own vkGetInstanceProcAddr,
  * past Android's Vulkan loader, so the GPU debug-layer settings never reach
- * it. With debug.hakux.vkvalidation=1 at launch the Khronos validation
+ * it. With debug.xbased.vkvalidation=1 at launch the Khronos validation
  * layer (debug APKs ship it beside the core) goes in front of the driver
  * here, which does the loader's part: the layer's link in the instance and
  * device create infos. A loader also writes its dispatch table into the
@@ -96,10 +96,10 @@ static PFN_vkVoidFunction VKAPI_CALL get_instance_proc(VkInstance inst, const ch
 
 void *nc_vk_layers(void *drv_gipa)
 {
-    /* HAKUX_VKVALIDATION=1 too: a run that reads no properties (prop.h) */
+    /* XBASED_VKVALIDATION=1 too: a run that reads no properties (prop.h) */
     char v[PROP_VALUE_MAX] = "";
-    const char *e = getenv("HAKUX_VKVALIDATION");
-    if (!(e && !strcmp(e, "1")) && (hle_prop_get("debug.hakux.vkvalidation", v) <= 0 || !strcmp(v, "0"))) {
+    const char *e = getenv("XBASED_VKVALIDATION");
+    if (!(e && !strcmp(e, "1")) && (hle_prop_get("debug.xbased.vkvalidation", v) <= 0 || !strcmp(v, "0"))) {
         return drv_gipa;
     }
     void *h = dlopen(LAYER_LIB, RTLD_NOW | RTLD_LOCAL);
@@ -109,13 +109,13 @@ void *nc_vk_layers(void *drv_gipa)
     VkNegotiateLayerInterface ni = { .sType = LAYER_NEGOTIATE_INTERFACE_STRUCT,
                                      .loaderLayerInterfaceVersion = 2 };
     if (!neg || neg(&ni) != VK_SUCCESS || !ni.pfnGetInstanceProcAddr) {
-        nc_log("hakuX-app", "Vulkan validation: %s not loaded (%s): none", LAYER_LIB,
+        nc_log("xbased-app", "Vulkan validation: %s not loaded (%s): none", LAYER_LIB,
                h ? "no layer interface" : dlerror());
         return drv_gipa;
     }
     g_drv_gipa = (PFN_vkGetInstanceProcAddr)drv_gipa;
     g_layer_gipa = ni.pfnGetInstanceProcAddr;
-    nc_log("hakuX-app", "Vulkan validation: %s over the custom driver (layer interface %u)",
+    nc_log("xbased-app", "Vulkan validation: %s over the custom driver (layer interface %u)",
            LAYER_LIB, ni.loaderLayerInterfaceVersion);
     return (void *)get_instance_proc;
 }

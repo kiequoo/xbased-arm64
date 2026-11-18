@@ -13,7 +13,7 @@
 #           the FEX suite in system mode with --diff
 #
 # Runs on the small cores at low priority so it doesn't disturb other device
-# work, and never while the hakuX app is up (it shares the phone with the HLE
+# work, and never while the xbased app is up (it shares the phone with the HLE
 # GPU work): checked before every run, exit status 4 if it is. Prints one
 # summary line per run, then the tests that need a look.
 app_running() {
@@ -26,7 +26,7 @@ MODE=${1:-identity}
 RUN="taskset 3f nice -n 10 ./fexrun"
 for CFG in "1 0" "500 0" "500 1"; do
   if app_running; then
-    echo "hakuX app is running: stopping (device runs must not overlap it)"
+    echo "xbased app is running: stopping (device runs must not overlap it)"
     exit 4
   fi
   set -- $CFG

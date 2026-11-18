@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the kernel's crypto exports (Xc*). The contexts the
+ * xbased native core — the kernel's crypto exports (Xc*). The contexts the
  * guest passes are opaque buffers sized by the XDK: SHA 116 bytes, RC4 258,
  * DES key table 128 (triple DES 384); each holds the host state.
  *
@@ -198,7 +198,7 @@ static uint64_t XcVerifyPKCS1Signature(NcKernel *k, NcFrame *f, const uint32_t *
 {
     uint8_t block_le[1024];
     if (!pk_public(k, a[1], host(k, a[0]), block_le)) {
-        nc_log("hakuX-native", "xc: PKCS1 verify: bad public key");
+        nc_log("xbased-native", "xc: PKCS1 verify: bad public key");
         return 0;
     }
     const uint32_t len = nc_vm_rd32(k->vm, a[1] + 8) / 8;
@@ -212,7 +212,7 @@ static uint64_t XcVerifyPKCS1Signature(NcKernel *k, NcFrame *f, const uint32_t *
     for (int i = 0; i < 20; i++) {
         rev &= block_le[i] == digest[19 - i];
     }
-    nc_log("hakuX-native", "xc: PKCS1 verify: %s (block type %s, digest %s)", fwd || rev ? "ok" : "FAILED",
+    nc_log("xbased-native", "xc: PKCS1 verify: %s (block type %s, digest %s)", fwd || rev ? "ok" : "FAILED",
            padded ? "1" : "?", fwd ? "big-endian" : rev ? "little-endian" : "no match");
     return fwd || rev;
 }
@@ -280,13 +280,13 @@ bool nc_xc_security_sector(NcKernel *k, uint8_t *d, uint32_t n)
 /* XcCryptService / XcUpdateCrypto: no replaceable crypto vector. */
 static uint64_t XcCryptService(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    nc_log("hakuX-native", "xc: XcCryptService(%u) not implemented", a[0]);
+    nc_log("xbased-native", "xc: XcCryptService(%u) not implemented", a[0]);
     return 0;
 }
 
 static uint64_t XcUpdateCrypto(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    nc_log("hakuX-native", "xc: XcUpdateCrypto ignored");
+    nc_log("xbased-native", "xc: XcUpdateCrypto ignored");
     return 0;
 }
 

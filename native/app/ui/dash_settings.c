@@ -1,5 +1,5 @@
 /*
- * hakuX front end — the dashboard's settings: the global ones (tabs), a
+ * xbased front end — the dashboard's settings: the global ones (tabs), a
  * game's, its mods and cheats, its save states, the controls and their
  * remapping, online play.
  */
@@ -10,6 +10,11 @@
 #include "native/app/mod_fit.h"
 #include "native/app/win_mods.h"
 #include "native/core/xcheat.h"
+/* (a state's JPEG thumbnail, load_thumb) */
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_STATIC
+#define STBI_ONLY_JPEG
+#include "stb_image.h"
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -23,6 +28,7 @@
 #endif
 
 int nc_io_title_device_mode(uint32_t title_id, const char *name); /* native/kernel/io.c: a title's disc speed */
+int nc_dev_nv2a_title_pace_mode(uint32_t title_id, const char *name); /* native/dev/nv2a.c: its own frame rate */
 
 /* a game folder (or file) to take out of the library, once the user says so */
 static char g_unlist[1024], g_unlist_q[1200];
@@ -119,13 +125,38 @@ static void rows_console(List *l)
 
 /* ------------------------------------------------------------ settings */
 
+/* a shoulder button's name on a dark key, as the tab bar's ends show them
+ * with a gamepad (LB and RB turn the tabs, #322); its width */
+static float shoulder_key(float x, const char *name)
+{
+    const float w = ui_text_width(name, 17, UI_FONT_BOLD) + 22;
+    ui_round(x, 131, w, 30, 15, ui_alpha((UiColor){0x30, 0x34, 0x30, 0xFF}, 0.95f));
+    ui_round_outline(x, 131, w, 30, 15, 1, UI_GREEN_DIM);
+    ui_text(x + w / 2, 135, name, 17, UI_FONT_BOLD, UI_WHITE, UI_ALIGN_CENTER);
+    return w;
+}
+
 static void tab_bar(const enum UiStr *tabs, int n)
 {
     const float W = ui_w();
+    /* the tabs as wide as their names, narrower when they'd pass the
+     * screen's edge (a 4:3 interface, longer languages, LB and RB beside
+     * them: #336) */
+    const float sk = D.in.pad ? ui_text_width("LB", 17, UI_FONT_BOLD) + ui_text_width("RB", 17, UI_FONT_BOLD) + 68 : 0;
+    float names = 0;
+    for (int i = 0; i < n; i++) {
+        names += ui_text_width(T(tabs[i]), 24, UI_FONT_BOLD);
+    }
+    const float room = W - 120 - sk, full = names + n * 44 + (n - 1) * 12;
+    const float k = full > room ? room / full : 1;
+    const float fs = 24 * (k > 0.7f ? k : 0.7f), pad = 44 * k, gap = 12 * k;
     float x = 60;
+    if (D.in.pad) {
+        x += shoulder_key(x, "LB") + 12;
+    }
     for (int i = 0; i < n; i++) {
         const char *t = T(tabs[i]);
-        const float w = ui_text_width(t, 24, UI_FONT_BOLD) + 44;
+        const float w = ui_text_width(t, fs, UI_FONT_BOLD) + pad;
         const bool s = D.tab == i;
         const bool over = D.in.mx >= x && D.in.mx < x + w && D.in.my >= 124 && D.in.my < 168;
         if (over && D.in.click) {
@@ -134,8 +165,12 @@ static void tab_bar(const enum UiStr *tabs, int n)
         }
         ui_round(x, 124, w, 44, 22, s ? (UiColor){0x3C, 0x9A, 0x12, 0xFF} : (UiColor){0x10, 0x2C, 0x07, 0xE0});
         ui_round_outline(x, 124, w, 44, 22, s ? 2 : 1, s ? UI_GREEN_HI : UI_GREEN_DIM);
-        ui_text(x + w / 2, 132, t, 24, UI_FONT_BOLD, s ? UI_WHITE : UI_GREY, UI_ALIGN_CENTER);
-        x += w + 12;
+        ui_text(x + w / 2, 146 - fs * 0.58f, t, fs, UI_FONT_BOLD, s ? UI_WHITE : UI_GREY, UI_ALIGN_CENTER);
+        x += w + gap;
+    }
+    x += 12 - gap;
+    if (D.in.pad) {
+        x += shoulder_key(x, "RB") + 12;
     }
     if (x < W - 200) {
         draw_button_glyph(x + 8, 132, 0, 0); /* nothing: keeps the layout simple */
@@ -198,6 +233,81 @@ static const char *video_mode_name(void)
     return "";
 }
 
+
+/* the sticks' inverted axes (#324): a camera on the right stick that turns
+ * the other way than the player is used to; the game's own or the global */
+static void invert_rows(List *l)
+{
+    static const char *const iv[] = {"off", "y", "x", "xy"};
+    const char *in[] = {T(S_OFF), T(S_INVERT_Y), T(S_INVERT_X), T(S_INVERT_XY)};
+    opt_choice(l, S_INVERT_RSTICK, "stick.rinvert", iv, in, 4, "off");
+    opt_choice(l, S_INVERT_LSTICK, "stick.linvert", iv, in, 4, "off");
+}
+
+/* the cache partitions emptied now, asked first */
+static void clear_cache_now(Dash *d)
+{
+    const char *hdd = cfg_get(&d->global, "hdd");
+    const int n = cfg_clear_game_cache(hdd && hdd[0] ? hdd : NULL);
+    dash_toast(T(n < 0 ? S_CACHE_CLEAR_FAIL : S_CACHE_CLEARED));
+}
+
+/* The game cache (#308): emptied before each game (cache.clear=, off by
+ * default; a game's own or the global), and emptied now; selected, what it
+ * is and why one would */
+static void cache_rows(List *l)
+{
+    opt_bool(l, S_CACHE_CLEAR, "cache.clear", false, false);
+    if (list_selected(l)) {
+        dash_help(T(S_CACHE_HELP), HELP_NEXT_START);
+    }
+    if (list_row(l, T(S_CACHE_CLEAR_NOW), NULL, NULL)) {
+        dash_ask(T(S_CACHE_CLEAR_ASK), clear_cache_now);
+    }
+    if (list_selected(l)) {
+        dash_help(T(S_CACHE_HELP), HELP_NEXT_START);
+    }
+}
+
+/* The GPU precision (precision=, hw/xbox/hle/vk/precision.h): automatic,
+ * exact or fast; selected, its help with the last game's verdict (the
+ * HLE's last_precision.txt beside the hard disk). */
+static void precision_row(List *l, bool game)
+{
+    static const char *const pv[] = {"auto", "exact", "fast"};
+    const char *pn[] = {T(S_PREC_AUTO), T(S_PREC_EXACT), T(S_PREC_FAST)};
+    opt_choice(l, S_PRECISION, "precision", pv, pn, 3, "auto");
+    if (!list_selected(l)) {
+        return;
+    }
+    (void)game;
+    static char help[1400];
+    const char *hdd = cfg_get(&D.global, "hdd");
+    char path[1200], verdict[16] = "", why[400] = "";
+    if (hdd && hdd[0]) {
+        snprintf(path, sizeof(path), "%s/../hle/last_precision.txt", hdd);
+    } else {
+        snprintf(path, sizeof(path), "%shdd/../hle/last_precision.txt", cfg_data_dir());
+    }
+    FILE *f = fopen(path, "r");
+    if (f) {
+        if (fgets(verdict, sizeof(verdict), f) && fgets(why, sizeof(why), f)) {
+            verdict[strcspn(verdict, "\r\n")] = 0;
+            why[strcspn(why, "\r\n")] = 0;
+        } else {
+            verdict[0] = 0;
+        }
+        fclose(f);
+    }
+    if (verdict[0]) {
+        snprintf(help, sizeof(help), "%s %s %s (%s).", T(S_PREC_HELP), T(S_PREC_LAST),
+                 T(strcmp(verdict, "fast") ? S_PREC_EXACT : S_PREC_FAST), why);
+    } else {
+        snprintf(help, sizeof(help), "%s", T(S_PREC_HELP));
+    }
+    dash_help(help, HELP_NEXT_START);
+}
+
 void scr_settings(void)
 {
     const float W = ui_w(), H = ui_h();
@@ -206,8 +316,11 @@ void scr_settings(void)
     D.editing_game = false;
     tab_bar(tabs, 6);
     List l;
-    list_begin(&l, 74, 196, W - 148, H - 290, 58);
+    /* the rows end above the selected one's help (dash_help) */
+    list_begin(&l, 74, 190, W - 148, dash_list_h(190, 58), 58);
     (void)video_mode_name;
+    (void)H;
+    bool removable = false;     /* the selected row a folder or file X takes out of the library */
     switch (D.tab) {
     case 0:
         rows_video(&l);
@@ -257,8 +370,16 @@ void scr_settings(void)
             const char *dn[] = {T(S_DISC_CONSOLE), T(S_DISC_FAST)};
             opt_choice(&l, S_DISC_SPEED, "devtime", dv, dn, 2, "2");
         }
-        opt_bool(&l, S_ASYNC_SHADERS, "asyncpipe", false, false);
-        opt_bool(&l, S_PREBUILD, "prebuild", false, false);
+        {
+            /* new shaders (shaders=, native/core/options.h): the interpreters'
+             * meanwhile, their draws skipped meanwhile, or waited for */
+            static const char *const sv[] = {"hybrid", "async", "sync"};
+            const char *sn[] = {T(S_SHADERS_HYBRID), T(S_SHADERS_ASYNC), T(S_SHADERS_SYNC)};
+            opt_choice(&l, S_SHADERS_MODE, "shaders", sv, sn, 3, "hybrid");
+        }
+        opt_bool(&l, S_PREBUILD, "prebuild", true, false);
+        precision_row(&l, false);
+        cache_rows(&l);
         break;
     }
     case 3: {
@@ -282,6 +403,7 @@ void scr_settings(void)
         opt_bool(&l, S_COVERS_ONLINE, "covers", true, false);
         opt_bool(&l, S_ANIMATED_BG, "ui.anim", true, false);
         opt_bool(&l, S_TRANSITIONS, "ui.fx", true, false);
+        opt_bool(&l, S_UI_43, "ui.43", false, false);   /* menus in a centered 4:3 area (ui_set_frame43) */
         opt_bool(&l, S_UI_SOUNDS, "ui.sounds", true, false);
         opt_bool(&l, S_CHECK_UPDATES, "update.check", true, false);
         opt_bool(&l, S_SWAP_AB, "ui.swapab", false, false);
@@ -294,7 +416,12 @@ void scr_settings(void)
         for (int i = 0; i < nd; i++) {
             char label[64];
             snprintf(label, sizeof(label), "%s %d", T(S_GAME_FOLDERS), i + 1);
-            if (list_row(&l, label, dirs[i], NULL) || (list_selected(&l) && D.in.x)) {
+            const bool chosen = list_row(&l, label, dirs[i], NULL);
+            if (list_selected(&l)) {
+                dash_help(T(S_H_FOLDER), HELP_NOW);
+                removable = true;
+            }
+            if (chosen || (list_selected(&l) && D.in.x)) {
                 /* out of the library, once asked (a press on it alone used to take it out) */
                 snprintf(g_unlist, sizeof(g_unlist), "%s", dirs[i]);
                 snprintf(g_unlist_q, sizeof(g_unlist_q), T(S_REMOVE_FOLDER_Q), dirs[i]);
@@ -306,12 +433,20 @@ void scr_settings(void)
         if (list_row(&l, T(S_ADD_GAMES), "+", NULL)) {
             dash_browse_games();
         }
+        if (list_selected(&l)) {
+            dash_help(T(S_H_ADD_GAMES), HELP_NOW);
+        }
         const char *files[32];
         const int nf = cfg_all(&D.global, "gamefile", files, 32);
         for (int i = 0; i < nf; i++) {
             char label[64];
             snprintf(label, sizeof(label), "%s %d", T(S_GAME_FILE), i + 1);
-            if (list_row(&l, label, files[i], NULL) || (list_selected(&l) && D.in.x)) {
+            const bool chosen = list_row(&l, label, files[i], NULL);
+            if (list_selected(&l)) {
+                dash_help(T(S_H_GAME_FILE), HELP_NOW);
+                removable = true;
+            }
+            if (chosen || (list_selected(&l) && D.in.x)) {
                 snprintf(g_unlist, sizeof(g_unlist), "%s", files[i]);
                 snprintf(g_unlist_q, sizeof(g_unlist_q), T(S_REMOVE_FILE_Q), files[i]);
                 g_unlist_file = true;
@@ -321,6 +456,9 @@ void scr_settings(void)
         }
         if (list_row(&l, T(S_PLAY_GAME_FILE), ">", NULL)) {
             dash_pick_play_file();
+        }
+        if (list_selected(&l)) {
+            dash_help(T(S_H_PLAY_FILE), HELP_NOW);
         }
         break;
     }
@@ -333,6 +471,9 @@ void scr_settings(void)
             if (list_row(&l, label, val, &delta)) {
                 D.player = p;
                 dash_push(SCR_CONTROLS);
+            }
+            if (list_selected(&l)) {
+                dash_help(T(S_H_PLAYER), HELP_ON_RESUME);
             }
             if (delta) {
                 im_cycle_device(&D.global, p, delta);
@@ -351,11 +492,15 @@ void scr_settings(void)
             if (list_row(&l, T(S_STICK_RANGE), val, &delta)) {
                 dash_push(SCR_STICKS);
             }
+            if (list_selected(&l)) {
+                dash_help(T(S_H_STICK_RANGE), HELP_ON_RESUME);
+            }
             if (delta) {
                 const int r = range + delta * 5;
                 cfg_set_int(&D.global, "stick.range", r < 50 ? 50 : r > 150 ? 150 : r);
             }
         }
+        invert_rows(&l);
         {
             /* the triggers' dead zone and full press, set on their own screen */
             char val[64];
@@ -363,6 +508,9 @@ void scr_settings(void)
                      cfg_int(&D.global, "trigger.full", 100));
             if (list_row(&l, T(S_TRIGGERS), val, NULL)) {
                 dash_push(SCR_TRIGGERS);
+            }
+            if (list_selected(&l)) {
+                dash_help(T(S_H_TRIGGERS), HELP_ON_RESUME);
             }
         }
         opt_bool(&l, S_RUMBLE, "rumble", true, false);
@@ -379,6 +527,9 @@ void scr_settings(void)
                 D.remap_target = 1000 + h;
                 D.remap_since = ui_time();
                 dash_push(SCR_REMAP);
+            }
+            if (list_selected(&l)) {
+                dash_help(T(S_H_HOTKEY), HELP_ON_RESUME);
             }
         }
         for (int h = 0; h < IM_HOTKEYS; h++) {
@@ -401,6 +552,9 @@ void scr_settings(void)
             if (list_row(&l, label, im_hkpad_label(cur), &delta)) {
                 delta = 1;
             }
+            if (list_selected(&l)) {
+                dash_help(T(S_H_HOTKEY_PAD), HELP_ON_RESUME);
+            }
             if (delta) {
                 cfg_set(&D.global, key, im_hkpad_value((cur + (delta > 0 ? 1 : n - 1)) % n));
             }
@@ -408,11 +562,13 @@ void scr_settings(void)
         break;
     }
     list_end(&l);
+    dash_help_draw();   /* the selected row's, under the list */
     if (D.in.back) {
         dash_save_cfg();
         dash_pop();
     }
-    draw_hints(T(S_CHANGE), T(S_BACK), D.tab == 3 ? T(S_REMOVE) : NULL, NULL);
+    /* X takes the selected folder or file out: said only on them (#336) */
+    draw_hints(T(S_CHANGE), T(S_BACK), removable ? T(S_REMOVE) : NULL, NULL);
 }
 
 /* ------------------------------------------------------------ a game's */
@@ -447,8 +603,29 @@ void scr_game_settings(void)
     draw_header(T(S_GAME_SETTINGS), D.cur->g.title);
     D.editing_game = true;
     List l;
-    list_begin(&l, 74, 150, W - 148, H - 244, 58);
+    list_begin(&l, 74, 150, W - 148, dash_list_h(150, 58), 58);    /* above the help (dash_help) */
+    (void)H;
+    list_heading(&l, T(S_VIDEO));
     rows_video(&l);
+    opt_bool(&l, S_SHOW_FPS, "showfps", false, false);
+    opt_bool(&l, S_VSYNC, "vsync", true, false);
+    {
+        /* the limit when this game's frame rate is unlocked (Mods & patches) */
+        static const char *const mv[] = {"refresh", "60", "120", "144", "240", "0"};
+        const char *mn[] = {T(S_MAXFPS_REFRESH), "60 fps", "120 fps", "144 fps", "240 fps", T(S_MAXFPS_NONE)};
+        opt_choice(&l, S_MAXFPS, "maxfps", mv, mn, 6, "refresh");
+    }
+    /* the sound: a game mixed louder or quieter than the others has its own
+     * volume (#336) */
+    list_heading(&l, T(S_AUDIO));
+    {
+        static const char *av[] = {"stereo", "5.1"};
+        const char *an[] = {T(S_STEREO), T(S_SURROUND51)};
+        opt_choice(&l, S_AUDIO_OUTPUT, "audio", av, an, 2, "stereo");
+    }
+    opt_int(&l, S_VOLUME, "volume", 0, 100, 5, 100, "%");
+    opt_bool(&l, S_MUTE_BG, "mutebg", true, false);
+    list_heading(&l, T(S_SYSTEM));
     rows_language(&l);
     opt_videoflag(&l, S_WIDESCREEN, 0x10000);
     rows_pal(&l);
@@ -461,12 +638,21 @@ void scr_game_settings(void)
         const char *dn[] = {T(S_DISC_CONSOLE), T(S_DISC_FAST)};
         opt_choice(&l, S_DISC_SPEED, "devtime", dv, dn, 2, "2");
     }
-    opt_bool(&l, S_ASYNC_SHADERS, "asyncpipe", false, false);
+    {
+        static const char *const sv[] = {"hybrid", "async", "sync"};
+        const char *sn[] = {T(S_SHADERS_HYBRID), T(S_SHADERS_ASYNC), T(S_SHADERS_SYNC)};
+        opt_choice(&l, S_SHADERS_MODE, "shaders", sv, sn, 3, "hybrid");
+    }
+    precision_row(&l, true);
+    cache_rows(&l);
     if (list_row(&l, T(S_RESET_GAME), NULL, NULL)) {
         dash_ask(T(S_RESET_GAME), reset_game);
     }
+    if (list_selected(&l)) {
+        dash_help(T(S_H_RESET_GAME), HELP_NOW);
+    }
     list_end(&l);
-    ui_text(74, H - 82, T(S_NEEDS_RESTART), 18, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_LEFT);
+    dash_help_draw();   /* the selected row's, under the list */
     if (D.in.back) {
         dash_pop();
     }
@@ -773,41 +959,6 @@ static bool mod_on(const ModItem *m)
     return false;
 }
 
-/* a line of help under a list, wrapped (three lines at most; CJK, without
- * spaces, cut anywhere) */
-static void help_panel(const char *s)
-{
-    const float W = ui_w(), H = ui_h(), tw = W - 160;
-    ui_round(60, H - 170, W - 120, 104, 12, UI_PANEL);
-    float y = H - 160;
-    for (int ln = 0; ln < 3 && *s; ln++) {
-        char line[512];
-        size_t n = 0, last_space = 0;
-        while (s[n] && n < sizeof(line) - 1) {
-            line[n] = s[n];
-            line[n + 1] = 0;
-            if (s[n] == ' ') {
-                last_space = n;
-            }
-            if (ui_text_width(line, 20, UI_FONT_REGULAR) > tw) {
-                n = last_space ? last_space : n;
-                while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80) {
-                    n--;    /* not inside a character */
-                }
-                break;
-            }
-            n++;
-        }
-        snprintf(line, sizeof(line), "%.*s", (int)n, s);
-        ui_text(80, y, line, 20, UI_FONT_REGULAR, UI_WHITE, UI_ALIGN_LEFT);
-        s += n;
-        while (*s == ' ') {
-            s++;
-        }
-        y += 28;
-    }
-}
-
 /* the game's frame rate patch in the list (60 or 120 fps), if it has one */
 static const ModItem *fps_patch(void)
 {
@@ -831,13 +982,41 @@ void scr_mods(void)
     draw_header(T(S_MODS), D.cur->g.title);
     mods_load();
     List l;
-    list_begin(&l, 74, 150, W - 148, H - 330, 58);
+    list_begin(&l, 74, 150, W - 148, dash_list_h(150, 58), 58);
+    (void)H;
     const ModItem *shown = NULL;
     /* the frame rate, this game's choice: the console's pace (Original), or
      * lifted ("uncap") up to 60 or 120 frames a second ("fpscap") or
-     * without a limit */
+     * without a limit; a game that breaks lifted (native/dev/nv2a.c's list)
+     * shows it locked at Original, and why */
     const char *help = NULL;
+    /* online mode (#278): the game as the console runs it, the frame rate,
+     * patches, mods and cheats left as they are but not used */
+    const bool online = cfg_bool(&D.game, "online", false);
     {
+        int delta = 0;
+        if (list_row(&l, T(S_ONLINE_MODE), online ? T(S_ON) : T(S_OFF), &delta) || delta) {
+            if (online) {
+                cfg_unset(&D.game, "online");
+            } else {
+                cfg_set(&D.game, "online", "1");
+            }
+        }
+        if (list_selected(&l)) {
+            help = T(S_ONLINE_HELP);
+        }
+    }
+    if (online) {
+        list_row(&l, T(S_FRAMERATE), T(S_FR_ONLINE), NULL);
+        if (list_selected(&l)) {
+            help = T(S_ONLINE_HELP);
+        }
+    } else if (nc_dev_nv2a_title_pace_mode(D.cur->g.title_id, D.cur->g.title)) {
+        list_row(&l, T(S_FRAMERATE), T(S_FR_LOCKED), NULL);
+        if (list_selected(&l)) {
+            help = T(S_FR_LOCKED_HELP);
+        }
+    } else {
         static const enum UiStr k_names[4] = { S_FR_CAPPED, S_FR_60, S_FR_120, S_FR_UNCAPPED };
         static const char *const k_caps[4] = { NULL, "60", "120", NULL };
         const char *cap = cfg_get(&D.game, "fpscap");
@@ -882,7 +1061,7 @@ void scr_mods(void)
     /* the mods and patches, then the cheats in a section of their own,
      * their names written properly in the interface's language */
     bool any_cheat = g_nxopts > 0;
-    for (int pass = 0; pass < 2; pass++) {
+    for (int pass = 0; pass < 2 && !online; pass++) {
         for (int i = 0; i < g_nmods; i++) {
             ModItem *m = &g_mods[i];
             if (m->cheat != (pass == 1)) {
@@ -913,7 +1092,7 @@ void scr_mods(void)
         }
     }
     static char xhelp[512];
-    for (int i = 0; i < g_nxopts; i++) {
+    for (int i = 0; i < g_nxopts && !online; i++) {
         XOpt *e = &g_xopts[i];
         if (e->shown_lang != (int)i18n_lang()) {
             cheat_text(e->label, i18n_lang(), e->shown, sizeof(e->shown));
@@ -940,13 +1119,9 @@ void scr_mods(void)
         }
     }
     list_end(&l);
-    if (D.toast[0] && ui_time() < D.toast_until) {
-        /* a notice over the help's place (the frame rate patch's) */
-    } else if (help) {
-        help_panel(help);
-    } else if (shown && shown->desc[0]) {
-        help_panel(shown->desc);
-    }
+    /* the selected row's help (a notice, the frame rate patch's, in its place) */
+    dash_help(help ? help : shown && shown->desc[0] ? shown->desc : NULL, HELP_NEXT_START);
+    dash_help_draw();
     if (D.in.back) {
         dash_pop();
     }
@@ -967,10 +1142,12 @@ static void del_state(Dash *d)
     remove(p);
     snprintf(p, sizeof(p), "%s/slot%d.bmp", dir, g_del_slot);
     remove(p);
+    snprintf(p, sizeof(p), "%s/slot%d.jpg", dir, g_del_slot);
+    remove(p);
     g_thumb_key[0] = 0;
 }
 
-/* a state's picture (the game writes a BMP of its frame) */
+/* a picture the game wrote of its frame (a BMP: the in-game menu's frame) */
 UiTex *load_bmp(const char *path)
 {
     SDL_Surface *s = SDL_LoadBMP(path);
@@ -980,6 +1157,26 @@ UiTex *load_bmp(const char *path)
     UiTex *t = ui_texture_surface(s);
     SDL_DestroySurface(s);
     return t;
+}
+
+/* a state's picture: slot<N>.jpg, else the .bmp a state saved before 1.0.105 has */
+UiTex *load_thumb(const char *dir, int slot)
+{
+    char p[1200];
+    snprintf(p, sizeof(p), "%s/slot%d.jpg", dir, slot);
+    int w, h, c;
+    unsigned char *px = stbi_load(p, &w, &h, &c, 4);
+    if (px) {
+        SDL_Surface *s = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_RGBA32, px, w * 4);
+        UiTex *t = s ? ui_texture_surface(s) : NULL;
+        if (s) {
+            SDL_DestroySurface(s);
+        }
+        stbi_image_free(px);
+        return t;
+    }
+    snprintf(p, sizeof(p), "%s/slot%d.bmp", dir, slot);
+    return load_bmp(p);
 }
 
 /* the thumbnails go when the list does (another game, a slot saved) */
@@ -1000,9 +1197,7 @@ void scr_states(void)
                 ui_texture_free(g_thumb[i]);
                 g_thumb[i] = NULL;
             }
-            char p[1200];
-            snprintf(p, sizeof(p), "%s/slot%d.bmp", dir, i);
-            g_thumb[i] = load_bmp(p);
+            g_thumb[i] = load_thumb(dir, i);
         }
         snprintf(g_thumb_key, sizeof(g_thumb_key), "%s", D.cur->g.key);
     }
@@ -1084,6 +1279,7 @@ void scr_controls(void)
         if (list_row(&l, T(S_STICK_ZONES), val, NULL)) {
             dash_push(SCR_STICKS);
         }
+        invert_rows(&l);
         const Config *tc = cfg_get(&D.game, "trigger.deadzone") ? &D.game : &D.global;
         const Config *fc = cfg_get(&D.game, "trigger.full") ? &D.game : &D.global;
         const bool town = cfg_get(&D.game, "trigger.deadzone") || cfg_get(&D.game, "trigger.full");
@@ -1579,35 +1775,10 @@ void scr_online(void)
         }
     }
     list_end(&l);
-    /* the help, wrapped */
-    ui_round(60, 510, W - 120, H - 600, 12, UI_PANEL);
-    const float tw = W - 160;
-    const char *s = help;
-    float y = 524;
-    while (*s && y < H - 110) {
-        char line[512];
-        size_t n = 0, last_space = 0;
-        while (s[n] && n < sizeof(line) - 1) {
-            line[n] = s[n];
-            line[n + 1] = 0;
-            if (s[n] == ' ') {
-                last_space = n;
-            }
-            if (ui_text_width(line, 21, UI_FONT_REGULAR) > tw) {
-                /* CJK has no spaces: cut anywhere then */
-                n = last_space ? last_space : n;
-                break;
-            }
-            n++;
-        }
-        snprintf(line, sizeof(line), "%.*s", (int)n, s);
-        ui_text(80, y, line, 21, UI_FONT_REGULAR, UI_WHITE, UI_ALIGN_LEFT);
-        s += n;
-        while (*s == ' ') {
-            s++;
-        }
-        y += 30;
-    }
+    /* the help as the settings' (#336): under the list, scrolled when long */
+    dash_help(help, HELP_NOW);
+    dash_help_draw();
+    (void)H;
     if (D.in.back && !D.edit_key) {
         dash_save_cfg();
         dash_pop();

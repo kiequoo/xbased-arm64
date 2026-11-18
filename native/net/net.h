@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the network behind the emulated NIC (native/dev/nvnet.c).
+ * xbased native core — the network behind the emulated NIC (native/dev/nvnet.c).
  *
  * The NIC hands whole Ethernet frames to the network and takes the frames it
  * received; in between, one host thread runs the backend:

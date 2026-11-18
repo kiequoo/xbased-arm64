@@ -1,5 +1,5 @@
 /*
- * hakuX native core — cheat files of the Xbox scene (xcheat.c): the .etm and
+ * xbased native core — cheat files of the Xbox scene (xcheat.c): the .etm and
  * .xbtf files EvolutionX, XBMC4Xbox and the Xored launcher ran (known there
  * as trainers). Each is x86 code for one game's title IDs with a list of
  * options, run once before the game's entry point; with its options on, it

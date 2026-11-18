@@ -1,4 +1,4 @@
-/* hakuX on Windows: dlopen and co. on LoadLibrary (compat/win/win.c). */
+/* xbased on Windows: dlopen and co. on LoadLibrary (compat/win/win.c). */
 #ifndef NC_WIN_DLFCN_H
 #define NC_WIN_DLFCN_H
 #ifdef __cplusplus

@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — runtime state, posture, logging, diagnostics.
+ * xbased HLE GPU — runtime state, posture, logging, diagnostics.
  */
 #include "hw/xbox/hle/base.h"
 #include "hw/xbox/hle/hle.h"
@@ -57,7 +57,7 @@ static HlePosture parse_posture(const char *m)
     return HLE_POSTURE_OFF;
 }
 
-/* HAKUX_HLE_PCHIST=1 (debug): the vCPU's EIP sampled every millisecond
+/* XBASED_HLE_PCHIST=1 (debug): the vCPU's EIP sampled every millisecond
  * (racy: the last TB exit), title code only, top entries logged each second */
 #define PCH_SLOTS 4096
 static struct { uint32_t pc, n; } g_pch[PCH_SLOTS];
@@ -69,16 +69,16 @@ static void pch_tick(void *opaque)
     if (hle_host_cpu()) {
         uint32_t pc = hle_host_cpu()->eip;
         g_pch_samples++;
-        static int64_t s_reg_pc = -2;       /* HAKUX_HLE_PCREG=<hex pc>: its EAX */
+        static int64_t s_reg_pc = -2;       /* XBASED_HLE_PCREG=<hex pc>: its EAX */
         static unsigned s_reg_n;
         if (s_reg_pc == -2) {
-            const char *e = getenv("HAKUX_HLE_PCREG");
+            const char *e = getenv("XBASED_HLE_PCREG");
             s_reg_pc = e ? (int64_t)strtoul(e, NULL, 16) : -1;
         }
         if (s_reg_pc >= 0 && pc == (uint32_t)s_reg_pc && s_reg_n < 8) {
             s_reg_n++;
             HleCpu *env = hle_host_cpu();
-            hle_log("hakuX-hle-hooks", "pcreg %08x eax=%08x ecx=%08x esi=%08x", pc,
+            hle_log("xbased-hle-hooks", "pcreg %08x eax=%08x ecx=%08x esi=%08x", pc,
                     (uint32_t)env->regs[R_EAX], (uint32_t)env->regs[R_ECX],
                     (uint32_t)env->regs[R_ESI]);
         }
@@ -119,15 +119,15 @@ static void pch_report(void)
         m += snprintf(buf + m, sizeof(buf) - m, " %08x:%u", g_pch[best].pc, g_pch[best].n);
         g_pch[best].n = 0;
     }
-    hle_log("hakuX-hle-hooks", "%s", buf);
+    hle_log("xbased-hle-hooks", "%s", buf);
     memset(g_pch, 0, sizeof(g_pch));
     g_pch_samples = g_pch_other = 0;
 }
 
-/* HAKUX_HLE_PEEK=va:len[,va:len] (debug): guest memory logged each second */
+/* XBASED_HLE_PEEK=va:len[,va:len] (debug): guest memory logged each second */
 static void peek_report(void)
 {
-    const char *e = getenv("HAKUX_HLE_PEEK");
+    const char *e = getenv("XBASED_HLE_PEEK");
     if (!e || !hle_host_cpu()) {
         return;
     }
@@ -145,7 +145,7 @@ static void peek_report(void)
                 hle_va_rw(cva + i * stride, &v, 4, false);
                 used += v != 0;
             }
-            hle_log("hakuX-hle-hooks", "peekcount %08x: %u/%u", cva, used, cnt);
+            hle_log("xbased-hle-hooks", "peekcount %08x: %u/%u", cva, used, cnt);
             continue;
         }
         bool ind = tok[0] == '*';           /* *va:len = through the pointer at va */
@@ -160,7 +160,7 @@ static void peek_report(void)
         for (uint32_t off = 0; off < len; off += 32) {
             uint32_t w[8] = { 0 };
             hle_va_rw(va + off, w, sizeof(w), false);
-            hle_log("hakuX-hle-hooks", "peek %08x: %08x %08x %08x %08x %08x %08x %08x %08x",
+            hle_log("xbased-hle-hooks", "peek %08x: %08x %08x %08x %08x %08x %08x %08x %08x",
                     va + off, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
         }
     }
@@ -173,14 +173,14 @@ static void diag_tick(void *opaque)
     peek_report();
     hle_pb_diag();
     hle_prof_diag();
-    /* HAKUX_HLE_PCLOG=1: where the vCPU is (racy sample, debug only) */
+    /* XBASED_HLE_PCLOG=1: where the vCPU is (racy sample, debug only) */
     static int pclog = -1;
     if (pclog < 0) {
-        pclog = getenv("HAKUX_HLE_PCLOG") != NULL;
+        pclog = getenv("XBASED_HLE_PCLOG") != NULL;
     }
     if (pclog && hle_host_cpu()) {
         HleCpu *env = hle_host_cpu();
-        hle_log("hakuX-hle-hooks", "pc=%08x esp=%08x if=%d halted=%d",
+        hle_log("xbased-hle-hooks", "pc=%08x esp=%08x if=%d halted=%d",
                 (uint32_t)env->eip, (uint32_t)env->regs[R_ESP],
                 (env->eflags & HLE_EFLAGS_IF) != 0, env->halted);
         uint8_t code[48];
@@ -194,9 +194,9 @@ static void diag_tick(void *opaque)
             for (unsigned i = 0; i < ARRAY_SIZE(stk); i++) {
                 snprintf(sx + 9 * i, 10, "%08x ", stk[i]);
             }
-            hle_log("hakuX-hle-hooks", "code@pc-16 %s", hx);
-            hle_log("hakuX-hle-hooks", "stack %s", sx);
-            hle_log("hakuX-hle-hooks", "eax=%08x ecx=%08x edx=%08x ebx=%08x esi=%08x edi=%08x "
+            hle_log("xbased-hle-hooks", "code@pc-16 %s", hx);
+            hle_log("xbased-hle-hooks", "stack %s", sx);
+            hle_log("xbased-hle-hooks", "eax=%08x ecx=%08x edx=%08x ebx=%08x esi=%08x edi=%08x "
                     "ebp=%08x", (uint32_t)env->regs[R_EAX], (uint32_t)env->regs[R_ECX],
                     (uint32_t)env->regs[R_EDX], (uint32_t)env->regs[R_EBX],
                     (uint32_t)env->regs[R_ESI], (uint32_t)env->regs[R_EDI],
@@ -212,7 +212,7 @@ double g_hle_prof_ns_per_tick = 1.0;
 
 void hle_prof_init(void)
 {
-    g_hle_prof_on = getenv("HAKUX_HLE_PROF") != NULL;
+    g_hle_prof_on = getenv("XBASED_HLE_PROF") != NULL;
 #if defined(__aarch64__)
     uint64_t f;
     __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
@@ -227,8 +227,8 @@ void hle_prof_init(void)
 #endif
 }
 
-/* On demand (debug): a new value of the property debug.hakux.perf turns the
- * profile on for debug.hakux.perfsec seconds (default 10); the late-frame
+/* On demand (debug): a new value of the property debug.xbased.perf turns the
+ * profile on for debug.xbased.perfsec seconds (default 10); the late-frame
  * report and GPU times follow the profile. */
 #if defined(__ANDROID__) || defined(_WIN32) || defined(NC_DESKTOP)
 /* Guest PC sampler (debug, during a perf capture): ~1000 times a second the
@@ -301,7 +301,7 @@ static void smp_stop(void)
     hle_thread_join(&g_smp.th);
     g_smp.started = false;
     uint64_t n = MAX(g_smp.n, 1);
-    hle_log("hakuX-hle-prof", "eip samples=%llu halted=%.1f%% dropped=%llu",
+    hle_log("xbased-hle-prof", "eip samples=%llu halted=%.1f%% dropped=%llu",
             (unsigned long long)g_smp.n, 100.0 * g_smp.halted / n,
             (unsigned long long)g_smp.dropped);
     for (unsigned r = 0; r < 40; r++) {         /* top 40, selection by count */
@@ -317,10 +317,10 @@ static void smp_stop(void)
         const uint32_t e = g_smp.eip[best];
         if (g_hle_pc_sampler && (e & HLE_PC_HOST) == HLE_PC_HOST) {
             /* host code: the offset in the core library (addr2line it) */
-            hle_log("hakuX-hle-prof", "  host+%06x %5u %.1f%% (%s)", (e & ~(HLE_PC_HOST | HLE_PC_SYSOP)) << 4,
+            hle_log("xbased-hle-prof", "  host+%06x %5u %.1f%% (%s)", (e & ~(HLE_PC_HOST | HLE_PC_SYSOP)) << 4,
                     g_smp.cnt[best], 100.0 * g_smp.cnt[best] / n, e & HLE_PC_SYSOP ? "kernel call / hook" : "FEX");
         } else {
-            hle_log("hakuX-hle-prof", "  eip %08x %5u %.1f%%", e, g_smp.cnt[best],
+            hle_log("xbased-hle-prof", "  eip %08x %5u %.1f%%", e, g_smp.cnt[best],
                     100.0 * g_smp.cnt[best] / n);
         }
         g_smp.cnt[best] = 0;
@@ -333,26 +333,26 @@ static void prof_poll(void)
 #ifdef __ANDROID__
     static HleProp prop;
     static int64_t until;
-    static int env_on = -1;             /* HAKUX_HLE_PROF at boot */
+    static int env_on = -1;             /* XBASED_HLE_PROF at boot */
     static bool armed;
     if (env_on < 0) {
         env_on = g_hle_prof_on;
     }
     char v[PROP_VALUE_MAX];
-    if (hle_prop_new(&prop, "debug.hakux.perf", v)) {
+    if (hle_prop_new(&prop, "debug.xbased.perf", v)) {
         char s[PROP_VALUE_MAX] = "";
-        hle_prop_get("debug.hakux.perfsec", s);
+        hle_prop_get("debug.xbased.perfsec", s);
         int sec = atoi(s) > 0 ? atoi(s) : 10;
         until = hle_now_ns() + (int64_t)sec * 1000000000;
         g_hle_prof_on = armed = true;
         smp_start();
-        hle_log("hakuX-hle-prof", "perf capture on for %d s", sec);
+        hle_log("xbased-hle-prof", "perf capture on for %d s", sec);
     }
     if (armed && hle_now_ns() >= until) {
         armed = false;
         g_hle_prof_on = env_on != 0;
         smp_stop();
-        hle_log("hakuX-hle-prof", "perf capture off");
+        hle_log("xbased-hle-prof", "perf capture off");
     }
 #endif
 }
@@ -376,23 +376,23 @@ void hle_prof_diag(void)
         ns0[k] = ns;
         n0[k] = n;
     }
-    hle_log("hakuX-hle-prof", "%s", buf);
+    hle_log("xbased-hle-prof", "%s", buf);
 }
 
 
 void hle_init(void)
 {
     memset(&g_hle, 0, sizeof(g_hle));
-    g_hle.posture = parse_posture(getenv("HAKUX_HLE_MODE"));
+    g_hle.posture = parse_posture(getenv("XBASED_HLE_MODE"));
     hle_prof_init();
     hle_barrier_init(hle_ram_size());
-    hle_log("hakuX-hle", "init posture=%s", hle_posture_name(g_hle.posture));
+    hle_log("xbased-hle", "init posture=%s", hle_posture_name(g_hle.posture));
     /* the reports every second (the decoder's and the back end's counts, the
      * profile, the debug views): a build made to investigate only */
-    if (HAKUX_DIAG && hle_active()) {
+    if (XBASED_DIAG && hle_active()) {
         g_diag_timer = hle_timer_new(diag_tick, NULL);
         hle_timer_mod(g_diag_timer, hle_now_ms() + 1000);
-        if (getenv("HAKUX_HLE_PCHIST")) {
+        if (getenv("XBASED_HLE_PCHIST")) {
             g_pch_timer = hle_timer_new(pch_tick, NULL);
             hle_timer_mod(g_pch_timer, hle_now_ms() + 1);
         }

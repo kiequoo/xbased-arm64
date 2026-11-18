@@ -1,15 +1,16 @@
 /*
- * hakuX native core — NV2A register space (0xFD000000, 16 MiB), first cut.
+ * xbased native core — NV2A register space (0xFD000000, 16 MiB), first cut.
  *
  * A register file (reads return what was last written) plus the behavior the
  * XDK's D3D needs, added as the frontier shows it:
  *   PMC_BOOT_0      0x000000  chip identification
  *   PMC_INTR_0      0x000100  pending summary (bit 24 PCRTC, 20 PTIMER), read-only
  *   PMC_INTR_EN_0   0x000140  bit 0: interrupts to the CPU
- *   PTIMER          0x009400/0x009410  free-running time (ns, the guest's
- *                   clock), low/high; ALARM_0 0x009420: INTR_0 0x009100 bit
- *                   0 when the low word reaches it (write 1 to clear),
- *                   INTR_EN_0 0x009140
+ *   PTIMER          0x009400/0x009410  the time, low/high: the core clock
+ *                   times 32 * DENOMINATOR (0x009210) / NUMERATOR (0x009200)
+ *                   on the guest's clock, writable; ALARM_0 0x009420: INTR_0
+ *                   0x009100 bit 0 when the low word reaches it (write 1 to
+ *                   clear), INTR_EN_0 0x009140
  *   PFB_CSTATUS     0x10020C  installed memory size
  *   PCRTC_INTR_0    0x600100  bit 0 vblank, write 1 to clear
  *   PCRTC_INTR_EN_0 0x600140
@@ -63,6 +64,9 @@
 #define NV_PFIFO_CACHE1_DMA_SUBROUTINE 0x00324Cu
 #define NV_PGRAPH_INTR      0x400100u
 #define NV_PGRAPH_INTR_EN   0x400140u
+#define NV_PGRAPH_STATUS    0x400700u
+#define NV_PGRAPH_RDI_INDEX 0x400750u   /* select 24:16, word address 12:2 */
+#define NV_PGRAPH_RDI_DATA  0x400754u
 #define NV_PGRAPH_SURFACE   0x400710u
 #define NV_PGRAPH_INCREMENT 0x40071Cu
 #define NV_PGRAPH_FIFO      0x400720u
@@ -73,6 +77,8 @@
 #define NV_PVIDEO_STOP      0x008704u
 #define NV_PTIMER_INTR_0    0x009100u
 #define NV_PTIMER_INTR_EN_0 0x009140u
+#define NV_PTIMER_NUMERATOR   0x009200u
+#define NV_PTIMER_DENOMINATOR 0x009210u
 #define NV_PTIMER_TIME_0    0x009400u
 #define NV_PTIMER_TIME_1    0x009410u
 #define NV_PTIMER_ALARM_0   0x009420u
@@ -135,9 +141,9 @@ static int64_t g_pick_off_ns = -1;    /* pickups after a vsync (smoothed, 0..per
 /* Push-buffer mode (hle_host_pb_mode): the HLE consumes channel 0's FIFO. */
 static bool g_pbmode;
 
-/* debug: NC_NV2A_CENSUS=1 / debug.hakux.nvcensus=1 at boot: the registers the
+/* debug: NC_NV2A_CENSUS=1 / debug.xbased.nvcensus=1 at boot: the registers the
  * guest reads and writes, by offset: each new one logged as it first comes
- * (the first 512), the busiest once a second (hakuX-native-nv2a). */
+ * (the first 512), the busiest once a second (xbased-native-nv2a). */
 #define CENSUS_SLOTS 4096u
 static struct {
     bool on;
@@ -168,7 +174,7 @@ static uint32_t ld(uint32_t off)
 
 static void census(uint32_t off, bool write, uint32_t v)
 {
-#if !HAKUX_DIAG
+#if !XBASED_DIAG
     (void)off;                          /* (a build's made to investigate) */
     (void)write;
     (void)v;
@@ -182,7 +188,7 @@ static void census(uint32_t off, bool write, uint32_t v)
         if (!g_census.r[i].off) {
             g_census.r[i].off = key + 1;
             if (g_census.nnew++ < 512) {
-                nc_log("hakuX-native-nv2a", "new register %06x: first %s %08x", key,
+                nc_log("xbased-native-nv2a", "new register %06x: first %s %08x", key,
                        write ? "write" : "read", v);
             }
             break;
@@ -226,7 +232,7 @@ static void census_log(void)
     }
     buf[o < (int)sizeof(buf) ? o : (int)sizeof(buf) - 1] = 0;
     if (o) {
-        nc_log("hakuX-native-nv2a", "registers/s:%s", buf);
+        nc_log("xbased-native-nv2a", "registers/s:%s", buf);
     }
 }
 
@@ -237,7 +243,7 @@ static bool fifo_empty(void)
 }
 
 uint64_t nc_ke_now_ns(void);           /* native/kernel/ke.c */
-#if HAKUX_DIAG
+#if XBASED_DIAG
 /* ---- debug: the GPU event trace (host.h hle_host_gpu_trace) ---- */
 #define GTR_N 32768u
 static struct {
@@ -279,7 +285,7 @@ void hle_host_gpu_trace_dump(const char *why, uint32_t mark)
         return;
     }
     const uint64_t t0 = g_gtr[(end - n) % GTR_N].ns;
-    nc_log("hakuX-native-trace", "%s: %u GPU events, from 150 before the mark", why, n);
+    nc_log("xbased-native-trace", "%s: %u GPU events, from 150 before the mark", why, n);
     char line[400];
     int o = 0;
     for (uint32_t j = end - n; j != end; j++) {
@@ -288,7 +294,7 @@ void hle_host_gpu_trace_dump(const char *why, uint32_t mark)
         o += snprintf(line + o, sizeof(line) - (size_t)o, " +%.2f %s %x",
                       (g_gtr[i].ns - t0) / 1e6, k_names[k], g_gtr[i].value);
         if (o > 300 || j + 1 == end) {
-            nc_log("hakuX-native-trace", "%s", line);
+            nc_log("xbased-native-trace", "%s", line);
             o = 0;
         }
     }
@@ -326,9 +332,63 @@ static void update_irq(void)
     pthread_mutex_unlock(&g_irq_mu);
 }
 
-/* ---- PTIMER's alarm ---- */
+/* ---- PTIMER's time ---- */
 
 uint64_t nc_ke_host_ns(uint64_t guest_ns);  /* native/kernel/ke.c */
+
+/* The time counts the core clock (16.666666 MHz * 28 / 2, NVPLL) times 32 *
+ * DENOMINATOR / NUMERATOR: 0.99995 GHz at the console's 56966 / 7629, the
+ * low 5 bits read 0, the high word 29 bits; a zero in either stops it. It
+ * goes on the guest's clock from where it was last set or rescaled
+ * (nxdk_low_level_nv2a_tests' ptimer_alarm_test: Time R/W, Rollover, Clock
+ * Scaling Ratios; it was the guest's nanoseconds, fixed). */
+#define PTIMER_CORE_HZ 233333324ull
+#define PTIMER_NUM0    56966u
+#define PTIMER_DEN0    7629u
+static struct {
+    pthread_mutex_t mu;
+    uint64_t ticks, ns;             /* the time at the guest's ns (ns 0: at the first look) */
+    uint64_t set_ns;                /* the guest's ns when it last set the time (TIME_0 / TIME_1),
+                                       0: not since the start or the state's load */
+    bool strict;                    /* the alarm was set (or the time) within ALARM_STRICT_NS
+                                       of that: the console's rule for it (alarm_due) */
+} g_pt = {PTHREAD_MUTEX_INITIALIZER, 0, 0, 0, false};
+
+/* (g_pt.mu held) */
+static uint64_t pt_at(uint64_t now)
+{
+    if (!g_pt.ns) {
+        g_pt.ticks = g_pt.ns = now;
+    }
+    const uint64_t num = ld(NV_PTIMER_NUMERATOR), den = ld(NV_PTIMER_DENOMINATOR);
+    if (!num || !den || now <= g_pt.ns) {
+        return g_pt.ticks;
+    }
+    return g_pt.ticks + (uint64_t)((unsigned __int128)(now - g_pt.ns) * (PTIMER_CORE_HZ * 32u * den) /
+                                   (num * 1000000000ull));
+}
+
+/* The guest ns the time takes to go d further, rounded up; UINT64_MAX if it
+ * stands still (g_pt.mu held) */
+static uint64_t pt_ns_for(uint64_t d)
+{
+    const uint64_t num = ld(NV_PTIMER_NUMERATOR), den = ld(NV_PTIMER_DENOMINATOR);
+    if (!num || !den) {
+        return UINT64_MAX;
+    }
+    const unsigned __int128 q = PTIMER_CORE_HZ * 32u * den;
+    return (uint64_t)(((unsigned __int128)d * num * 1000000000ull + q - 1) / q);
+}
+
+static uint64_t pt_now(void)
+{
+    pthread_mutex_lock(&g_pt.mu);
+    const uint64_t t = pt_at(nc_ke_now_ns());
+    pthread_mutex_unlock(&g_pt.mu);
+    return t;
+}
+
+/* ---- PTIMER's alarm ---- */
 
 /* The alarm interrupt comes when the time's low word reaches ALARM_0: D3D
  * times its vblank work with it in the modes whose vblank it doesn't take
@@ -336,11 +396,23 @@ uint64_t nc_ke_host_ns(uint64_t guest_ns);  /* native/kernel/ke.c */
  * flip at the alarm's vblanks, and with no alarm the first one never did),
  * and its timer callbacks. The ptimer thread, started at the first alarm a
  * title sets, waits for it on the guest's clock, which stands still while
- * the emulation is paused and goes on from a savestate's. An alarm the time
- * passed less than ALARM_LATE_NS ago comes at once, not after the low word
- * wraps (4.3 s): the guest set it late, by its own slowness or ours, and
- * D3D's handler checks the 64-bit time itself. */
-#define ALARM_LATE_NS  1000000000u
+ * the emulation is paused and goes on from a savestate's.
+ *
+ * The console's alarm comes only as the low word gets to it: one set where
+ * the time already is or behind it waits for the word to come round (4.3 s;
+ * ptimer_alarm_test's Alarm Set In The Past, 0x10000000 behind, and
+ * Unaligned Target, 0x201F over a time of 0x2000). Here one the time passed
+ * less than ALARM_LATE ago comes at once: D3D sets its alarms ahead of a time
+ * it read, and the emulation (a hitch of ours) can make that late, where its
+ * handler checks the 64-bit time itself. The console's rule holds for an
+ * alarm set right after the guest set the time (within ALARM_STRICT_NS:
+ * the tests set the time, then an alarm against it). D3D sets the time too,
+ * to 0 at its start (Prince of Persia - Warrior Within, Grand Theft Auto -
+ * Vice City): with the rule kept for every guest that ever set it, their
+ * late alarms waited for the low word to come round, the loading screens
+ * black and the play stopped for seconds. */
+#define ALARM_LATE      1000000000u /* in the time's units, ~1 s */
+#define ALARM_STRICT_NS 10000000ull /* 10 ms of the guest's time */
 #define ALARM_POLL_NS  20000000ull  /* the pause looked at this often */
 static struct {
     pthread_mutex_t mu;
@@ -351,11 +423,25 @@ static struct {
     uint64_t due;                   /* guest ns; 0: none */
 } g_alarm = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, PTHREAD_ONCE_INIT, true, 0};
 
-/* When the time's low word, at now, next reaches alarm */
+/* The guest ns at which the time's low word, at now, next reaches alarm
+ * (UINT64_MAX: the time stands still) */
 static uint64_t alarm_due(uint32_t alarm, uint64_t now)
 {
-    const uint32_t d = alarm - ((uint32_t)now & ~0x1Fu);
-    return d >= (uint32_t)-ALARM_LATE_NS ? now : now + d;
+    pthread_mutex_lock(&g_pt.mu);
+    const uint32_t d = (alarm & ~0x1Fu) - ((uint32_t)pt_at(now) & ~0x1Fu);
+    const bool late = !g_pt.strict && d >= (uint32_t)-ALARM_LATE;
+    const uint64_t w = d == 0 || late ? 0 : pt_ns_for(d);
+    pthread_mutex_unlock(&g_pt.mu);
+    return w == UINT64_MAX ? UINT64_MAX : now + w;
+}
+
+/* The guest ns the low word takes to come round (UINT64_MAX: it doesn't) */
+static uint64_t alarm_period(void)
+{
+    pthread_mutex_lock(&g_pt.mu);
+    const uint64_t w = pt_ns_for(1ull << 32);
+    pthread_mutex_unlock(&g_pt.mu);
+    return w;
 }
 
 static void *ptimer_thread(void *arg)
@@ -377,11 +463,12 @@ static void *ptimer_thread(void *arg)
         if (now >= g_alarm.due) {
             __atomic_fetch_or(reg(NV_PTIMER_INTR_0), PTIMER_ALARM, __ATOMIC_ACQ_REL);
             update_irq();
-            g_alarm.due += 1ull << 32;      /* the low word comes round to it again */
+            const uint64_t p = alarm_period();  /* the low word comes round to it again */
+            g_alarm.due = p == UINT64_MAX ? UINT64_MAX : g_alarm.due + p;
             continue;
         }
-        uint64_t until = nc_ke_host_ns(g_alarm.due);
         const uint64_t cap = now_ns() + ALARM_POLL_NS;
+        uint64_t until = g_alarm.due == UINT64_MAX ? cap : nc_ke_host_ns(g_alarm.due);
         until = until < cap ? until : cap;
         const struct timespec ts = {(time_t)(until / 1000000000ull), (long)(until % 1000000000ull)};
         pthread_cond_timedwait(&g_alarm.cv, &g_alarm.mu, &ts);
@@ -400,7 +487,7 @@ static void ptimer_start(void)
     pthread_t t;
     pthread_create(&t, NULL, ptimer_thread, NULL);
     pthread_detach(t);
-    nc_log("hakuX-native", "nv2a: PTIMER alarm in use (alarm %08x, interrupt %s)", ld(NV_PTIMER_ALARM_0),
+    nc_log("xbased-native", "nv2a: PTIMER alarm in use (alarm %08x, interrupt %s)", ld(NV_PTIMER_ALARM_0),
            ld(NV_PTIMER_INTR_EN_0) & PTIMER_ALARM ? "on" : "off");
 }
 
@@ -412,6 +499,70 @@ static void alarm_set(void)
     g_alarm.rearm = true;
     pthread_cond_signal(&g_alarm.cv);
     pthread_mutex_unlock(&g_alarm.mu);
+}
+
+/* The time set or rescaled: when the alarm comes again, if anything waits
+ * for it (a guest that sets the time itself starts the alarm too: INTR_0
+ * latches what it crosses, armed or not; D3D's scale written at its start
+ * doesn't, for a title that never sets an alarm) */
+static bool g_alarm_started;
+static void alarm_retime(bool start)
+{
+    if (start || __atomic_load_n(&g_alarm_started, __ATOMIC_ACQUIRE)) {
+        __atomic_store_n(&g_alarm_started, true, __ATOMIC_RELEASE);
+        alarm_set();
+    }
+}
+
+/* INTR_0 or PMC's summary read: an alarm the time has reached is latched
+ * now, as the console's is the moment the low word gets there (the thread's
+ * wake is late by the host's timer, a millisecond or more on Windows: the
+ * Interrupt Acknowledge test reads INTR_0 1 ms after the alarm) */
+static void alarm_poll(void)
+{
+    if (!__atomic_load_n(&g_alarm_started, __ATOMIC_ACQUIRE)) {
+        return;
+    }
+    bool fired = false;
+    pthread_mutex_lock(&g_alarm.mu);
+    const uint64_t now = nc_ke_now_ns();
+    if (g_alarm.rearm) {
+        g_alarm.rearm = false;
+        g_alarm.due = alarm_due(ld(NV_PTIMER_ALARM_0), now);
+    }
+    if (now >= g_alarm.due) {
+        __atomic_fetch_or(reg(NV_PTIMER_INTR_0), PTIMER_ALARM, __ATOMIC_ACQ_REL);
+        const uint64_t p = alarm_period();
+        g_alarm.due = p == UINT64_MAX ? UINT64_MAX : g_alarm.due + p;
+        fired = true;
+    }
+    pthread_mutex_unlock(&g_alarm.mu);
+    if (fired) {
+        update_irq();
+    }
+}
+
+/* TIME_0 / TIME_1 / NUMERATOR / DENOMINATOR written */
+static void ptimer_write(uint32_t off, uint32_t v)
+{
+    const uint64_t now = nc_ke_now_ns();
+    pthread_mutex_lock(&g_pt.mu);
+    uint64_t t = pt_at(now);
+    if (off == NV_PTIMER_TIME_0) {
+        t = (t & ~0xFFFFFFFFull) | (v & ~0x1Fu);
+        g_pt.set_ns = now ? now : 1;
+        g_pt.strict = true;
+    } else if (off == NV_PTIMER_TIME_1) {
+        t = (t & 0xFFFFFFFFull) | (uint64_t)(v & 0x1FFFFFFFu) << 32;
+        g_pt.set_ns = now ? now : 1;
+        g_pt.strict = true;
+    } else {
+        __atomic_store_n(reg(off), v & 0xFFFFu, __ATOMIC_RELEASE);
+    }
+    g_pt.ticks = t;
+    g_pt.ns = now;
+    pthread_mutex_unlock(&g_pt.mu);
+    alarm_retime(off == NV_PTIMER_TIME_0 || off == NV_PTIMER_TIME_1);
 }
 
 static uint64_t nv2a_read_reg(uint32_t off, unsigned size);
@@ -451,6 +602,11 @@ static uint64_t nv2a_read_reg(uint32_t off, unsigned size)
         case NV_PFB_WBC:
             v = 0; /* no write-combine flush pending (Riddick spins on it) */
             break;
+        case NV_PGRAPH_STATUS:
+            if (g_pbmode && fifo_empty()) {
+                hle_pbd_idle_seen();    /* the guest waited for the GPU (pbkit's pb_busy) */
+            }
+            goto plain;
         default:
             goto plain;
         }
@@ -459,11 +615,26 @@ static uint64_t nv2a_read_reg(uint32_t off, unsigned size)
 plain:
     switch (off) {
     case NV_PMC_INTR_0:
+        alarm_poll();
         return pmc_intr();
+    case NV_PTIMER_INTR_0:
+        alarm_poll();
+        break;
+    case NV_PGRAPH_RDI_DATA: {
+        /* RDI: the word at RDI_INDEX's address in the RAM its select names,
+         * the address one on after each read. The vertex constants (0x17,
+         * 0xCC: xemu's names) give each constant's words w, z, y, x; a
+         * program's writes to them under CXT_WRITE_EN are read so
+         * (pbdraw.c cxt_after). Other RAMs read 0 here. */
+        const uint32_t idx = ld(NV_PGRAPH_RDI_INDEX), sel = (idx >> 16) & 0x1FFu, addr = (idx >> 2) & 0x7FFu;
+        __atomic_store_n(reg(NV_PGRAPH_RDI_INDEX), (idx & ~0x1FFCu) | (((addr + 1) & 0x7FFu) << 2),
+                         __ATOMIC_RELEASE);
+        return sel == 0x17 || sel == 0xCC ? hle_pbd_rdi_constant(addr) : 0;
+    }
     case NV_PTIMER_TIME_0:
-        return (uint32_t)nc_ke_now_ns() & ~0x1Fu;
+        return (uint32_t)pt_now() & ~0x1Fu;
     case NV_PTIMER_TIME_1:
-        return (uint32_t)(nc_ke_now_ns() >> 32) & 0x1FFFFFFFu;
+        return (uint32_t)(pt_now() >> 32) & 0x1FFFFFFFu;
     case NV_PCRTC_RASTER: { /* the line since the last vblank */
         const uint64_t since = now_ns() - __atomic_load_n(&g_last_vblank_ns, __ATOMIC_ACQUIRE);
         return (uint32_t)((since % g_frame_ns) * LINES / g_frame_ns);
@@ -521,7 +692,7 @@ static void nv2a_write(void *opaque, uint32_t off, uint64_t value, unsigned size
     if (g_pbmode && size == 4 && (off == NV_PFIFO_CACHE1_DMA_PUT || off == NV_PFIFO_CACHE1_DMA_GET)) {
         static unsigned s_logged_c;             /* debug: the first direct CACHE1 writes */
         if (s_logged_c++ < 16) {
-            nc_log("hakuX-native", "nv2a: CACHE1 %s <- %08x (GET %08x PUT %08x)",
+            nc_log("xbased-native", "nv2a: CACHE1 %s <- %08x (GET %08x PUT %08x)",
                    off == NV_PFIFO_CACHE1_DMA_PUT ? "PUT" : "GET", (uint32_t)value,
                    ld(NV_PFIFO_CACHE1_DMA_GET), ld(NV_PFIFO_CACHE1_DMA_PUT));
         }
@@ -534,7 +705,7 @@ static void nv2a_write(void *opaque, uint32_t off, uint64_t value, unsigned size
         static unsigned s_logged;               /* debug: the first channel writes */
         if (s_logged < 24 && off != NV_USER_REF) {
             s_logged++;
-            nc_log("hakuX-native", "nv2a: channel %s <- %08x (GET %08x PUT %08x)",
+            nc_log("xbased-native", "nv2a: channel %s <- %08x (GET %08x PUT %08x)",
                    off == NV_USER_DMA_PUT ? "PUT" : "GET", (uint32_t)value,
                    ld(NV_PFIFO_CACHE1_DMA_GET), ld(NV_PFIFO_CACHE1_DMA_PUT));
         }
@@ -581,7 +752,7 @@ static void nv2a_write(void *opaque, uint32_t off, uint64_t value, unsigned size
                                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE));
             static unsigned s_logged;
             if (s_logged++ < 32) {
-                nc_log("hakuX-native", "nv2a: flip read -> %u (write %u, display %08x)",
+                nc_log("xbased-native", "nv2a: flip read -> %u (write %u, display %08x)",
                        (n >> 24) & 7, (n >> 20) & 7, ld(NV_PCRTC_START));
             }
             hle_host_gpu_trace(HLE_GTR_INCREMENT, (n >> 24) & 7);
@@ -607,9 +778,26 @@ static void nv2a_write(void *opaque, uint32_t off, uint64_t value, unsigned size
         update_irq();
         return;
     case NV_PTIMER_ALARM_0:
-        __atomic_store_n(reg(off), (uint32_t)value, __ATOMIC_RELEASE);
+        /* (the low 5 bits read 0: ptimer_alarm_test's Register Bitmasks) */
+        __atomic_store_n(reg(off), (uint32_t)value & ~0x1Fu, __ATOMIC_RELEASE);
+        pthread_mutex_lock(&g_pt.mu);
+        {
+            const uint64_t now = nc_ke_now_ns();
+            g_pt.strict = g_pt.set_ns && now - g_pt.set_ns < ALARM_STRICT_NS;
+        }
+        pthread_mutex_unlock(&g_pt.mu);
+        __atomic_store_n(&g_alarm_started, true, __ATOMIC_RELEASE);
         alarm_set();
         return;
+    case NV_PTIMER_TIME_0:
+    case NV_PTIMER_TIME_1:
+    case NV_PTIMER_NUMERATOR:
+    case NV_PTIMER_DENOMINATOR:
+        if (size == 4) {
+            ptimer_write(off, (uint32_t)value);
+            return;
+        }
+        break;
     case NV_PMC_INTR_EN_0:
     case NV_PCRTC_INTR_EN_0:
         if (off == NV_PMC_INTR_EN_0) {
@@ -736,7 +924,7 @@ void nc_dev_nv2a_display_pickup(uint64_t ns)
     __atomic_store_n(&g_pick_off_ns, est, __ATOMIC_RELAXED);
     if (logged < 0 || llabs(wrap_half(est - logged, pd)) > 2000000) {
         logged = est;
-        nc_log("hakuX-native", "nv2a: the presenter picks frames up %.1f ms after the panel's "
+        nc_log("xbased-native", "nv2a: the presenter picks frames up %.1f ms after the panel's "
                "vsync (period %.2f ms): vblanks %.1f ms after the vsync", est / 1e6, pd / 1e6,
                (double)((est + pd / 2) % pd) / 1e6);
     }
@@ -803,31 +991,81 @@ static uint64_t next_vblank(uint64_t prev)
     return next;
 }
 
-/* Uncapped (the app's setting: HAKUX_HLE_UNCAP; debug.hakux.uncap 1 / 0
+/* Uncapped (the app's setting: XBASED_HLE_UNCAP; debug.xbased.uncap 1 / 0
  * on demand), read by the vblank thread now and then. */
 static uint64_t g_cap_ns;           /* uncapped: a frame at most this often (0: no limit) */
+static volatile int g_own_pace;     /* the title runs at its own rate whatever the options say */
+static uint32_t g_title_id;         /* the title that boots (nc_dev_nv2a_title_pace) */
+
+/* The titles that break with their frame rate lifted (Up to 60, Up to 120,
+ * Unlocked, fast forward too): it stays their own, and their game settings
+ * show it locked at Original (app/ui/dash_settings.c), with why. Only the
+ * early vblanks go: a frame rate patch made for the game (a mod) paces it
+ * itself on the vblanks as they come, a mod's vblank multiple included.
+ * Every edition: the id and the certificate's title.
+ *
+ * Prince of Persia: Warrior Within draws at 30 fps (a presentation interval
+ * of 2) and counts its time in vblanks: lifted, it runs fast (by half again
+ * at Up to 45), and from 50 fps on its own threads race: one walks a list
+ * of objects that still holds one another thread of the same priority has
+ * freed meanwhile, its page decommitted, a fault no handler of the title's
+ * takes, and the picture stops (from the savestate before the ship's hold:
+ * every run at 50 and 60 within seconds, the same instruction; at its own 30
+ * fps none in 120 s, though the object is freed there too). Its disc's speed
+ * is the same race (native/kernel/io.c nc_io_title_device_mode). The Sands
+ * of Time and The Two Thrones, on its engine, ran 60 s each at 60 fps
+ * without a fault: not here. */
+int nc_dev_nv2a_title_pace_mode(uint32_t title_id, const char *name)
+{
+    static const struct {
+        uint32_t id;
+        const char *name;   /* in the certificate's title, any case (NULL: the id only) */
+    } k_titles[] = {
+        {0x5553003B, "prince of persia ww"},
+    };
+    char low[64] = "";
+    for (unsigned i = 0; name && name[i] && i < sizeof(low) - 1; i++) {
+        low[i] = (char)(name[i] >= 'A' && name[i] <= 'Z' ? name[i] + 32 : name[i]);
+    }
+    for (unsigned i = 0; i < sizeof(k_titles) / sizeof(k_titles[0]); i++) {
+        if ((k_titles[i].id && k_titles[i].id == title_id) || (k_titles[i].name && strstr(low, k_titles[i].name))) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void nc_dev_nv2a_title_pace(uint32_t title_id, const char *name)
+{
+    g_title_id = title_id;
+    g_own_pace = nc_dev_nv2a_title_pace_mode(title_id, name);
+    if (g_own_pace) {
+        nc_log("xbased-native", "nv2a: the frame rate stays %08x's own (%s): uncapped, its threads race",
+               title_id, name ? name : "");
+    }
+}
 
 static bool uncapped(void)
 {
     static int on = -1, cap = -1;
     static unsigned polls;
     if (on < 0) {
-        on = getenv("HAKUX_HLE_UNCAP") != NULL;
-        const char *e = getenv("HAKUX_HLE_FPSCAP");
+        on = getenv("XBASED_HLE_UNCAP") != NULL;
+        const char *e = getenv("XBASED_HLE_FPSCAP");
         cap = e ? atoi(e) : 0;
     }
     if (polls++ % 32 == 0) {
         char v[PROP_VALUE_MAX] = "";
-        if (hle_prop_get("debug.hakux.uncap", v) > 0) {
+        if (hle_prop_get("debug.xbased.uncap", v) > 0) {
             on = atoi(v) != 0;
         }
         /* fast forward lifts the limit while held (0), then sets it back */
-        if (hle_prop_get("debug.hakux.fpscap", v) > 0) {
+        if (hle_prop_get("debug.xbased.fpscap", v) > 0) {
             cap = atoi(v);
         }
     }
     g_cap_ns = cap > 0 ? 1000000000ull / (uint64_t)cap : 0;
-    return on;
+    return on && !g_own_pace;
 }
 
 #define EARLY_GAP_NS 1000000ull     /* uncapped: early vblanks at most this often */
@@ -913,6 +1151,29 @@ static uint64_t wait_vblank(uint64_t next, uint64_t last)
             const struct timespec ts = {(time_t)(until / 1000000000ull), (long)(until % 1000000000ull)};
             clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
         }
+        /* The vblank due, a waiting frame's first: under a limit, not before
+         * the limit's period after the last frame's either. It came at the
+         * display's rate, and a frame of a presentation interval of 2 had its
+         * second at once: Prince of Persia - Warrior Within ran at 53 fps
+         * under Up to 30, at 56 under Up to 60; a frame of 1 flipped at the
+         * display's rate whatever the limit below it. */
+        if (g_cap_ns && hle_pb_flip_waiting() && hle_pb_flip_stalls() != s_stall &&
+            now_ns() < s_frame_t + g_cap_ns) {
+            /* (held only while it would come before the limit allows: past
+             * that, as it always came) */
+            const uint64_t until = s_frame_t + g_cap_ns;
+            for (uint64_t t = now_ns(); t < until && hle_pb_flip_waiting(); t = now_ns()) {
+                const uint64_t u = until < t + EARLY_POLL_NS * 4 ? until : t + EARLY_POLL_NS * 4;
+                const struct timespec ts = {(time_t)(u / 1000000000ull), (long)(u % 1000000000ull)};
+                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
+            }
+            if (hle_pb_flip_waiting() && hle_pb_flip_stalls() != s_stall) {
+                s_stall = hle_pb_flip_stalls();
+                s_frame_t = until;          /* on the limit's grid (the wake's overshoot left out) */
+            }
+            const uint64_t t = now_ns();
+            return t > next ? t : next;
+        }
         /* the vblank due takes a waiting frame on: the limit counts from it */
         if (hle_pb_flip_waiting() && hle_pb_flip_stalls() != s_stall) {
             s_stall = hle_pb_flip_stalls();
@@ -949,7 +1210,7 @@ static void *vblank_thread(void *arg)
         }
         if (g_census.on && next - g_census.t_log >= 1000000000ull) {
             g_census.t_log = next;
-            if (HAKUX_DIAG) {
+            if (XBASED_DIAG) {
                 census_log();
             }
         }
@@ -976,8 +1237,11 @@ void nc_dev_nv2a_init(void)
     nc_wr32(g_regs + NV_PFB_CFG0, 3);                       /* memory partitions */
     nc_wr32(g_regs + NV_PRAMDAC_NVPLL_COEFF, 0x00011C01u);  /* P 1, N 28, M 1 */
     nc_wr32(g_regs + NV_PRAMDAC_VPLL_COEFF, 0x0003C20Du);
+    /* PTIMER's scale at the console's ratio (D3D writes the same): ~1 GHz */
+    nc_wr32(g_regs + NV_PTIMER_NUMERATOR, PTIMER_NUM0);
+    nc_wr32(g_regs + NV_PTIMER_DENOMINATOR, PTIMER_DEN0);
     char v[PROP_VALUE_MAX] = "";
-    hle_prop_get("debug.hakux.nvcensus", v);
+    hle_prop_get("debug.xbased.nvcensus", v);
     const char *e = getenv("NC_NV2A_CENSUS");
     g_census.on = !strcmp(v, "1") || (e && !strcmp(e, "1"));
     const NcMmioDev dev = {"nv2a", NV2A_BASE, NV2A_SIZE, nv2a_read, nv2a_write, NULL};
@@ -999,7 +1263,7 @@ void nc_dev_nv2a_refresh(unsigned hz)
     g_mode_hz = hz == 50 ? 50 : 60;
     const uint64_t f = (hz == 50 ? 20000000ull : FRAME_NS) / g_vblank_mul;
     if (__atomic_exchange_n(&g_frame_ns, f, __ATOMIC_RELAXED) != f) {
-        nc_log("hakuX-native", "nv2a: vblank at %u Hz (the video mode%s)", g_mode_hz * g_vblank_mul,
+        nc_log("xbased-native", "nv2a: vblank at %u Hz (the video mode%s)", g_mode_hz * g_vblank_mul,
                g_vblank_mul > 1 ? ", a mod's rate" : "");
     }
 }
@@ -1010,6 +1274,108 @@ void nc_dev_nv2a_display_mode(uint32_t pitch, uint32_t xfmt, unsigned hz, uint32
     if (fb) {
         hle_pb_display_fb(fb);
     }
+}
+
+static uint32_t g_av_mode;
+
+void nc_dev_nv2a_av_mode_set(uint32_t mode)
+{
+    __atomic_store_n(&g_av_mode, mode, __ATOMIC_RELAXED);
+}
+
+uint32_t nc_dev_nv2a_av_mode(void)
+{
+    return __atomic_load_n(&g_av_mode, __ATOMIC_RELAXED);
+}
+
+static uint32_t g_av_title;
+
+/* Each title's shape as last seen (1 4:3, 2 16:9), kept across runs in the
+ * HLE cache's folder (shapes.txt, "<title id> <shape>" lines): a savestate
+ * from before the shape was saved in it (NV2A v1, v2) has nothing that tells
+ * at 480p, whose AV mode is the same for both, and its title doesn't set the
+ * mode again. Buffy the Vampire Slayer and XIII, 4:3 at 480p, came up 16:9
+ * (the console's setting) from every such state. */
+#define SHAPES_MAX 4096
+
+static unsigned shapes_read(uint32_t (*e)[2], unsigned cap)
+{
+    char path[512];
+    snprintf(path, sizeof(path), "%sshapes.txt", hle_host_base_path());
+    FILE *f = fopen(path, "r");
+    unsigned n = 0;
+    if (f) {
+        unsigned id, shape;
+        while (n < cap && fscanf(f, "%x %u", &id, &shape) == 2) {
+            e[n][0] = id;
+            e[n][1] = shape;
+            n++;
+        }
+        fclose(f);
+    }
+    return n;
+}
+
+static void shape_remember(uint32_t id, uint32_t shape)
+{
+    static uint32_t s_id, s_shape;      /* the last one written (a title sets the mode again and again) */
+    if (!id || !shape || (id == s_id && shape == s_shape)) {
+        return;
+    }
+    s_id = id;
+    s_shape = shape;
+    static uint32_t e[SHAPES_MAX][2];
+    unsigned n = shapes_read(e, SHAPES_MAX), i = 0;
+    while (i < n && e[i][0] != id) {
+        i++;
+    }
+    if (i < n && e[i][1] == shape) {
+        return;
+    }
+    if (i == n) {
+        if (n == SHAPES_MAX) {
+            return;
+        }
+        n++;
+    }
+    e[i][0] = id;
+    e[i][1] = shape;
+    char path[512], tmp[520];
+    snprintf(path, sizeof(path), "%sshapes.txt", hle_host_base_path());
+    snprintf(tmp, sizeof(tmp), "%s.new", path);
+    FILE *f = fopen(tmp, "w");
+    if (!f) {
+        return;
+    }
+    for (unsigned k = 0; k < n; k++) {
+        fprintf(f, "%08X %u\n", e[k][0], e[k][1]);
+    }
+    fclose(f);
+    remove(path);
+    rename(tmp, path);
+}
+
+uint32_t nc_dev_nv2a_av_title_remembered(void)
+{
+    static uint32_t e[SHAPES_MAX][2];
+    const unsigned n = shapes_read(e, SHAPES_MAX);
+    for (unsigned i = 0; i < n; i++) {
+        if (e[i][0] == g_title_id && (e[i][1] == 1 || e[i][1] == 2)) {
+            return e[i][1];
+        }
+    }
+    return 0;
+}
+
+void nc_dev_nv2a_av_title_set(uint32_t shape)
+{
+    __atomic_store_n(&g_av_title, shape, __ATOMIC_RELAXED);
+    shape_remember(g_title_id, shape);
+}
+
+uint32_t nc_dev_nv2a_av_title(void)
+{
+    return __atomic_load_n(&g_av_title, __ATOMIC_RELAXED);
 }
 
 void nc_dev_nv2a_vblank_multiply(unsigned n)
@@ -1035,7 +1401,27 @@ int64_t hle_host_vblank_period_ns(void)
 
 uint32_t hle_host_gpu_reg(uint32_t off)
 {
+    if (g_regs && (off & ~3u) == NV_PTIMER_TIME_0) {
+        return (uint32_t)pt_now() & ~0x1Fu;     /* the time now (a notifier's stamp) */
+    }
+    if (g_regs && (off & ~3u) == NV_PTIMER_TIME_1) {
+        return (uint32_t)(pt_now() >> 32) & 0x1FFFFFFFu;
+    }
     return g_regs && off < NV2A_SIZE - 3 ? ld(off & ~3u) : 0;
+}
+
+uint64_t hle_host_ptimer(void)
+{
+    if (!g_regs) {
+        return 0;
+    }
+    const uint64_t t = pt_now();
+    return (t >> 32 & 0x1FFFFFFFu) << 32 | ((uint32_t)t & ~0x1Fu);
+}
+
+const uint32_t *hle_host_gpu_reg_ptr(uint32_t off)
+{
+    return g_regs && off < NV2A_SIZE - 3 ? reg(off & ~3u) : NULL;
 }
 
 void hle_host_gpu_reg_set(uint32_t off, uint32_t v)
@@ -1069,7 +1455,7 @@ void hle_host_pb_mode(bool on)
     hle_pb_on_flip_wait(flip_waits);
 #endif
     __atomic_store_n(&g_pbmode, on, __ATOMIC_RELEASE);
-    nc_log("hakuX-native", "nv2a: push-buffer mode %s", on ? "on" : "off");
+    nc_log("xbased-native", "nv2a: push-buffer mode %s", on ? "on" : "off");
 }
 
 uint64_t nc_dev_nv2a_vblanks(void)
@@ -1107,6 +1493,9 @@ void nc_dev_misc_init(void)
 typedef struct NcNv2aState {
     uint64_t vblanks, frame_ns;
     uint32_t npages;
+    uint32_t pt_set;                /* PTIMER (v2): g_pt */
+    uint64_t pt_ticks, pt_ns;
+    uint32_t av_mode, av_title;     /* (v3) the AV mode and the title's shape: g_av_mode, g_av_title */
 } NcNv2aState;
 
 typedef struct NcMiscState {
@@ -1167,8 +1556,11 @@ static bool pages_get(NcRd *r, uint8_t *base, uint32_t size, uint32_t n)
 
 bool nc_nv2a_state_save(NcBuf *b)
 {
+    pthread_mutex_lock(&g_pt.mu);
     const NcNv2aState st = {__atomic_load_n(&g_vblanks, __ATOMIC_RELAXED), g_frame_ns,
-                            pages_put(NULL, g_regs, NV2A_SIZE, true)};
+                            pages_put(NULL, g_regs, NV2A_SIZE, true), g_pt.set_ns != 0, g_pt.ticks, g_pt.ns,
+                            nc_dev_nv2a_av_mode(), nc_dev_nv2a_av_title()};
+    pthread_mutex_unlock(&g_pt.mu);
     nc_rec_put(b, &nc_rec_NcNv2aState, &st);
     pages_put(b, g_regs, NV2A_SIZE, false);
     return true;
@@ -1176,11 +1568,30 @@ bool nc_nv2a_state_save(NcBuf *b)
 
 bool nc_nv2a_state_load(NcRd *r, unsigned v)
 {
-    NcNv2aState st = {0, FRAME_NS, 0};
+    NcNv2aState st = {0, FRAME_NS, 0, 0, 0, 0, 0, 0};
     nc_rec_get(r, &nc_rec_NcNv2aState, &st, v);
+    nc_dev_nv2a_av_mode_set(st.av_mode);    /* (v1 - v2: 0, not known; kstate.c looks for the shape) */
+    nc_dev_nv2a_av_title_set(st.av_title);
     if (!pages_get(r, g_regs, NV2A_SIZE, st.npages)) {
         return false;
     }
+    pthread_mutex_lock(&g_pt.mu);
+    if (v < 2) {
+        /* the time was the guest's ns: it goes on from there, at the
+         * console's scale unless the title set one */
+        if (!ld(NV_PTIMER_NUMERATOR) && !ld(NV_PTIMER_DENOMINATOR)) {
+            nc_wr32(g_regs + NV_PTIMER_NUMERATOR, PTIMER_NUM0);
+            nc_wr32(g_regs + NV_PTIMER_DENOMINATOR, PTIMER_DEN0);
+        }
+        st.pt_set = 0;
+        st.pt_ticks = st.pt_ns = 0;     /* the first look: the guest's ns then */
+    }
+    g_pt.set_ns = 0;                    /* (pt_set: the time was set once; the rule's window
+                                           is long past at a load) */
+    g_pt.strict = false;
+    g_pt.ticks = st.pt_ticks;
+    g_pt.ns = st.pt_ns;
+    pthread_mutex_unlock(&g_pt.mu);
     __atomic_store_n(&g_vblanks, st.vblanks, __ATOMIC_RELAXED);
     /* the state's video mode (50 Hz: a 20 ms frame), at this run's rate (the
      * mods on now: a state saved with or without them) */
@@ -1188,7 +1599,8 @@ bool nc_nv2a_state_load(NcRd *r, unsigned v)
     g_last_vblank_ns = now_ns();
     g_disp_vsync_ns = 0;
     g_pick_off_ns = -1;
-    if (ld(NV_PTIMER_ALARM_0) || ld(NV_PTIMER_INTR_EN_0)) {
+    if (ld(NV_PTIMER_ALARM_0) || ld(NV_PTIMER_INTR_EN_0) || st.pt_set) {
+        __atomic_store_n(&g_alarm_started, true, __ATOMIC_RELEASE);
         alarm_set();                    /* due from the state's alarm, on its clock */
     }
     update_irq();

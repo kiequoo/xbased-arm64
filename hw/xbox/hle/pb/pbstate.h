@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — push-buffer mode in a savestate (native core): the
+ * xbased HLE GPU — push-buffer mode in a savestate (native core): the
  * decoder's state as fixed-width fields (pbstate.c stores them through
  * native/state/pbd.def), gathered from and given back to the modules that
  * own it, and the park that stops the decoder where a state can be taken.

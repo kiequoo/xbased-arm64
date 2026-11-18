@@ -1,5 +1,5 @@
 /*
- * hakuX on Windows — the POSIX functions nc_win_posix.h and the compat
+ * xbased on Windows — the POSIX functions nc_win_posix.h and the compat
  * headers declare, on Win32.
  */
 #include <windows.h>
@@ -685,7 +685,7 @@ static void props_refresh(void)
     g_props_time = fa.ftLastWriteTime;
 }
 
-/* values the front end sets while running (fast forward's debug.hakux.uncap),
+/* values the front end sets while running (fast forward's debug.xbased.uncap),
  * over the file's */
 static struct {
     char name[PROP_NAME_MAX];
@@ -753,7 +753,7 @@ int __system_property_get(const char *name, char *value)
         i += ll + 1;
     }
     ReleaseSRWLockExclusive(&g_props_lock);
-    /* the environment: DEBUG_HAKUX_PERF for debug.hakux.perf */
+    /* the environment: DEBUG_XBASED_PERF for debug.xbased.perf */
     char env[PROP_NAME_MAX * 2 + 8];
     size_t k = 0;
     for (; name[k] && k < sizeof(env) - 1; k++) {

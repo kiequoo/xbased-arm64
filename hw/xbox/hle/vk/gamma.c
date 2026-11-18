@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — the display's gamma ramp (SetGammaRamp) at swap: the
+ * xbased HLE GPU — the display's gamma ramp (SetGammaRamp) at swap: the
  * swap's blit becomes a fullscreen pass that samples the presented surface
  * and maps each channel through the ramp (the NV2A DAC does this at
  * scanout). Identity ramps keep the blit (back.c).
@@ -113,7 +113,7 @@ static bool init(void)
         T.vkCreateSampler(g_hvk.dev, &sci, NULL, &g_gm.smp) != VK_SUCCESS ||
         T.vkCreateDescriptorPool(g_hvk.dev, &dpi, NULL, &g_gm.pool) != VK_SUCCESS ||
         T.vkCreateBuffer(g_hvk.dev, &bci, NULL, &g_gm.ubo) != VK_SUCCESS) {
-        hle_log("hakuX-hle-back", "gamma: setup failed (ramps not applied)");
+        hle_log("xbased-hle-back", "gamma: setup failed (ramps not applied)");
         return false;
     }
     VkMemoryRequirements mr;
@@ -126,7 +126,7 @@ static bool init(void)
         T.vkBindBufferMemory(g_hvk.dev, g_gm.ubo, g_gm.mem, 0) != VK_SUCCESS ||
         T.vkMapMemory(g_hvk.dev, g_gm.mem, 0, VK_WHOLE_SIZE, 0, (void **)&g_gm.map) !=
             VK_SUCCESS) {
-        hle_log("hakuX-hle-back", "gamma: buffer failed (ramps not applied)");
+        hle_log("xbased-hle-back", "gamma: buffer failed (ramps not applied)");
         return false;
     }
     VkDescriptorSetLayout ls[GM_SLOTS] = { g_gm.dsl, g_gm.dsl, g_gm.dsl };
@@ -186,12 +186,12 @@ static bool init(void)
         T.vkDestroyShaderModule(g_hvk.dev, fm, NULL);
     }
     if (!g_gm.pipe) {
-        hle_log("hakuX-hle-back", "gamma: pipeline failed (ramps not applied)");
+        hle_log("xbased-hle-back", "gamma: pipeline failed (ramps not applied)");
         return false;
     }
     g_gm.failed = false;
     g_gm.ready = true;
-    hle_log("hakuX-hle-back", "gamma: display pass ready");
+    hle_log("xbased-hle-back", "gamma: display pass ready");
     return true;
 }
 

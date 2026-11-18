@@ -1,11 +1,11 @@
 /*
- * hakuX native core — debug: guest memory scans for mods and cheats.
+ * xbased native core — debug: guest memory scans for mods and cheats.
  *
- * debug.hakux.memscan, a new value, on the guest CPU's thread at a vblank:
+ * debug.xbased.memscan, a new value, on the guest CPU's thread at a vblank:
  *   snap        keeps a copy of guest RAM and the vblank count
  *   diff        lists what changed since like a frame counter: 32 / 16-bit
  *               integers up by the vblanks elapsed (V, +-2), floats up by
- *               about V (frames) or V / 60 (seconds); hakuX-native-scan,
+ *               about V (frames) or V / 60 (seconds); xbased-native-scan,
  *               with each page's VA (the title's mapping, else the
  *               contiguous window)
  *   u32=<n>, u16=<n>, f32=<x>
@@ -51,7 +51,7 @@ static void snap(const NcVm *vm)
     if (g_snap) {
         memcpy(g_snap, vm->phys, vm->ram_size);
         g_snap_vblank = nc_dev_nv2a_vblanks();
-        nc_log("hakuX-native-scan", "snapshot of %u MiB at vblank %llu", vm->ram_size >> 20,
+        nc_log("xbased-native-scan", "snapshot of %u MiB at vblank %llu", vm->ram_size >> 20,
                (unsigned long long)g_snap_vblank);
     }
 }
@@ -59,12 +59,12 @@ static void snap(const NcVm *vm)
 static void diff(const NcVm *vm)
 {
     if (!g_snap) {
-        nc_log("hakuX-native-scan", "no snapshot");
+        nc_log("xbased-native-scan", "no snapshot");
         return;
     }
     const int64_t v = (int64_t)(nc_dev_nv2a_vblanks() - g_snap_vblank);
     unsigned n = 0;
-    nc_log("hakuX-native-scan", "diff over %lld vblanks", (long long)v);
+    nc_log("xbased-native-scan", "diff over %lld vblanks", (long long)v);
     for (uint32_t pa = 0; pa + 4 <= vm->ram_size && n < SCAN_MAX; pa += 4) {
         uint32_t a, b;
         memcpy(&a, g_snap + pa, 4);
@@ -91,11 +91,11 @@ static void diff(const NcVm *vm)
         }
         if (kind) {
             n++;
-            nc_log("hakuX-native-scan", "%08x (pa %08x) %s: %08x -> %08x (%g -> %g)", va_of(vm, pa), pa, kind,
+            nc_log("xbased-native-scan", "%08x (pa %08x) %s: %08x -> %08x (%g -> %g)", va_of(vm, pa), pa, kind,
                    a, b, fa, fb);
         }
     }
-    nc_log("hakuX-native-scan", "%u found%s", n, n == SCAN_MAX ? " (the first ones)" : "");
+    nc_log("xbased-native-scan", "%u found%s", n, n == SCAN_MAX ? " (the first ones)" : "");
 }
 
 static void find(const NcVm *vm, const char *what)
@@ -117,10 +117,10 @@ static void find(const NcVm *vm, const char *what)
         memcpy(&x, vm->phys + pa, width);
         if (x == want) {
             n++;
-            nc_log("hakuX-native-scan", "%08x (pa %08x) = %s", va_of(vm, pa), pa, what);
+            nc_log("xbased-native-scan", "%08x (pa %08x) = %s", va_of(vm, pa), pa, what);
         }
     }
-    nc_log("hakuX-native-scan", "%s: %u found%s", what, n, n == SCAN_MAX ? " (the first ones)" : "");
+    nc_log("xbased-native-scan", "%s: %u found%s", what, n, n == SCAN_MAX ? " (the first ones)" : "");
 }
 
 /* A rigid D3D matrix (row major): rows 0-2 unit length and orthogonal, the
@@ -167,7 +167,7 @@ static void run_end(Runs *r)
 {
     if (r->count >= 4 && r->runs < SCAN_MAX) {
         r->runs++;
-        nc_log("hakuX-native-scan", "%08x stride %x: %u matrices, %u changed; first at %.2f %.2f %.2f", r->start,
+        nc_log("xbased-native-scan", "%08x stride %x: %u matrices, %u changed; first at %.2f %.2f %.2f", r->start,
                r->stride, r->count, r->changed, r->t[0], r->t[1], r->t[2]);
     }
     r->count = 0;
@@ -242,7 +242,7 @@ static void mats(const NcVm *vm)
     run_end(&r);
     free(pv);
     free(buf);
-    nc_log("hakuX-native-scan", "mats: %u rigid matrices, %u runs of 4 or more%s", n, r.runs,
+    nc_log("xbased-native-scan", "mats: %u rigid matrices, %u runs of 4 or more%s", n, r.runs,
            g_snap ? "" : " (no snapshot: changed counts are 0)");
 }
 
@@ -259,13 +259,13 @@ static void poke(const NcVm *vm, const char *what)
     for (unsigned i = 0; i < n; i++) {
         const uint32_t pa = nc_vm_phys(vm, va + i);
         if (pa == UINT32_MAX || pa >= vm->ram_size) {
-            nc_log("hakuX-native-scan", "poke %08x: not mapped", va + i);
+            nc_log("xbased-native-scan", "poke %08x: not mapped", va + i);
             return;
         }
         vm->phys[pa] = (uint8_t)(val >> (8 * i));
         hle_host_mem_set_dirty(pa, 1);
     }
-    nc_log("hakuX-native-scan", "poke %08x = %x (%u bytes)", va, val, n);
+    nc_log("xbased-native-scan", "poke %08x = %x (%u bytes)", va, val, n);
 }
 
 /* "peek=<va>:<len>" (hex): the bytes there, as 32-bit words */
@@ -288,7 +288,7 @@ static void peek(const NcVm *vm, const char *what)
             memcpy(&v, vm->phys + pa, 4);
             n += snprintf(line + n, sizeof(line) - (size_t)n, " %08x", v);
         }
-        nc_log("hakuX-native-scan", "%s", line);
+        nc_log("xbased-native-scan", "%s", line);
     }
 }
 
@@ -298,7 +298,7 @@ static void log_word(const NcVm *vm, uint32_t va)
     if (pa != UINT32_MAX && pa + 4 <= vm->ram_size) {
         uint32_t w;
         memcpy(&w, vm->phys + pa, 4);
-        nc_log("hakuX-native-scan", "%08x (pa %08x) = %08x at vblank %llu", va, pa, w,
+        nc_log("xbased-native-scan", "%08x (pa %08x) = %08x at vblank %llu", va, pa, w,
                (unsigned long long)nc_dev_nv2a_vblanks());
     }
 }
@@ -319,7 +319,7 @@ void nc_memscan_poll(const NcVm *vm)
         return;
     }
     char v[PROP_VALUE_MAX] = "";
-    if (hle_prop_get("debug.hakux.memscan", v) <= 0 || !strcmp(v, last)) {
+    if (hle_prop_get("debug.xbased.memscan", v) <= 0 || !strcmp(v, last)) {
         return;
     }
     const bool first = !last[0] && polls == 1;

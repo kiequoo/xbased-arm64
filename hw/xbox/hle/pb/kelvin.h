@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — push-buffer mode's Kelvin (class 0x97) register shadow:
+ * xbased HLE GPU — push-buffer mode's Kelvin (class 0x97) register shadow:
  * the registers as the NV2A holds them, and the draw state they make
  * (kelvin.c).
  */

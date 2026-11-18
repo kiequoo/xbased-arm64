@@ -1,5 +1,5 @@
 /*
- * hakuX native core — a small x86-64 assembler on Zydis's encoder, for the
+ * xbased native core — a small x86-64 assembler on Zydis's encoder, for the
  * Windows CPU (cpu_x86.cpp) and the host instruction emulator (x64emu.cpp).
  *
  * Operands are Zydis encoder operands; a memory operand based on RIP takes
@@ -142,7 +142,7 @@ struct Asm {
         }
         if (!encode(req)) {
             failed = true;
-            fprintf(stderr, "hakuX-native: x64asm: %s (%u operands) doesn't encode\n", ZydisMnemonicGetString(m),
+            fprintf(stderr, "xbased-native: x64asm: %s (%u operands) doesn't encode\n", ZydisMnemonicGetString(m),
                     (unsigned)req.operand_count);
             return false;
         }

@@ -1,5 +1,5 @@
 /*
- * hakuX front end — xbased's updates: the latest release on GitHub, checked
+ * xbased front end — xbased's updates: the latest release on GitHub, checked
  * as the dashboard starts, and installed over the running copy.
  */
 #ifndef NATIVE_APP_UI_UPDATE_H

@@ -32,7 +32,7 @@ assert not any(d[hdr:0x1000]), 'the header page past the headers is not empty in
 
 HEADER = """name: 120 fps (in progress)
 description: The game at 120 frames a second (on a 120 Hz screen), at its normal speed. In progress: each logic frame is shown twice (no blending yet).
-author: hakuX
+author: xbased
 refresh: 120
 
 # doa2.xbe runs its game as fiber tasks (24 slots at 0xA94570, scheduler

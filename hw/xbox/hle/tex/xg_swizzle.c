@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — NV2A swizzle (own implementation of the standard
+ * xbased HLE GPU — NV2A swizzle (own implementation of the standard
  * interleaved-bit layout; scalar mask-increment loop + 4x4 blocks, NEON for
  * 1, 2 and 4 bytes a texel).
  */

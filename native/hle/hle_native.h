@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the HLE GPU layer (hw/xbox/hle) on the native core:
+ * xbased native core — the HLE GPU layer (hw/xbox/hle) on the native core:
  * its host services (host.h), guest-write tracking and the debug probes.
  */
 #ifndef NATIVE_HLE_HLE_NATIVE_H
@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-/* Before the guest runs: the HLE layer's init (posture from HAKUX_HLE_MODE;
+/* Before the guest runs: the HLE layer's init (posture from XBASED_HLE_MODE;
  * off unless set) and, if active, its title start (push-buffer mode). */
 void nc_hle_boot(NcKernel *k, NcVm *vm, NcCpu *cpu, const NcCpuContext *boot);
 
@@ -42,7 +42,9 @@ void nc_hle_set_render_scale(int scale);
 void nc_hle_set_anisotropy(int level);
 /* Before boot: the app's "Asynchronous shader compilation" and "Build cached
  * shaders before starting" settings (hw/xbox/hle/vk/pipeasync.h). */
-void nc_hle_set_pipeline_options(bool async, bool prebuild);
+void nc_hle_set_pipeline_options(bool async, bool prebuild, bool hybrid);
+/* The GPU's precision setting: 0 auto, 1 exact, 2 fast (precision.h). */
+void nc_hle_set_precision(int mode);
 /* The pipeline prebuild's progress, any thread: built and to build (0 / 0
  * when none runs). */
 void nc_hle_pipeline_progress(uint32_t *done, uint32_t *total);
@@ -69,7 +71,7 @@ void nc_hle_after_sysop(NcKernel *k);
 bool nc_hle_dirty_fault(const siginfo_t *info, void *ucontext);
 
 /* debug: NC_WATCHPA="pa:len[:seconds]" (hex, then decimal), stores to that
- * guest RAM logged (hakuX-native-watch), armed after the seconds: a guest
+ * guest RAM logged (xbased-native-watch), armed after the seconds: a guest
  * store with its exact EIP and the stack's return addresses, from the fault
  * (nc_hle_watch_store), a host one (a kernel call or the HLE writing guest
  * memory) with its length. The range is write-protected again after each

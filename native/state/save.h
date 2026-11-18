@@ -1,5 +1,5 @@
 /*
- * hakuX native core — savestates: what the core and the app call (save.c).
+ * xbased native core — savestates: what the core and the app call (save.c).
  */
 #ifndef NATIVE_STATE_SAVE_H
 #define NATIVE_STATE_SAVE_H

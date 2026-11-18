@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the title's cache drives in a savestate (CACHE).
+ * xbased native core — the title's cache drives in a savestate (CACHE).
  *
  * The Xbox's three cache partitions (X/Y/Z: Partition3-5) are shared: a
  * title that needs one takes the least recently used and formats it, so a
@@ -595,7 +595,7 @@ bool nc_cache_state_save(NcBuf *b)
             walk(proot, "", &w);
         }
         if (w.fail) {
-            nc_log("hakuX-native-state", "cache: out of memory listing %s", proot);
+            nc_log("xbased-native-state", "cache: out of memory listing %s", proot);
             ok = false;                         /* not a state missing files */
         }
         for (unsigned i = 0; ok && i < w.nfiles; i++) {
@@ -613,7 +613,7 @@ bool nc_cache_state_save(NcBuf *b)
             if (ok) {
                 index_set(key, f->size, f->mtime_ns, w.ctime[i], f->hash);
             } else {
-                nc_log("hakuX-native-state", "cache: %s can't be stored: %s", full, strerror(errno));
+                nc_log("xbased-native-state", "cache: %s can't be stored: %s", full, strerror(errno));
             }
         }
         const NcCachePart cp = {(uint32_t)p, raw_read(p, raw), w.ndirs, w.nfiles};
@@ -629,7 +629,7 @@ bool nc_cache_state_save(NcBuf *b)
     }
     free(raw);
     index_save(bdir);
-    nc_log("hakuX-native-state",
+    nc_log("xbased-native-state",
            "cache: drives %s%s%s, %u files, %.1f MiB (%.1f MiB new to the store, %.1f MiB gzipped) in %.0f ms",
            mask & 8 ? "X" : "", mask & 16 ? "Y" : "", mask & 32 ? "Z" : "", files, bytes / 1048576.0,
            stored / 1048576.0, packed / 1048576.0, (mono_ns() - t0) / 1e6);
@@ -707,7 +707,7 @@ static bool restore_drive(int p, const NcCacheDir *dirs, unsigned ndirs, const N
         }
         const int kind = blob_find(bdir, f->hash, f->size, blob, sizeof(blob));
         if (kind == BLOB_NONE) {
-            nc_log("hakuX-native-state", "cache: %s's copy (%s[.gz]) is missing", full, blob);
+            nc_log("xbased-native-state", "cache: %s's copy (%s[.gz]) is missing", full, blob);
             nc_state_fail("the state's copy of the game's cache is missing (%s)", f->path);
             ok = false;
             break;
@@ -801,7 +801,7 @@ bool nc_cache_state_load(NcRd *r, unsigned v)
                 ok = path_inside(fl[k].path);
             }
             if (!r->fail && !ok) {
-                nc_log("hakuX-native-state", "cache: the state names a path outside drive %u's folder", cp.part);
+                nc_log("xbased-native-state", "cache: the state names a path outside drive %u's folder", cp.part);
                 nc_state_fail("the state names a file outside the game's cache drive");
             }
         }
@@ -827,7 +827,7 @@ bool nc_cache_state_load(NcRd *r, unsigned v)
         free(fl);
     }
     index_save(bdir);
-    nc_log("hakuX-native-state", "cache: %u files on the drives as saved, %.1f MiB copied back in %.0f ms", files,
+    nc_log("xbased-native-state", "cache: %u files on the drives as saved, %.1f MiB copied back in %.0f ms", files,
            copied / 1048576.0, (mono_ns() - t0) / 1e6);
     return ok;
 }
@@ -925,6 +925,6 @@ void nc_cache_gc(const char *state_path)
     }
     free(refs.h);
     if (removed) {
-        nc_log("hakuX-native-state", "cache: %u copies no state uses removed (%.1f MiB)", removed, freed / 1048576.0);
+        nc_log("xbased-native-state", "cache: %u copies no state uses removed (%.1f MiB)", removed, freed / 1048576.0);
     }
 }

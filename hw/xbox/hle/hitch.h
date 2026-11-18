@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — stutter / hang monitor.
+ * xbased HLE GPU — stutter / hang monitor.
  *
  * Stutters are what the screen shows: each frame's timeline (the decoder's
  * swap, the guest's flip, render-thread write, GPU done, front at a vblank,
@@ -11,24 +11,24 @@
  * no presentation interval to go by) is explained (where the time went) for
  * that attribution, and one of 500 ms or more is a hang. Without the display
  * path a window of 2 frame intervals (at least 50 ms) counts as a stutter.
- * HAKUX_HLE_HITCH_MS / HAKUX_HLE_HANG_MS override the thresholds,
- * HAKUX_HLE_HITCH=0 turns the monitor off. A watchdog thread reports a
+ * XBASED_HLE_HITCH_MS / XBASED_HLE_HANG_MS override the thresholds,
+ * XBASED_HLE_HITCH=0 turns the monitor off. A watchdog thread reports a
  * hang while it lasts and samples the vCPU (EIP, halted) once a window is
  * overdue. The reason comes from where the window's time went: activity
  * spans the decoder and the render thread mark at their rare transitions
  * (the flip, the guest's interrupt handler, the command ring, the arena,
  * the GPU, compiles, submits, sleeps; never per draw), GPU progress, disc
  * reads, JIT flushes and thread CPU time. Events go to logcat
- * (hakuX-hle-hitch) and to the overlay.
+ * (xbased-hle-hitch) and to the overlay.
  */
 #ifndef HW_XBOX_HLE_HITCH_H
 #define HW_XBOX_HLE_HITCH_H
 
-/* HAKUX_DIAG: 1 in a build made to investigate (the run's statistics, traces
+/* XBASED_DIAG: 1 in a build made to investigate (the run's statistics, traces
  * and monitor compiled in), 0 in every other (the build system's
  * definition; 0 where there is none). */
-#ifndef HAKUX_DIAG
-#define HAKUX_DIAG 0
+#ifndef XBASED_DIAG
+#define XBASED_DIAG 0
 #endif
 
 #include <stdbool.h>
@@ -77,7 +77,7 @@ static inline void hitch_set(HleHitchThr *h, uint32_t act)
 static inline uint32_t hle_hitch_enter(uint32_t act)
 {
     int t = t_hitch;
-    if (!HAKUX_DIAG || t < 0 || !g_hitch_on) {  /* (the monitor: a build's made to investigate) */
+    if (!XBASED_DIAG || t < 0 || !g_hitch_on) {  /* (the monitor: a build's made to investigate) */
         return HLE_ACT_N;
     }
     HleHitchThr *h = &g_hitch_thr[t];
@@ -93,7 +93,7 @@ static inline uint32_t hle_hitch_enter(uint32_t act)
 static inline void hle_hitch_leave(uint32_t prev)
 {
     int t = t_hitch;
-    if (HAKUX_DIAG && prev < HLE_ACT_N && t >= 0) {
+    if (XBASED_DIAG && prev < HLE_ACT_N && t >= 0) {
         hitch_set(&g_hitch_thr[t], prev);
     }
 }

@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the MCPX APU's platform: the C library, atomics, locks,
+ * xbased native core — the MCPX APU's platform: the C library, atomics, locks,
  * threads, clocks and guest RAM, on the core's own services (no QEMU layer).
  * The APU's device code (apu.c, vp/, dsp/) came from xemu; this is what it
  * runs on here.
@@ -229,7 +229,7 @@ extern ApuConfig g_apu_config;
         if (unlikely(!apu_ok_)) {                                             \
             static bool apu_said_;                                            \
             if (!__atomic_exchange_n(&apu_said_, true, __ATOMIC_RELAXED)) {   \
-                nc_log("hakuX-apu", "%s: a guest value fails %s; dropped",    \
+                nc_log("xbased-apu", "%s: a guest value fails %s; dropped",    \
                        __func__, #cond);                                      \
             }                                                                 \
         }                                                                     \

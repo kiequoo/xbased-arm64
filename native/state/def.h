@@ -1,5 +1,5 @@
 /*
- * hakuX native core — expands a section's field tables (a .def file) in the
+ * xbased native core — expands a section's field tables (a .def file) in the
  * module that owns its structs:
  *
  *   #define NC_DEF_SECTION TIMR                  (lock.h's name)

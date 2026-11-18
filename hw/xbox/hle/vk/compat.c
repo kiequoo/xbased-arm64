@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — Vulkan 1.3's entry points on drivers below it: Mali's
+ * xbased HLE GPU — Vulkan 1.3's entry points on drivers below it: Mali's
  * Valhall parts on the builds vendors cap at 1.1 or never updated (Samsung's
  * Exynos phones, older Dimensity firmware), PowerVR's BXM, Xclipse's first
  * firmware.
@@ -198,7 +198,7 @@ static void VKAPI_CALL c_begin_rendering(VkCommandBuffer cb, const VkRenderingIn
         static bool said;
         if (!said) {
             said = true;
-            hle_log("hakuX-hle-back", "compat: rendering flags %x, view mask %x, %u colours "
+            hle_log("xbased-hle-back", "compat: rendering flags %x, view mask %x, %u colours "
                     "not emulated", ri->flags, ri->viewMask, ri->colorAttachmentCount);
         }
     }
@@ -428,14 +428,14 @@ static VkResult VKAPI_CALL c_submit2(VkQueue q, uint32_t n, const VkSubmitInfo2 
     VkPipelineStageFlags wst[NS][NE];
     VkCommandBuffer cbs[NS][NE];
     if (n > NS) {
-        hle_log("hakuX-hle-back", "compat: %u submits in one call (%u emulated)", n, NS);
+        hle_log("xbased-hle-back", "compat: %u submits in one call (%u emulated)", n, NS);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     for (uint32_t i = 0; i < n; i++) {
         const VkSubmitInfo2 *x = &s[i];
         if (x->waitSemaphoreInfoCount > NE || x->commandBufferInfoCount > NE ||
             x->signalSemaphoreInfoCount > NE) {
-            hle_log("hakuX-hle-back", "compat: a submit of %u waits, %u command buffers, %u "
+            hle_log("xbased-hle-back", "compat: a submit of %u waits, %u command buffers, %u "
                     "signals (%u each emulated)", x->waitSemaphoreInfoCount,
                     x->commandBufferInfoCount, x->signalSemaphoreInfoCount, NE);
             return VK_ERROR_INITIALIZATION_FAILED;
@@ -514,7 +514,7 @@ void hle_compat_install(struct VolkDeviceTable *t)
         g_c.fbs = g_hash_table_new_full(fb_hash, fb_equal, g_free, NULL);
         g_c.init = true;
         if (!c->vk13 || !c->dyn_render || !c->sync2) {
-            hle_log("hakuX-hle-back", "compat: Vulkan %s, %s, %s", c->vk13 ? "1.3" : "1.1",
+            hle_log("xbased-hle-back", "compat: Vulkan %s, %s, %s", c->vk13 ? "1.3" : "1.1",
                     c->dyn_render ? "dynamic rendering" : "render passes",
                     c->sync2 ? "synchronization2" : "1.0 barriers and submits");
         }

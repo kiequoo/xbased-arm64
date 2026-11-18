@@ -1,5 +1,5 @@
 /*
- * hakuX native core — kernel pool.
+ * xbased native core — kernel pool.
  *
  * Guest memory for ExAllocatePool and kernel objects, in physical RAM
  * reached through the contiguous window: an initial range, then 64 KiB
@@ -55,7 +55,7 @@ uint32_t nc_pool_alloc(NcKernel *k, uint32_t size)
     if (pool_grow(k, size)) {
         return nc_pool_alloc(k, size);
     }
-    nc_log("hakuX-native", "pool: out of kernel pool for %u bytes", size);
+    nc_log("xbased-native", "pool: out of kernel pool for %u bytes", size);
     return 0;
 }
 

@@ -1,5 +1,5 @@
 /*
- * hakuX native core — devices behind MMIO windows.
+ * xbased native core — devices behind MMIO windows.
  */
 #ifndef NATIVE_DEV_DEV_H
 #define NATIVE_DEV_DEV_H
@@ -21,6 +21,21 @@ void nc_dev_nv2a_refresh(unsigned hz);
  * push-buffer decoder's display size; fb, the frame buffer it shows (a title
  * drawing it with the CPU). */
 void nc_dev_nv2a_display_mode(uint32_t pitch, uint32_t xfmt, unsigned hz, uint32_t fb);
+/* The AV mode AvSetDisplayMode last set (0 none): its output kind, the WSS
+ * flag and the register table index (the picture's shape: app/present.c) */
+void nc_dev_nv2a_av_mode_set(uint32_t mode);
+uint32_t nc_dev_nv2a_av_mode(void);
+/* The title's own shape, from its D3DPRESENT_PARAMETERS.Flags as D3D set the
+ * mode (native/kernel/ex.c): 0 not known, 1 4:3, 2 16:9 (D3DPRESENTFLAG_WIDESCREEN) */
+void nc_dev_nv2a_av_title_set(uint32_t shape);
+uint32_t nc_dev_nv2a_av_title(void);
+/* ... as the title (its id) last had it, in this or an earlier run (0: never seen) */
+uint32_t nc_dev_nv2a_av_title_remembered(void);
+/* The titles that run at their own frame rate whatever the options say
+ * (uncapped, their threads race): 1 for one of them. _pace sets it for the
+ * title that boots, the vblank then never comes early for it. */
+int nc_dev_nv2a_title_pace_mode(uint32_t title_id, const char *name);
+void nc_dev_nv2a_title_pace(uint32_t title_id, const char *name);
 /* A mod's vblank: n times the video mode's rate (1-4; before the title boots). */
 void nc_dev_nv2a_vblank_multiply(unsigned n);
 /* A vsync of the panel the frames are shown on (host monotonic ns, the

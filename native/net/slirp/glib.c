@@ -1,5 +1,5 @@
 /*
- * hakuX native core — libslirp's GLib beyond the HLE subset (glib.h here).
+ * xbased native core — libslirp's GLib beyond the HLE subset (glib.h here).
  */
 #include "glib.h"
 
@@ -15,7 +15,7 @@ void g_slirp_log(int level, const gchar *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
-    nc_log("hakuX-native-slirp", "%s: %s", what[level], line);
+    nc_log("xbased-native-slirp", "%s: %s", what[level], line);
 }
 
 gsize g_strlcpy(gchar *dest, const gchar *src, gsize dest_size)

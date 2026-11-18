@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — on-disk shader and pipeline caches (P3 Task 13): SPIR-V
+ * xbased HLE GPU — on-disk shader and pipeline caches (P3 Task 13): SPIR-V
  * by the generated GLSL, and the Vulkan pipeline cache, under the xemu base
  * path. A later boot skips glslang and most of the driver's compile.
  */
@@ -21,6 +21,9 @@ void hle_pcache_compiled(void);
 /* Writes the pipeline cache when pipelines were compiled since the last
  * write, at most once a minute unless forced. Back-end thread. */
 void hle_pcache_save(bool force);
+/* Render thread: the next swap's write not held back for the minute (a batch
+ * of builds just finished: vk/draw.c, the exact vertex programs) */
+void hle_pcache_save_soon(void);
 void hle_pcache_destroy(void);
 
 /* SPIR-V for src (g_malloc'd, *nwords): from the disk cache, else compiled

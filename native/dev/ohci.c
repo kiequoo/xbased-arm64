@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the MCPX's first OHCI USB controller (OpenHCI 1.0a):
+ * xbased native core — the MCPX's first OHCI USB controller (OpenHCI 1.0a):
  * registers at 0xFED00000, IRQ 1, four root ports.
  *
  * The title's own USB stack (XAPI) drives it. A frame thread does each
@@ -379,7 +379,7 @@ static bool service_td(Ohci *o, uint32_t ed_pa, uint32_t ed[4])
         for (int i = 0; i < show; i++) {
             snprintf(hex + 3 * i, 4, " %02x", buf[i]);
         }
-        nc_log("hakuX-native-usb", "td %08x addr %u ep %d %s len %u -> %d%s (mps %u%s)", td_pa,
+        nc_log("xbased-native-usb", "td %08x addr %u ep %d %s len %u -> %d%s (mps %u%s)", td_pa,
                (unsigned)ED_FA(ed[0]), ep, k_pid[pid & 3], len, r, hex, (ed[0] >> 16) & 0x7ff,
                td[0] & TD_R ? ", rounding" : "");
     }
@@ -470,7 +470,7 @@ static void frame(Ohci *o)
         /* the stack's health every 10 s: a title whose USB stops polling
          * (a dead controller, a stalled endpoint) reads no input */
         static uint64_t s_tds;
-        nc_log("hakuX-native-usb", "ohci: %llu TDs in 10 s, ctl %08x (lists %s%s%s), hcca %08x, intr %08x/%08x",
+        nc_log("xbased-native-usb", "ohci: %llu TDs in 10 s, ctl %08x (lists %s%s%s), hcca %08x, intr %08x/%08x",
                (unsigned long long)(o->tds - s_tds), o->ctl, o->ctl & CTL_PLE ? "P" : "-",
                o->ctl & CTL_CLE ? "C" : "-", o->ctl & CTL_BLE ? "B" : "-", o->hcca, o->intr_status, o->intr);
         s_tds = o->tds;
@@ -606,7 +606,7 @@ static void ohci_write(void *opaque, uint32_t off, uint64_t value, unsigned size
         const uint32_t old = o->ctl & CTL_HCFS;
         o->ctl = v;
         if ((v & CTL_HCFS) != old) {
-            nc_log("hakuX-native-usb", "ohci: state %u -> %u", old >> 6, (v & CTL_HCFS) >> 6);
+            nc_log("xbased-native-usb", "ohci: state %u -> %u", old >> 6, (v & CTL_HCFS) >> 6);
             if ((v & CTL_HCFS) == HCFS_OPERATIONAL) {
                 o->frame_t0_ns = now_ns();
                 pthread_cond_signal(&o->run);
@@ -732,7 +732,7 @@ void nc_dev_ohci_init(struct NcVm *vm)
     pthread_t t;
     pthread_create(&t, NULL, frame_thread, o);
     pthread_detach(t);
-    nc_log("hakuX-native-usb", "ohci: %u controller(s) (players %s%s%s%s)%s", players, mask & 1 ? "1" : "",
+    nc_log("xbased-native-usb", "ohci: %u controller(s) (players %s%s%s%s)%s", players, mask & 1 ? "1" : "",
            mask & 2 ? "2" : "", mask & 4 ? "3" : "", mask & 8 ? "4" : "",
            front_hub ? " behind the front panel hub" : "");
 }
@@ -776,7 +776,7 @@ void nc_dev_ohci_set_pads(unsigned mask)
     }
     if (changed) {
         set_interrupt(o, INT_RHSC);
-        nc_log("hakuX-native-usb", "ohci: controllers plugged in for players %s%s%s%s",
+        nc_log("xbased-native-usb", "ohci: controllers plugged in for players %s%s%s%s",
                mask & 1 ? "1" : "", mask & 2 ? "2" : "", mask & 4 ? "3" : "", mask & 8 ? "4" : "");
     }
     pthread_mutex_unlock(&o->lock);
@@ -894,9 +894,10 @@ bool nc_usb_state_load(NcRd *r, unsigned v)
     }
     if (changes) {
         set_interrupt(o, INT_RHSC);
-        nc_log("hakuX-native-state", "usb: %u port(s) changed since the state (controllers plugged in or out)",
+        nc_log("xbased-native-state", "usb: %u port(s) changed since the state (controllers plugged in or out)",
                changes);
     }
+    nc_xid_resend();                    /* the pads' next polls report (xid.c sends only changes) */
     o->irq = !((o->intr & INT_MIE) && (o->intr_status & o->intr & ~INT_MIE));
     update_irq(o);                          /* the line as the registers say, set either way */
     o->frame_t0_ns = now_ns();

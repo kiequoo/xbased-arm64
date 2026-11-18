@@ -1,5 +1,5 @@
 /*
- * hakuX native core — savestate container (state.h).
+ * xbased native core — savestate container (state.h).
  *
  * File: magic, container version, the header (NcStateInfo's fields, its
  * length first so that a longer one still reads), the section table (tag,
@@ -150,7 +150,7 @@ void nc_rec_get(NcRd *r, const NcRecord *rec, void *obj, unsigned v)
         const bool stored = v >= f->since && (!f->until || v < f->until);
         if (!stored) {
             if (!f->until && nc_state_trace()) {
-                nc_log("hakuX-native-state", "%s.%s: not in version %u, default kept", rec->name, f->name, v);
+                nc_log("xbased-native-state", "%s.%s: not in version %u, default kept", rec->name, f->name, v);
             }
             continue;
         }
@@ -462,7 +462,7 @@ static const char *read_state(const char *path, NcStateInfo *info, const NcState
             found = tab[i].tag == secs[k].tag;
         }
         if (!found && secs[k].optional) {
-            nc_log("hakuX-native-state", "the state has no %s section (older than it): loaded without", secs[k].name);
+            nc_log("xbased-native-state", "the state has no %s section (older than it): loaded without", secs[k].name);
         } else if (!found) {
             snprintf(why, sizeof(why), "the state has no %s section", secs[k].name);
             err = why;
@@ -478,7 +478,7 @@ static const char *read_state(const char *path, NcStateInfo *info, const NcState
             found = true;
             NcRd sr = {p + tab[i].off, (size_t)tab[i].len, 0, false};
             if (tab[i].version != secs[k].version) {
-                nc_log("hakuX-native-state", "%s: version %u read by a version %u core", secs[k].name,
+                nc_log("xbased-native-state", "%s: version %u read by a version %u core", secs[k].name,
                        tab[i].version, secs[k].version);
             }
             if (!secs[k].load(&sr, tab[i].version) || sr.fail) {

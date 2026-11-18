@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the cheat engine (native/core/cheats.c) over a fake
+ * xbased native core — the cheat engine (native/core/cheats.c) over a fake
  * guest memory: parsing, writes, conditionals, pointers, once, toggles.
  */
 #include "hle_test.h"

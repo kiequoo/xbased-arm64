@@ -1,5 +1,5 @@
 /*
- * hakuX native core — taking and restoring savestates (push-buffer mode).
+ * xbased native core — taking and restoring savestates (push-buffer mode).
  *
  * Save (nc_state_save, any thread but the guest CPU's): the decoder parks
  * at the next flip stall (the frame before it complete, its targets written
@@ -180,7 +180,7 @@ static const char *capture(NcKernel *k, const NcFrame *f, bool idle)
         nc_cache_gc(g_req.path);            /* the copies only replaced states used */
     }
     struct stat st;
-    nc_log("hakuX-native-state", "save %s: %s (devices and I/O %.0f ms, written in %.0f ms, %.1f MiB, %s)", g_req.path,
+    nc_log("xbased-native-state", "save %s: %s (devices and I/O %.0f ms, written in %.0f ms, %.1f MiB, %s)", g_req.path,
            err ? err : "done", (t1 - t0) / 1e6, (mono_ns() - t1) / 1e6,
            stat(g_req.path, &st) == 0 && !err ? st.st_size / 1048576.0 : 0.0,
            idle ? "every thread waiting" : "at a kernel entry");
@@ -224,7 +224,7 @@ const char *nc_state_save(const char *path)
     }
     bool parked = hle_pb_park(true, 500000000ull);
     if (!parked) {
-        nc_log("hakuX-native-state", "no flip within 500 ms: the decoder stops where it is");
+        nc_log("xbased-native-state", "no flip within 500 ms: the decoder stops where it is");
         parked = hle_pb_park(false, 1000000000ull);
     }
     const char *result = NULL;
@@ -258,7 +258,7 @@ const char *nc_state_save(const char *path)
     }
     hle_pb_unpark();
     nc_pause_set(was_paused);
-    nc_log("hakuX-native-state", "save: %s in %.0f ms", result ? result : "saved", (mono_ns() - t0) / 1e6);
+    nc_log("xbased-native-state", "save: %s in %.0f ms", result ? result : "saved", (mono_ns() - t0) / 1e6);
     return result;
 }
 
@@ -321,7 +321,7 @@ const char *nc_state_load(const char *path)
     nc_pause_set(true);
     const char *who = NULL;
     if (!nc_pause_quiesce(1000000000ull, &who)) {
-        nc_log("hakuX-native-state", "load: the %s device did not stop", who ? who : "?");
+        nc_log("xbased-native-state", "load: the %s device did not stop", who ? who : "?");
     }
     const char *err = nc_state_read(path, &info, k_sections, NSECTIONS);
     if (!err) {
@@ -335,7 +335,7 @@ const char *nc_state_load(const char *path)
         hle_pb_kick();
     }
     nc_pause_set(false);
-    nc_log("hakuX-native-state", "load %s: %s in %.0f ms (made by %s %s, guest time %.1f s)", path, err ? err : "done",
+    nc_log("xbased-native-state", "load %s: %s in %.0f ms (made by %s %s, guest time %.1f s)", path, err ? err : "done",
            (mono_ns() - t0) / 1e6, info.core_version, info.core_git, info.guest_ns / 1e9);
     return err;
 }

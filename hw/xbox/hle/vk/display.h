@@ -1,5 +1,5 @@
 /*
- * hakuX HLE GPU — the display images (spec §5.11): the frames the render
+ * xbased HLE GPU — the display images (spec §5.11): the frames the render
  * thread writes at its swaps, and the window's presenter (vk/swapchain.c)
  * shows. Slot states are shared by the render thread (write), the timeline
  * watcher (complete), the DPC on the vCPU thread (present) and the window's

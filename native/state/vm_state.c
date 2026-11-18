@@ -1,5 +1,5 @@
 /*
- * hakuX native core — guest memory in a savestate: RAM (RAM) and the page
+ * xbased native core — guest memory in a savestate: RAM (RAM) and the page
  * tables over it (VM).
  */
 #include "native/core/vm.h"
@@ -126,7 +126,7 @@ bool nc_ram_state_save(NcBuf *b)
         deflated += parts[i].deflated;
         bytes += parts[i].bytes;
     }
-    nc_log("hakuX-native-state", "RAM: %u MiB, %u blocks zero, %u deflated, %.1f MiB stored", vm->ram_size >> 20, zero,
+    nc_log("xbased-native-state", "RAM: %u MiB, %u blocks zero, %u deflated, %.1f MiB stored", vm->ram_size >> 20, zero,
            deflated, bytes / 1048576.0);
     return !b->fail;
 }
@@ -137,7 +137,7 @@ bool nc_ram_state_load(NcRd *r, unsigned v)
     NcRamState st = {0};
     nc_rec_get(r, &nc_rec_NcRamState, &st, v);
     if (st.ram_size != vm->ram_size || st.block != RAM_BLOCK) {
-        nc_log("hakuX-native-state", "RAM: the state's is %u MiB in %u-byte blocks, this one %u MiB", st.ram_size >> 20,
+        nc_log("xbased-native-state", "RAM: the state's is %u MiB in %u-byte blocks, this one %u MiB", st.ram_size >> 20,
                st.block, vm->ram_size >> 20);
         return false;
     }
@@ -223,7 +223,7 @@ bool nc_vm_state_save(NcBuf *b)
     nc_buf_put(b, vm->page_used, pages);
     nc_buf_put(b, vm->rmap, (size_t)pages * sizeof(uint32_t));
     nc_buf_put(b, vm->pin, pages);
-    nc_log("hakuX-native-state", "VM: %u runs mapped", st.nruns);
+    nc_log("xbased-native-state", "VM: %u runs mapped", st.nruns);
     return !b->fail;
 }
 
@@ -255,6 +255,6 @@ bool nc_vm_state_load(NcRd *r, unsigned v)
     nc_rd_get(r, vm->page_used, pages);
     nc_rd_get(r, vm->rmap, (size_t)pages * sizeof(uint32_t));
     nc_rd_get(r, vm->pin, pages);
-    nc_log("hakuX-native-state", "VM: %u runs mapped", st.nruns);
+    nc_log("xbased-native-state", "VM: %u runs mapped", st.nruns);
     return !r->fail;
 }

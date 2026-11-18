@@ -1,5 +1,5 @@
 /*
- * hakuX native core — library code that waits on emulated hardware.
+ * xbased native core — library code that waits on emulated hardware.
  *
  * DirectSound hands the APU's GP DSP a command through a mailbox in memory
  * and spins until the DSP takes it:
@@ -16,7 +16,7 @@
  * jumps to a stub that asks the kernel (NC_KORDINAL_APU_SPIN) to hurry the
  * APU and wait for the mailbox, the CPU's thread blocked on the host rather
  * than spinning in translated code. The library is the same in every title
- * seen (one copy, in DSOUND). debug.hakux.apuspin=0 turns it off.
+ * seen (one copy, in DSOUND). debug.xbased.apuspin=0 turns it off.
  */
 #include "native/kernel/kernel.h"
 #include "native/dev/dev.h"
@@ -37,7 +37,7 @@ static const uint8_t k_mailbox_wait[] = {0x05, 0x00, 0x08, 0x00, 0x00,  /* add e
 static bool apu_spin_on(void)
 {
     char v[PROP_VALUE_MAX] = "";
-    hle_prop_get("debug.hakux.apuspin", v);
+    hle_prop_get("debug.xbased.apuspin", v);
     return strcmp(v, "0") != 0;
 }
 
@@ -85,7 +85,7 @@ void nc_kernel_title_fixups(NcKernel *k, const HleXbeInfo *xbe)
         }
     }
     if (!apu_spin_on()) {
-        nc_log("hakuX-native", "fixups: DirectSound mailbox waits left spinning (debug.hakux.apuspin=0)");
+        nc_log("xbased-native", "fixups: DirectSound mailbox waits left spinning (debug.xbased.apuspin=0)");
         return;
     }
     unsigned patched = 0;
@@ -106,14 +106,14 @@ void nc_kernel_title_fixups(NcKernel *k, const HleXbeInfo *xbe)
                 memcpy(site + 1, &rel, 4);
                 site[5] = 0x90;
                 patched++;
-                nc_log("hakuX-native", "fixups: DirectSound mailbox wait at %08x (%s) waits on the APU (stub %08x)",
+                nc_log("xbased-native", "fixups: DirectSound mailbox wait at %08x (%s) waits on the APU (stub %08x)",
                        va, s->name, stub);
             }
             p += sizeof(k_mailbox_wait);
         }
     }
     if (!patched) {
-        nc_log("hakuX-native", "fixups: no DirectSound mailbox wait found");
+        nc_log("xbased-native", "fixups: no DirectSound mailbox wait found");
     }
 }
 
@@ -210,7 +210,7 @@ static uint32_t xmv_stub(NcKernel *k, uint32_t m)
     }
     const uint32_t stub = nc_kernel_code_alloc(k, XMV_STUB);
     if (!stub) {
-        nc_log("hakuX-native", "fixups: XMV's stream wait at %08x left as it is (no room for its stub)", m);
+        nc_log("xbased-native", "fixups: XMV's stream wait at %08x left as it is (no room for its stub)", m);
         return 0;
     }
     xmv_stub_bytes(k, m, stub, b);
@@ -225,7 +225,7 @@ static uint32_t xmv_stub(NcKernel *k, uint32_t m)
 static bool xmv_wait_on(void)
 {
     char v[PROP_VALUE_MAX] = "";
-    hle_prop_get("debug.hakux.xmvwait", v);
+    hle_prop_get("debug.xbased.xmvwait", v);
     return strcmp(v, "0") != 0;
 }
 
@@ -247,7 +247,7 @@ static bool xmv_wait_on(void)
  * the host while its time runs on). Its game then never updated again: the
  * intro's movie never ended. The refusal becomes a delay of 0 ticks: the
  * callback comes at once and the title catches up. Patched as the code
- * loads; debug.hakux.d3dtimer=0 leaves it as it is. */
+ * loads; debug.xbased.d3dtimer=0 leaves it as it is. */
 static const uint8_t k_timer_past[] = {0x0F, 0x31, 0x8B, 0xF8, 0x83, 0xC7, 0x28, 0x8B, 0xCA, 0x13, 0xCE,
                                        0x8B, 0x74, 0x24, 0x18, 0x3B, 0xF1, 0x8B, 0x4C, 0x24, 0x14,
                                        0x77, 0x1A, 0x72, 0x04, 0x3B, 0xCF, 0x77, 0x14,
@@ -261,7 +261,7 @@ static const uint8_t k_timer_past_tail[] = {0x5F, 0x5E, 0x5D, 0xB8, 0x2A, 0x08, 
 static bool d3d_timer_on(void)
 {
     char v[PROP_VALUE_MAX] = "";
-    hle_prop_get("debug.hakux.d3dtimer", v);
+    hle_prop_get("debug.xbased.d3dtimer", v);
     return strcmp(v, "0") != 0;
 }
 
@@ -281,7 +281,7 @@ static unsigned timer_fixups(NcKernel *k, uint32_t va, uint32_t len, const char 
             site[2] = 0x31, site[3] = 0xF6;                     /* xor esi, esi */
             site[4] = 0xEB, site[5] = TIMER_PUSH - (TIMER_PAST + 6); /* jmp ok's push */
             patched++;
-            nc_log("hakuX-native", "fixups: D3D timer callback at %08x (%s) comes at once when its time "
+            nc_log("xbased-native", "fixups: D3D timer callback at %08x (%s) comes at once when its time "
                    "has passed", va + (uint32_t)(p - base), name);
         }
         p += sizeof(k_timer_past);
@@ -293,7 +293,7 @@ static unsigned timer_fixups(NcKernel *k, uint32_t va, uint32_t len, const char 
 static unsigned xmv_fixups(NcKernel *k, uint32_t va, uint32_t len, const char *name)
 {
     if (!xmv_wait_on()) {
-        return 0;                       /* debug.hakux.xmvwait=0: XMV as it is (A/B) */
+        return 0;                       /* debug.xbased.xmvwait=0: XMV as it is (A/B) */
     }
     unsigned patched = 0;
     const uint8_t *base = nc_vm_host(k->vm, va), *end = base + len, *p = base;
@@ -308,7 +308,7 @@ static unsigned xmv_fixups(NcKernel *k, uint32_t va, uint32_t len, const char *n
                 memcpy(site + 1, &rel, 4);
                 memset(site + 5, 0x90, XMV_DEC - XMV_JE - 5);
                 patched++;
-                nc_log("hakuX-native", "fixups: XMV's stream wait at %08x (%s) runs DirectSoundDoWork for a "
+                nc_log("xbased-native", "fixups: XMV's stream wait at %08x (%s) runs DirectSoundDoWork for a "
                        "stopped stream too (stub %08x)", m, name, stub);
             }
         }

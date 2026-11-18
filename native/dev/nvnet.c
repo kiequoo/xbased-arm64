@@ -1,5 +1,5 @@
 /*
- * hakuX native core — the MCPX's nForce Ethernet controller ("nvnet") at
+ * xbased native core — the MCPX's nForce Ethernet controller ("nvnet") at
  * 0xFEF00000, IRQ 4, with its PHY at MII address 1.
  *
  * The title's network stack (XNet, linked into it) drives the controller:
@@ -121,7 +121,7 @@ static int g_trace;                     /* NC_TRACE_NVNET: register writes, fram
     do {                                               \
         if (g_trace > 0) {                             \
             g_trace--;                                 \
-            nc_log("hakuX-native-nvnet", __VA_ARGS__); \
+            nc_log("xbased-native-nvnet", __VA_ARGS__); \
         }                                              \
     } while (0)
 
