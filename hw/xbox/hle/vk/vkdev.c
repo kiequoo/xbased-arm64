@@ -9,12 +9,12 @@
 #include "hw/xbox/hle/hle.h"
 #include "hw/xbox/hle/host.h"
 #include "hw/xbox/hle/vk/vkdev.h"
-#include "hw/xbox/hle/vk/precision.h"
 #include "hw/xbox/hle/shader/glsl_compile.h"
 #include "hw/xbox/hle/vk/back.h"
 #include "hw/xbox/hle/vk/batch.h"
 #include "hw/xbox/hle/vk/compat.h"
 #include "hw/xbox/hle/vk/quirks.h"
+#include "hw/xbox/hle/vk/drvcrash.h"
 
 #if defined(__ANDROID__) || defined(_WIN32) || defined(NC_DESKTOP)
 #include <sys/system_properties.h>
@@ -194,7 +194,6 @@ static void caps_override(HleCaps *c)
         { "fbfetch", offsetof(HleCaps, fbfetch) },   { "vk13", offsetof(HleCaps, vk13) },
         { "dynrender", offsetof(HleCaps, dyn_render) }, { "sync2", offsetof(HleCaps, sync2) },
         { "eds1", offsetof(HleCaps, eds1) },         { "eds2", offsetof(HleCaps, eds2) },
-        { "i64", offsetof(HleCaps, i64) },           { "f64", offsetof(HleCaps, f64) },
     };
     for (char *save = NULL, *t = strtok_r(v, ", ", &save); t; t = strtok_r(NULL, ", ", &save)) {
         const char *name = *t == '-' ? t + 1 : t;
@@ -377,8 +376,6 @@ int hle_vk_init(void)
     bool e_gpl = has_ext(ext, ne, VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME) &&
                  has_ext(ext, ne, VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
     bool e_lr = has_ext(ext, ne, VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
-    bool e_bary = has_ext(ext, ne, VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
-    bool e_drect = has_ext(ext, ne, VK_EXT_DISCARD_RECTANGLES_EXTENSION_NAME);
     bool e_pd = has_ext(ext, ne, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
     /* Below 1.3 (vk/compat.c): what 1.2 and 1.3 made core, from extensions;
      * a 1.2 device has 1.2's in its core (the structs are core 1.2's then) */
@@ -438,8 +435,6 @@ int hle_vk_init(void)
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT };
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR q_lr = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR };
-    VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR q_bary = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_BARYCENTRIC_FEATURES_KHR };
     VkPhysicalDeviceVulkan13Features q13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
     VkPhysicalDeviceVulkan12Features q12 = {
@@ -485,7 +480,6 @@ int hle_vk_init(void)
     if (e_eds3) chain(&tail, &q_eds3);
     if (e_gpl) chain(&tail, &q_gpl);
     if (e_lr) chain(&tail, &q_lr);
-    if (e_bary) chain(&tail, &q_bary);
     vkGetPhysicalDeviceFeatures2(v->phys, &q);
     /* the limits the bindless set and the samplers need (Vulkan 1.2's: a 1.1
      * device fails the floor without them) */
@@ -528,11 +522,7 @@ int hle_vk_init(void)
     c->floor_ok = true;
     need(c, v->qfam != UINT32_MAX, "graphics queue");
     c->wide_lines = q.features.wideLines;
-    c->logic_op = q.features.logicOp;
     c->fill_lines = q.features.fillModeNonSolid;
-    c->gs = q.features.geometryShader;
-    c->f64 = q.features.shaderFloat64;
-    c->i64 = q.features.shaderInt64;
     need(c, q.features.largePoints, "largePoints");
     c->depth_clamp = q.features.depthClamp;
     need(c, ok_tl, "timelineSemaphore");
@@ -608,24 +598,6 @@ int hle_vk_init(void)
     /* local read is dynamic rendering's: 1.3 devices only */
     c->local_read = v13 && e_lr && q_lr.dynamicRenderingLocalRead;
     c->fbfetch = c->local_read && !getenv("XBASED_HLE_NO_FBFETCH");
-    c->bary = e_bary && q_bary.fragmentShaderBarycentric && !getenv("XBASED_HLE_NO_BARY");
-    if (e_drect && !getenv("XBASED_HLE_NO_DISCARD_RECTS")) {
-        VkPhysicalDeviceDiscardRectanglePropertiesEXT dp = {
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DISCARD_RECTANGLE_PROPERTIES_EXT };
-        VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-                                           .pNext = &dp };
-        vkGetPhysicalDeviceProperties2(v->phys, &p2);
-        c->discard = dp.maxDiscardRectangles >= 8;
-    }
-    if (has_ext(ext, ne, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME)) {
-        VkPhysicalDeviceConservativeRasterizationPropertiesEXT cp = {
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONSERVATIVE_RASTERIZATION_PROPERTIES_EXT };
-        VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-                                           .pNext = &cp };
-        vkGetPhysicalDeviceProperties2(v->phys, &p2);
-        c->conserv = true;
-        c->conserv_extra = cp.maxExtraPrimitiveOverestimationSize;
-    }
     c->exec_props = has_ext(ext, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
     c->aniso = q.features.samplerAnisotropy;
     c->host_query_reset = v13 ? q12.hostQueryReset : e_hqr && q_hqr.hostQueryReset;
@@ -668,14 +640,6 @@ int hle_vk_init(void)
     const bool u_vids = e_vids && q_vids.vertexInputDynamicState;
     const bool u_eds2 = v13 ? e_eds2 && q_eds2.extendedDynamicState2 : c->eds2;
     const bool u_pv = e_pv && q_pv.provokingVertexLast;
-    if (u_pv && !caps_off("pv")) {
-        VkPhysicalDeviceProvokingVertexPropertiesEXT pp = {
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_PROPERTIES_EXT };
-        VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-                                           .pNext = &pp };
-        vkGetPhysicalDeviceProperties2(v->phys, &p2);
-        c->pv_last = pp.provokingVertexModePerPipeline;
-    }
     const bool u_dce = e_dce && q_dce.depthClipEnable;
     const bool u_iu8 = (e_iu8x || e_iu8k) && q_iu8.indexTypeUint8;
     const bool u_4444 = c->x4444 && e_4444 && q_4444.formatA4R4G4B4;
@@ -704,20 +668,22 @@ int hle_vk_init(void)
         .sType = q_gpl.sType, .graphicsPipelineLibrary = VK_TRUE };
     VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR f_lr = {
         .sType = q_lr.sType, .dynamicRenderingLocalRead = VK_TRUE };
-    VkPhysicalDeviceFragmentShaderBarycentricFeaturesKHR f_bary = {
-        .sType = q_bary.sType, .fragmentShaderBarycentric = VK_TRUE };
     VkPhysicalDeviceVulkan13Features f13 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
         .synchronization2 = VK_TRUE, .dynamicRendering = VK_TRUE,
         .pipelineCreationCacheControl = c->cache_control,
         /* SPIR-V 1.6: glslang makes a discard a demote */
         .shaderDemoteToHelperInvocation = q13.shaderDemoteToHelperInvocation };
+    /* the descriptor indexing parts only for the bindless set, as below 1.3
+     * (f_di): a 1.3 driver without them refused the device otherwise
+     * (VK_ERROR_FEATURE_NOT_PRESENT), and the draws' own sets need none of
+     * them (Mesa's hasvk on Broadwell's HD 5500, #378) */
     VkPhysicalDeviceVulkan12Features f12 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13,
         .timelineSemaphore = VK_TRUE, .bufferDeviceAddress = c->bda,
-        .runtimeDescriptorArray = VK_TRUE, .descriptorBindingPartiallyBound = VK_TRUE,
-        .descriptorBindingSampledImageUpdateAfterBind = VK_TRUE,
-        .shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
+        .runtimeDescriptorArray = c->bindless, .descriptorBindingPartiallyBound = c->bindless,
+        .descriptorBindingSampledImageUpdateAfterBind = c->bindless,
+        .shaderSampledImageArrayNonUniformIndexing = c->bindless,
         .hostQueryReset = c->host_query_reset };
     VkPhysicalDeviceFeatures2 f = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = v13 ? &f12 : NULL };
@@ -743,9 +709,6 @@ int hle_vk_init(void)
         .sType = q_pcc.sType, .pipelineCreationCacheControl = VK_TRUE };
     f.features.wideLines = c->wide_lines;
     f.features.fillModeNonSolid = c->fill_lines;
-    f.features.geometryShader = c->gs;
-    f.features.shaderFloat64 = c->f64;
-    f.features.shaderInt64 = c->i64;
     f.features.largePoints = VK_TRUE;
     f.features.depthClamp = c->depth_clamp;
     f.features.shaderSampledImageArrayDynamicIndexing = !c->bindless;
@@ -780,7 +743,6 @@ int hle_vk_init(void)
     if (c->eds3) chain(&tail, &f_eds3);
     if (c->gpl) chain(&tail, &f_gpl);
     if (c->fbfetch) chain(&tail, &f_lr);
-    if (c->bary) chain(&tail, &f_bary);
 
     const char *exts[32];
     uint32_t nx = 0;
@@ -824,15 +786,6 @@ int hle_vk_init(void)
         if (e_pd) {
             exts[nx++] = VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME;
         }
-    }
-    if (c->bary) {
-        exts[nx++] = VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME;
-    }
-    if (c->discard) {
-        exts[nx++] = VK_EXT_DISCARD_RECTANGLES_EXTENSION_NAME;
-    }
-    if (c->conserv) {
-        exts[nx++] = VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME;
     }
     if (c->swapchain) {
         exts[nx++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
@@ -880,7 +833,7 @@ int hle_vk_init(void)
             c->push_desc, c->cbc, c->cbc_any, c->x4444, c->d24s8, c->bda, c->ahb, c->vk13,
             c->dyn_render, c->sync2, c->eds1, c->eds2, c->bindless, c->depth_clamp);
     hle_quirks_init(v->phys);           /* what this driver needs worked around */
-    hle_precision_init(v->phys);        /* exact or fast shaders (precision.h) */
+    hle_drvcrash_init(v->phys);         /* pipelines that crashed it before (drvcrash.h) */
     return 0;
 }
 

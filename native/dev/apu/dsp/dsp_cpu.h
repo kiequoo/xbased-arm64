@@ -129,6 +129,13 @@ struct dsp_core_s {
      **********************************/
 
     uint32_t disasm_registers_save[64];
+
+    /* xbased: bumped on every change to P (the recompiler's code is
+     * compiled again) */
+    uint32_t pram_gen;
+    /* xbased: SR's bits 16-23 (the extended mode register) as last written
+     * (SR itself keeps 16): SM, arithmetic saturation, is emulated */
+    uint32_t sr_ext;
 #ifdef DSP_DISASM_REG_PC
     uint32_t pc_save;
 #endif

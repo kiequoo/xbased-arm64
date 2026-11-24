@@ -511,6 +511,7 @@ bool nc_hle_dirty_fault(const siginfo_t *info, void *ucontext)
         return true;
     }
     dirty_sample(pa);
+    nc_core_code_written(pa);           /* code over which a store came: translated again */
     static int all_views = -1;          /* NC_WP_ALL_VIEWS: every view opened, as before (A/B) */
     if (all_views < 0) {
         all_views = getenv("NC_WP_ALL_VIEWS") != NULL;

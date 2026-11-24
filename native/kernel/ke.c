@@ -482,6 +482,9 @@ static void boost(NcThread *t, int inc)
 /* Frame latency: flips so far (any thread), and a hold asked for (the
  * flips then, plus one; 0: none) */
 static volatile uint32_t g_frame_flips, g_frame_req;
+/* ... and the holds that ended at their deadline, no flip come
+ * (nc_ke_frame_holds_timed_out) */
+static volatile uint32_t g_frame_timeouts;
 #define FRAME_HOLD_MAX_NS 50000000ull
 
 static uint64_t check_waits(NcKernel *k, int inc)
@@ -502,8 +505,11 @@ static uint64_t check_waits(NcKernel *k, int inc)
         } else if (t->wait.hold) {
             /* a frame latency hold: until a flip, or its deadline; the
              * thread was between two instructions, its registers stay */
-            if (__atomic_load_n(&g_frame_flips, __ATOMIC_ACQUIRE) != t->wait.flip_seq || now >= t->wait.deadline_ns) {
+            if (__atomic_load_n(&g_frame_flips, __ATOMIC_ACQUIRE) != t->wait.flip_seq) {
                 t->state = NC_T_READY;
+            } else if (now >= t->wait.deadline_ns) {
+                t->state = NC_T_READY;
+                __atomic_add_fetch(&g_frame_timeouts, 1, __ATOMIC_RELEASE);
             } else if (!earliest || t->wait.deadline_ns < earliest) {
                 earliest = t->wait.deadline_ns;
             }
@@ -522,6 +528,11 @@ static uint64_t check_waits(NcKernel *k, int inc)
 uint64_t nc_ke_check_waits(NcKernel *k)
 {
     return check_waits(k, 0);
+}
+
+uint32_t nc_ke_frame_holds_timed_out(void)
+{
+    return __atomic_load_n(&g_frame_timeouts, __ATOMIC_ACQUIRE);
 }
 
 void nc_ke_frame_flipped(void)
@@ -1261,11 +1272,15 @@ static uint64_t KeDelayExecutionThread(NcKernel *k, NcFrame *f, const uint32_t *
     return st;
 }
 
-/* NtYieldExecution() */
+/* NtYieldExecution(): to any ready thread, a lower priority one too, or
+ * STATUS_NO_YIELD_PERFORMED with none ready (SwitchToThread's FALSE). Nightmare
+ * Before Christmas: Oogie's Revenge polls its loader's event while
+ * SwitchToThread finds another thread to run, until its stream worker has
+ * suspended itself; told a yield was done every time, its boot looped on
+ * "Now Loading" for good whenever the event wasn't set before (1 boot in 8). */
 static uint64_t NtYieldExecution(NcKernel *k, NcFrame *f, const uint32_t *a)
 {
-    nc_ps_yield(k);         /* to any ready thread, a lower priority one too */
-    return NC_STATUS_SUCCESS;
+    return nc_ps_yield(k) ? NC_STATUS_SUCCESS : 0x40000024u;
 }
 
 /* ----------------------------------------------------- critical sections */

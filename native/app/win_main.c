@@ -47,6 +47,7 @@
 #include <sys/wait.h>
 #endif
 #include "native/app/win_auto.h"
+#include "native/app/win_devctl.h"
 #include "native/app/win_mods.h"
 #include "native/core/cheats.h"
 #include "native/core/core.h"
@@ -79,6 +80,7 @@
 /* native/dev/apu/out.c */
 void nc_audio_set_paused(bool on);
 void nc_audio_set_volume(float v);
+void nc_apu_set_hrtf(bool on);      /* dev/apu/apu.c */
 /* native/dev/ohci.c */
 void nc_dev_ohci_set_pads(unsigned mask);
 /* hw/xbox/hle/pb/pbmode.h */
@@ -87,6 +89,8 @@ bool hle_pb_active(void);
 #define MAX_ARGS 512
 
 static NcCore g_core;
+
+static void pause_core(bool on);
 static int g_disc_fd = -1;
 static SDL_AtomicInt g_core_state; /* 0 booting, 1 running, -1 failed or stopped */
 static struct ANativeWindow g_nw;
@@ -333,10 +337,54 @@ static void give_foreground(bool to_dash)
  * A code with bit 30 is a run started again (run_again): no dashboard. */
 static void *g_frame;   /* the session's frame (win_frame.h), NULL: the run's window on its own */
 static bool g_frame_hidden;     /* the run's window out of sight in it: the frame presents the pictures */
+static bool g_mgrab;            /* the mouse held for a game's stick (mouse_hold) */
+static uint32_t g_mbuttons;     /* ... its buttons down (SDL_BUTTON_MASK) */
+static SDL_Window *g_mgrab_win;
 static bool g_frame_keep;   /* this run ends for another (run_again): the frame stays */
+
+/* The run's time paused (the pause hotkey, the in-game menu, the window
+ * minimized, a restart's handover), in SDL_GetTicks milliseconds: as the
+ * process ends its total goes on a line of the dashboard's file for the
+ * session (XBASED_PAUSED_FILE, dash.c), and the game's time played leaves
+ * it out (#379). */
+static struct {
+    bool on;
+    uint64_t since, total;
+} g_paused_ms;
+
+static void paused_note(void)
+{
+    const char *p = getenv("XBASED_PAUSED_FILE");
+    if (!p || !*p) {
+        return;
+    }
+    const uint64_t t = g_paused_ms.total + (g_paused_ms.on ? SDL_GetTicks() - g_paused_ms.since : 0);
+    FILE *f = fopen(p, "a");
+    if (f) {
+        fprintf(f, "%llu\n", (unsigned long long)t);
+        fclose(f);
+    }
+}
+
+/* The emulation paused or let go, its time paused counted (g_paused_ms) */
+static void pause_core(bool on)
+{
+    nc_kernel_set_paused(&g_core.kernel, on);
+    const uint64_t now = SDL_GetTicks();
+    if (on && !g_paused_ms.on) {
+        g_paused_ms.since = now;
+    } else if (!on && g_paused_ms.on) {
+        g_paused_ms.total += now - g_paused_ms.since;
+    }
+    g_paused_ms.on = on;
+}
+
+static void saves_finish(void);
 
 static _Noreturn void exit_now(int code)
 {
+    saves_finish();         /* a savestate being written: whole first */
+    paused_note();
     const bool closing = g_frame && !(code & 0x40000000) && !g_frame_keep;
     if (closing) {
         nc_frame_close(g_frame);    /* the session's end: the frame hands the screen back to the dashboard */
@@ -368,7 +416,7 @@ static void wait_next_run(void *ev, void *proc);
  * the keyboard, between the two. */
 static void run_again(const char *extra, bool hold)
 {
-    nc_kernel_set_paused(&g_core.kernel, true);    /* the picture held is the last one */
+    pause_core(true);    /* the picture held is the last one */
     nc_audio_set_paused(true);
     char hold_path[MAX_PATH + 32] = "";
     if (hold) {
@@ -577,16 +625,46 @@ static void joystick_added(SDL_JoystickID id)
     SDL_AddGamepadMapping(map); /* a gamepad now: SDL_EVENT_GAMEPAD_ADDED follows */
 }
 
+/* A player's controller gone while the game runs (1-4, 0 none): the menu
+ * opens with a notice and the game waits (pad.dcpause, #400) */
+static int g_dc_player;
+
 static void pad_removed(SDL_JoystickID id)
 {
     for (unsigned i = 0; i < 4; i++) {
         if (g_pads[i] && SDL_GetGamepadID(g_pads[i]) == id) {
+            for (int p = 0; p < 4 && !g_dc_player; p++) {
+                if (player_pad(p) == g_pads[i]) {
+                    g_dc_player = p + 1;
+                }
+            }
             SDL_CloseGamepad(g_pads[i]);
             g_pads[i] = NULL;
             nc_log("xbased-app", "player %u's controller unplugged", i + 1);
             pads_changed();
         }
     }
+}
+
+/* The controllers as they are now: the in-game menu's own loop takes the
+ * events of the ones plugged in or out while it is up, which the game never
+ * saw (one connected again there stayed out of the game). */
+static void pads_resync(void)
+{
+    for (unsigned i = 0; i < 4; i++) {
+        if (g_pads[i] && !SDL_GamepadConnected(g_pads[i])) {
+            SDL_CloseGamepad(g_pads[i]);
+            g_pads[i] = NULL;
+            nc_log("xbased-app", "player %u's controller unplugged", i + 1);
+        }
+    }
+    int n = 0;
+    SDL_JoystickID *ids = SDL_GetGamepads(&n);
+    for (int k = 0; ids && k < n; k++) {
+        pad_added(ids[k]);      /* (ones already in keep their place) */
+    }
+    SDL_free(ids);
+    pads_changed();
 }
 
 /* Keys a shortcut with Ctrl or Alt took: the game doesn't see them until
@@ -613,7 +691,7 @@ static bool pad_in_shortcut(SDL_Gamepad *pad)
     }
     if (pad == g_back_pad) {
         if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_BACK) ||
-            SDL_GetGamepadButton(pad, (SDL_GamepadButton)g_back_btn)) {
+            SDL_GetGamepadButton(pad, (SDL_GamepadButton)im_face(g_back_btn))) {
             return true;
         }
         g_back_pad = NULL;
@@ -647,7 +725,9 @@ static void update_pads(bool focused)
         /* the keyboard: player 1 on auto, any player set to it */
         const bool kb = focused && (g_map.device[i] == -1 || (i == 0 && g_map.device[i] == 0));
         ImPad m;
-        im_read(&g_map, (int)i, kb ? keys : NULL, pad_in_shortcut(pad) ? NULL : pad, &m);
+        im_mouse_buttons(g_mbuttons, g_mgrab);
+        im_read_mouse(&g_map, (int)i, kb ? keys : NULL, pad_in_shortcut(pad) ? NULL : pad, kb && i == 0 && g_mgrab,
+                      &m);
         s.buttons = m.buttons;
         memcpy(s.analog, m.analog, sizeof(s.analog));
         s.lx = m.lx;
@@ -697,16 +777,22 @@ static void *save_thread(void *arg)
     const int slot = (int)(intptr_t)arg;
     char path[MAX_PATH * 2];
     state_path(slot, path, sizeof(path));
-    const char *err = nc_state_save(path);
-    nc_log("xbased-app", "savestate %d: %s", slot, err ? err : "saved");
+    /* the state taken with the game held, then (the game going on) its
+     * picture asked for at once, the frame it was taken at still on the
+     * screen, and the file written (#401: the write held the game too) */
+    const char *err = nc_state_save_begin(path);
+    char pic[MAX_PATH * 2];
     if (!err) {
         /* its picture: the frame shown, the dashboard's thumbnail */
-        char pic[MAX_PATH * 2];
         snprintf(pic, sizeof(pic), "%.*s.bmp", (int)(strlen(path) - 4), path);
         remove(pic);                        /* (an older one's picture) */
         snprintf(pic, sizeof(pic), "%.*s.jpg", (int)(strlen(path) - 4), path);
         remove(pic);
         hle_present_shot(pic);
+        err = nc_state_save_finish();
+    }
+    nc_log("xbased-app", "savestate %d: %s", slot, err ? err : "saved");
+    if (!err) {
         /* the notice after the picture: not in it */
         for (int i = 0; i < 100 && GetFileAttributesA(pic) == INVALID_FILE_ATTRIBUTES; i++) {
             SDL_Delay(10);
@@ -735,8 +821,18 @@ static void save_state(int slot)
     }
 }
 
+/* A savestate still being written: its file, before it's read or the run
+ * ends (exit_now) */
+static void saves_finish(void)
+{
+    for (int i = 0; i < 500 && SDL_GetAtomicInt(&g_saving); i++) {
+        SDL_Delay(10);
+    }
+}
+
 static void load_state(int slot)
 {
+    saves_finish();
     char path[MAX_PATH * 2], opt[MAX_PATH * 2 + 16];
     state_path(slot, path, sizeof(path));
     const char *err = nc_state_compat(path);
@@ -823,7 +919,11 @@ static int g_fps_cap;   /* ... its limit, uncapped (0: none) */
 static float g_volume = 1.0f;
 static bool g_mute_bg = true;   /* silent while the window isn't the active one */
 
-/* screenshots\<title>-<date>.jpg beside the executable */
+static char g_shot_asked[MAX_PATH + 128];  /* the shortcut's picture, its end not seen yet */
+static double g_shot_asked_t;
+
+/* screenshots\<title>-<date>.jpg in the data folder: said in the log, and a
+ * notice once it is written or why it wasn't (screenshot_end) */
 static void screenshot(void)
 {
     char dir[MAX_PATH + 32], p[MAX_PATH + 128];
@@ -834,7 +934,28 @@ static void screenshot(void)
     snprintf(p, sizeof(p), "%s/%s-%04d%02d%02d-%02d%02d%02d.jpg", dir, g_key, t.wYear, t.wMonth, t.wDay, t.wHour,
              t.wMinute, t.wSecond);
     hle_present_shot(p);
+    nc_log("xbased-app", "screenshot: %s", p);
+    snprintf(g_shot_asked, sizeof(g_shot_asked), "%s", p);
+    g_shot_asked_t = ui_time();
     notice(T(S_SHOT_SAVED), p);
+}
+
+/* (each refresh) the shortcut's picture not had: said, instead of the
+ * notice that waits for its file (nothing seen, nothing in the log, #383) */
+static void screenshot_end(void)
+{
+    if (!g_shot_asked[0]) {
+        return;
+    }
+    char why[160] = "";
+    const int end = hle_present_shot_end(g_shot_asked, why, sizeof(why));
+    if (end < 0 || (!end && ui_time() - g_shot_asked_t > 5)) {
+        nc_log("xbased-app", "screenshot: not saved (%s)", end < 0 ? why : "no picture shown in 5 s");
+        notice(T(S_SHOT_FAILED), NULL);
+        g_shot_asked[0] = 0;
+    } else if (end > 0) {
+        g_shot_asked[0] = 0;
+    }
 }
 
 /* ------------------------------------------------------------ the overlay */
@@ -889,6 +1010,41 @@ static bool frame_pointer(float *x, float *y)
     return true;
 }
 
+/* The mouse held for a game's stick (#255, mouse.stick): a click in the
+ * window takes it (the click isn't the game's), Esc, the in-game menu or
+ * another window in front let it go. Held, the pointer is hidden and kept
+ * in the window and its moves are raw: the frame's (hle_present_remote_grab,
+ * its moves as type 5 events) or, a window of its own, SDL's relative mode.
+ * The moves and buttons go to player 1's pad (im_read_mouse). */
+static void mouse_hold(bool on)
+{
+    if (on == g_mgrab) {
+        return;
+    }
+    g_mgrab = on;
+    g_mbuttons = 0;
+    im_mouse_buttons(0, on);
+    if (g_frame && g_frame_hidden && hle_present_remote()) {
+        hle_present_remote_grab(on);
+    } else if (g_mgrab_win) {
+        SDL_SetWindowRelativeMouseMode(g_mgrab_win, on);
+    }
+    nc_log("xbased-app", "mouse %s", on ? "held for the game's stick (Esc lets it go)" : "let go");
+}
+
+#ifdef XBASED_DEVCTL
+/* (dev control) the mouse as held, without the real one taken (win_devctl.h) */
+void nc_win_dev_mouse(float dx, float dy, uint32_t buttons, int held)
+{
+    if (held >= 0) {
+        g_mgrab = held != 0;
+        im_mouse_buttons(0, g_mgrab);
+    }
+    g_mbuttons = g_mgrab ? buttons : 0;
+    im_mouse_move(dx, dy);
+}
+#endif
+
 /* The frame's mouse, as this window's events (the in-game menu's and the
  * game's pointer), and whether the pointer is wanted told back. From the
  * main loop and the in-game menu's (dash_set_pump_hook): the menu's loop
@@ -907,6 +1063,12 @@ static void frame_mouse_pump(void)
     for (uint32_t k = 0; k < n; k++) {
         SDL_Event e;
         SDL_zero(e);
+        if (ms[k].type == 5) {
+            if (g_mgrab) {
+                im_mouse_move((float)ms[k].x, (float)ms[k].y);     /* a held mouse's raw move */
+            }
+            continue;
+        }
         if (ms[k].type == 1) {
             e.type = SDL_EVENT_MOUSE_MOTION;
             e.motion.windowID = SDL_GetWindowID(g_pump_win);
@@ -941,6 +1103,9 @@ static float g_play_moved;
 
 static void play_pointer(float moved)
 {
+    if (g_mgrab) {
+        return;         /* the mouse held for the game: no pointer */
+    }
     g_play_moved += moved;
     if (g_play_moved < 2) {
         return;
@@ -1069,6 +1234,7 @@ static void notice(const char *text, const char *after_file)
  * in out of white; a notice over the game a moment. */
 static void overlay_tick(void)
 {
+    screenshot_end();
     if (!ui_is_overlay()) {
         return;
     }
@@ -1208,6 +1374,9 @@ static void apply_cfg(const Config *global, const Config *game, bool sound)
         if ((v = cfg_get(c, "mutebg"))) {
             g_mute_bg = atoi(v) != 0;
         }
+        if ((v = cfg_get(c, "hrtf"))) {
+            nc_apu_set_hrtf(atoi(v) != 0);
+        }
     }
     nc_present_set_crop(crop_h, crop_v);
     g_fx = cfg_bool(global, "ui.fx", true);
@@ -1242,8 +1411,9 @@ static void ingame_menu(SDL_Window *win, bool *paused, bool minimized)
     if (SDL_GetAtomicInt(&g_core_state) != 1) {
         return;
     }
-    nc_kernel_set_paused(&g_core.kernel, true);
+    pause_core(true);
     nc_audio_set_paused(true);
+    mouse_hold(false);      /* the menu's pointer */
     int slot = 0;
     const char *title = strrchr(g_disc, '\\');
     if (ov_ok()) {
@@ -1251,6 +1421,7 @@ static void ingame_menu(SDL_Window *win, bool *paused, bool minimized)
         g_ov_up = false;
         g_notice[0] = 0;
         const int act = dash_ingame(win, g_key, title ? title + 1 : g_disc, NULL, &slot, live_cfg);
+        pads_resync();
         play_pointer_off();
         nc_auto_resync();
         if (act == DASH_INGAME_QUIT) {
@@ -1263,7 +1434,7 @@ static void ingame_menu(SDL_Window *win, bool *paused, bool minimized)
         }
         ui_overlay_off();
         g_ov_up = false;
-        nc_kernel_set_paused(&g_core.kernel, *paused || minimized);
+        pause_core(*paused || minimized);
         nc_audio_set_paused(*paused || minimized);
         char path[MAX_PATH + 64];
         snprintf(path, sizeof(path), "%s", cfg_global_path());
@@ -1291,6 +1462,7 @@ static void ingame_menu(SDL_Window *win, bool *paused, bool minimized)
     }
     nc_present_frame(NULL);     /* the surface goes */
     const int act = dash_ingame(win, g_key, title ? title + 1 : g_disc, pic, &slot, NULL);
+    pads_resync();
     remove(pic);
     if (act == DASH_INGAME_QUIT) {
         quit_to_dash(win);
@@ -1300,7 +1472,7 @@ static void ingame_menu(SDL_Window *win, bool *paused, bool minimized)
     /* the presenter back on the window before anything is shown or saved */
     SDL_Delay(50);
     nc_present_frame(&g_nw);
-    nc_kernel_set_paused(&g_core.kernel, *paused || minimized);
+    pause_core(*paused || minimized);
     nc_audio_set_paused(*paused || minimized);
     char path[MAX_PATH + 64];
     snprintf(path, sizeof(path), "%s", cfg_global_path());
@@ -1504,14 +1676,29 @@ static SDL_Keymod mods_held(SDL_Keymod m)
     return m;
 }
 
+/* Fast forward: its shortcut held, or the toggle's on (#404), never in
+ * online mode (the console's pace only): frames as fast as they come, its
+ * sign in the picture's corner; off, the run's frame rate setting again */
+static bool g_ff_hold, g_ff_on;
+
+static void ff_apply(void)
+{
+    const bool on = (g_ff_hold || g_ff_on) && !g_online;
+    if (!g_online) {
+        nc_win_prop_set("debug.xbased.uncap", on || g_uncap ? "1" : "0");
+        char cap[16];
+        snprintf(cap, sizeof(cap), "%d", on ? 0 : g_fps_cap);
+        nc_win_prop_set("debug.xbased.fpscap", cap);
+    }
+    hle_present_set_ff(on);
+}
+
 static void hotkey_do(SDL_Window *win, int h, bool down, int slot, bool *paused, bool minimized)
 {
     if (!down) {
         if (h == IM_HK_TURBO) {
-            nc_win_prop_set("debug.xbased.uncap", g_uncap ? "1" : "0");
-            char cap[16];
-            snprintf(cap, sizeof(cap), "%d", g_fps_cap);
-            nc_win_prop_set("debug.xbased.fpscap", cap);
+            g_ff_hold = false;
+            ff_apply();
         }
         return;
     }
@@ -1526,7 +1713,7 @@ static void hotkey_do(SDL_Window *win, int h, bool down, int slot, bool *paused,
         break;
     case IM_HK_PAUSE:
         *paused = !*paused;
-        nc_kernel_set_paused(&g_core.kernel, *paused || minimized);
+        pause_core(*paused || minimized);
         nc_audio_set_paused(*paused || minimized);
         nc_log("xbased-app", "%s", *paused ? "paused" : "resumed");
         break;
@@ -1537,11 +1724,13 @@ static void hotkey_do(SDL_Window *win, int h, bool down, int slot, bool *paused,
         load_state(slot);
         break;
     case IM_HK_TURBO:
-        if (g_online) {
-            break;      /* the console's pace only (online mode) */
-        }
-        nc_win_prop_set("debug.xbased.uncap", "1");  /* frames as fast as they come, while held */
-        nc_win_prop_set("debug.xbased.fpscap", "0");
+        g_ff_hold = true;       /* while held */
+        ff_apply();
+        break;
+    case IM_HK_TURBO_TOGGLE:
+        g_ff_on = !g_ff_on && !g_online;
+        nc_log("xbased-app", "fast forward %s", g_ff_on ? "on" : "off");
+        ff_apply();
         break;
     case IM_HK_SHOT:
         screenshot();
@@ -1580,7 +1769,7 @@ static const char k_usage[] =
     "  scale=N              internal resolution (1 to 8)\n"
     "  aspect=auto|4:3|16:9|stretch\n"
     "  upscale=bilinear|fsr, fxaa=0|1, crt=N\n"
-    "  shaders=hybrid|async|sync, precision=auto|exact|fast\n"
+    "  shaders=hybrid|async|sync\n"
     "  uncap, fpscap=N      the frame rate lifted, up to N a second\n"
     "  online               online mode: the console's frame rate and speed, no mods or cheats\n"
     "  lang=N               the console's language (1 English ... 9 Portuguese)\n"
@@ -1752,10 +1941,17 @@ int main(int argc, char *argv[])
     if (again) {
         nc_log("xbased-app", "---- started again (%s)", opt_flag("relaunch") ? "the title's relaunch" : "a state loaded");
     }
-    nc_log("xbased-app", "xbased " XBASED_VERSION " (an original Xbox emulator by crazyriddler, based on hakuX), " NC_PLATFORM_NAME);
+    nc_log("xbased-app", "xbased " XBASED_VERSION " (an original Xbox emulator by crazyriddler), " NC_PLATFORM_NAME);
     nc_win_mods_cleanup(g_exe_dir);     /* what an update took away (win_mods.h) */
 
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+#ifdef _WIN32
+    /* SDL's own PS3 drivers, off on Windows unless asked: the DualShock 3
+     * through Sony's driver (sixaxis.sys) or DsHidMini, its buttons'
+     * pressure with it (input_map.c pad_pressure, #420) */
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3_SIXAXIS_DRIVER, "1");
+#endif
 #ifndef _WIN32
     /* PulseAudio's API first: PipeWire desktops serve it too, and where
      * PipeWire's own is missing (WSLg) SDL waits half a minute on it */
@@ -1814,6 +2010,15 @@ int main(int argc, char *argv[])
     }
     if (!xbox_dash) {
         snprintf(g_disc, sizeof(g_disc), "%s", disc);
+        {
+            /* a folder with an ISO attacher's default.xbe beside the game's
+             * image, as a modded Xbox keeps them: the image (#367) */
+            char img[MAX_PATH * 2];
+            if (nc_fold_attached_image(g_disc, img, sizeof(img))) {
+                nc_log("xbased-app", "%s: an attacher's folder, its image %s", g_disc, img);
+                snprintf(g_disc, sizeof(g_disc), "%s", img);
+            }
+        }
         game_options(g_disc);
         /* an extracted game: its folder (or default.xbe) read as the disc it makes */
         char xbe[MAX_PATH * 2];
@@ -2076,6 +2281,9 @@ int main(int argc, char *argv[])
     }
     nc_vsync_start();
     nc_auto_init(g_data_dir, save_state, load_state);
+#ifdef XBASED_DEVCTL
+    nc_devctl_init(g_data_dir, &g_core);   /* (dev builds: win_devctl.h) */
+#endif
 #if defined(__x86_64__) || (defined(__aarch64__) && defined(__linux__))
     nc_core_fault_install(&g_core);
 #endif
@@ -2099,6 +2307,10 @@ int main(int argc, char *argv[])
                 break;
             case SDL_EVENT_KEY_DOWN: {
                 if (ev.key.repeat) {
+                    break;
+                }
+                if (ev.key.key == SDLK_ESCAPE && g_mgrab) {
+                    mouse_hold(false);
                     break;
                 }
                 /* the shortcuts (Settings > Shortcuts): the key with the
@@ -2135,7 +2347,7 @@ int main(int argc, char *argv[])
                  * touchpad, Share, Back with a button; and the menu with
                  * Back and Start */
                 SDL_Gamepad *gp = SDL_GetGamepadFromID(ev.gbutton.which);
-                const int b = ev.gbutton.button;
+                const int b = im_face(ev.gbutton.button);   /* as its label says (pad.face) */
                 int code = IM_HKP_NONE;
                 if (b == SDL_GAMEPAD_BUTTON_GUIDE) {
                     g_guide_alone = true;
@@ -2164,7 +2376,7 @@ int main(int argc, char *argv[])
                 break;
             }
             case SDL_EVENT_GAMEPAD_BUTTON_UP: {
-                const int b = ev.gbutton.button;
+                const int b = im_face(ev.gbutton.button);
                 if (b == SDL_GAMEPAD_BUTTON_GUIDE && g_guide_alone) {
                     g_guide_alone = false;
                     for (int h = 0; h < IM_HOTKEYS; h++) {
@@ -2203,7 +2415,7 @@ int main(int argc, char *argv[])
             case SDL_EVENT_WINDOW_MINIMIZED:
             case SDL_EVENT_WINDOW_RESTORED:
                 minimized = ev.type == SDL_EVENT_WINDOW_MINIMIZED;
-                nc_kernel_set_paused(&g_core.kernel, paused || minimized);
+                pause_core(paused || minimized);
                 nc_audio_set_paused(paused || minimized);
                 break;
             case SDL_EVENT_WINDOW_FOCUS_GAINED:
@@ -2213,16 +2425,30 @@ int main(int argc, char *argv[])
                 break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
                 focused = false;
+                mouse_hold(false);
                 mods_released();
                 if (g_mute_bg) {
                     nc_audio_set_volume(0);
                 }
                 break;
             case SDL_EVENT_MOUSE_MOTION:
+                if (g_mgrab && SDL_GetWindowRelativeMouseMode(win)) {
+                    im_mouse_move(ev.motion.xrel, ev.motion.yrel);  /* its own window's relative mode */
+                }
                 play_pointer(fabsf(ev.motion.xrel) + fabsf(ev.motion.yrel));
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                if (g_mgrab) {
+                    g_mbuttons |= SDL_BUTTON_MASK(ev.button.button);
+                } else if (g_map.mouse_stick && focused && !paused) {
+                    g_mgrab_win = win;
+                    mouse_hold(true);       /* the click that takes it isn't the game's */
+                    break;
+                }
                 play_pointer(2);
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                g_mbuttons &= ~SDL_BUTTON_MASK(ev.button.button);
                 break;
             default:
                 break;
@@ -2230,8 +2456,23 @@ int main(int argc, char *argv[])
         }
         play_pointer_tick();
         nc_auto_tick();
+#ifdef XBASED_DEVCTL
+        nc_devctl_tick(&paused, minimized);
+#endif
         if (nc_auto_take_menu()) {
             ingame_menu(win, &paused, minimized);
+        }
+        if (g_dc_player) {
+            /* a player's controller gone: the menu, which pauses, and why */
+            const int p = g_dc_player;
+            g_dc_player = 0;
+            if (g_map.dc_pause && SDL_GetAtomicInt(&g_core_state) == 1) {
+                char msg[256];
+                snprintf(msg, sizeof(msg), T(S_PAD_DC), p);
+                nc_log("xbased-app", "player %d's controller disconnected: the menu opens", p);
+                dash_ingame_notice(msg);
+                ingame_menu(win, &paused, minimized);
+            }
         }
         update_pads(focused);
         state_request_poll();
@@ -2241,6 +2482,8 @@ int main(int argc, char *argv[])
          * window, the reason only in the log */
         if (!told && nc_hle_fatal_kind() == NC_FATAL_DRIVER) {
             told = true;
+            pause_core(true);           /* (its sound went on under the box, #378) */
+            nc_audio_set_paused(true);
             fatal_box("xbased", nc_hle_fatal());
             break;
         }
@@ -2297,7 +2540,7 @@ int main(int argc, char *argv[])
             const bool m = nc_frame_minimized(g_frame);
             if (m != minimized) {
                 minimized = m;      /* a child window hears nothing of its frame's minimizing */
-                nc_kernel_set_paused(&g_core.kernel, paused || minimized);
+                pause_core(paused || minimized);
                 nc_audio_set_paused(paused || minimized);
             }
         }

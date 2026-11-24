@@ -9,7 +9,13 @@
  *
  * Topology (the 1.0 console's): the front panel hub on root port 1, and on
  * its ports 3, 4, 1, 2 one controller per player — a 3-port hub with the
- * gamepad on port 1.
+ * gamepad on port 1 and its two slots on ports 2 and 3 (with voice=1, the
+ * Communicator in player 1's first slot: communicator.c).
+ *
+ * Isochronous endpoints (the Communicator's) take one packet a frame from
+ * their head TD: the packet the frame's number falls on, its status word
+ * written back, and the TD retired after its last frame (or at once, its
+ * frames gone by, as the controller's DATAOVERRUN).
  */
 #include <stdio.h>
 #include "native/dev/usb.h"
@@ -106,7 +112,13 @@
 #define CC_NOERROR           0
 #define CC_STALL             4
 #define CC_DEVICENOTRESPONDING 5
+#define CC_DATAOVERRUN       8
 #define CC_DATAUNDERRUN      9
+
+/* Isochronous transfer descriptor (32 bytes): starting frame, frame count - 1 */
+#define ITD_SF(x)  ((x) & 0xffffu)
+#define ITD_FC(x)  (((x) >> 24) & 7u)
+#define ITD_PTR    0xffffffe0u
 
 typedef struct Ohci {
     NcVm *vm;
@@ -435,6 +447,103 @@ static bool service_td(Ohci *o, uint32_t ed_pa, uint32_t ed[4])
     return !(ed[2] & ED_H);
 }
 
+/* An isochronous TD's 13-bit offset (bit 12: BE's page, else BP0's) as an address */
+static uint32_t iso_pa(const uint32_t td[8], uint32_t off)
+{
+    return ((off & 0x1000u) ? (td[3] & ~0xfffu) : (td[1] & ~0xfffu)) | (off & 0xfffu);
+}
+
+/* An isochronous packet's bytes from (to_guest false) or to the guest: from
+ * 13-bit offset s, n bytes, its part in BP0's page then BE's */
+static void iso_copy(Ohci *o, const uint32_t td[8], uint32_t s, uint8_t *buf, uint32_t n, bool to_guest)
+{
+    while (n) {
+        const uint32_t room = 0x1000u - (s & 0xfffu), k = n < room ? n : room;
+        uint8_t *p = phys(o, iso_pa(td, s), k);
+        if (p) {
+            to_guest ? memcpy(p, buf, k) : memcpy(buf, p, k);
+        }
+        buf += k;
+        n -= k;
+        s = (s & 0x1000u) ? s + k : 0x1000u;   /* past BP0's page: BE's */
+    }
+}
+
+/* The frame's packet of an isochronous ED's head TD. */
+static void service_iso(Ohci *o, uint32_t ed_pa, uint32_t ed[4])
+{
+    const uint32_t td_pa = ed[2] & ITD_PTR;
+    uint32_t td[8];
+    if (!rd_words(o, td_pa, td, 8)) {
+        ed[2] |= ED_H;
+        wr_words(o, ed_pa + 8, &ed[2], 1);
+        return;
+    }
+    const int rel = (int16_t)(uint16_t)(o->frame_number - ITD_SF(td[0]));
+    const unsigned fc = ITD_FC(td[0]);
+    if (rel < 0) {
+        return;                                 /* its first frame still to come */
+    }
+    uint32_t cc = CC_NOERROR;
+    bool retire = true;
+    if ((unsigned)rel > fc) {
+        cc = CC_DATAOVERRUN;                    /* its frames went by */
+    } else {
+        const unsigned r = (unsigned)rel;
+        uint16_t psw[8];
+        for (unsigned i = 0; i < 8; i++) {
+            psw[i] = (uint16_t)(td[4 + i / 2] >> (16 * (i & 1)));
+        }
+        /* the packet: from its offset to the next one's (the last, to BE) */
+        const uint32_t be13 = ((td[3] ^ td[1]) & ~0xfffu) ? 0x1000u | (td[3] & 0xfffu) : (td[3] & 0xfffu);
+        const uint32_t s13 = psw[r] & 0x1fffu;
+        const uint32_t e13 = r == fc ? be13 : (uint32_t)((psw[r + 1] & 0x1fffu) - 1u);
+        const uint32_t size = e13 >= s13 && e13 - s13 < 1023 ? e13 - s13 + 1 : 0;
+        uint8_t buf[1024];
+        const bool out = ED_D(ed[0]) == 1;
+        if (out && size) {
+            iso_copy(o, td, s13, buf, size, false);
+        }
+        NcUsbDev *d = find_device(o, (uint8_t)ED_FA(ed[0]));
+        int n = !d ? -100 : d->data ? d->data(d, !out, (int)ED_EN(ed[0]), buf, (int)size) : NC_USB_STALL;
+        n = n == NC_USB_NAK ? 0 : n;
+        uint32_t pcc = CC_NOERROR, got = 0;
+        if (n < 0) {
+            pcc = n == NC_USB_STALL ? CC_STALL : CC_DEVICENOTRESPONDING;
+        } else if (!out) {
+            got = (uint32_t)n < size ? (uint32_t)n : size;
+            if (got) {
+                iso_copy(o, td, s13, buf, got, true);
+            }
+            pcc = got < size ? CC_DATAUNDERRUN : CC_NOERROR;
+        }
+        psw[r] = (uint16_t)((pcc << 12) | (got & 0x7ffu));     /* an OUT's size is 0 */
+        for (unsigned i = 0; i < 4; i++) {
+            td[4 + i] = (uint32_t)psw[2 * i] | ((uint32_t)psw[2 * i + 1] << 16);
+        }
+        o->tds++;
+        retire = r == fc;
+        if (g_trace) {
+            nc_log("xbased-native-usb", "iso td %08x addr %u ep %u %s frame %u of %u: %u bytes -> %d", td_pa,
+                   (unsigned)ED_FA(ed[0]), (unsigned)ED_EN(ed[0]), out ? "OUT" : "IN", r, fc + 1, size, n);
+        }
+    }
+    if (!retire) {
+        wr_words(o, td_pa + 16, &td[4], 4);     /* the packet's status word */
+        return;
+    }
+    td[0] = (td[0] & ~(0xfu << TD_CC_SHIFT)) | (cc << TD_CC_SHIFT);
+    ed[2] = (td[2] & ITD_PTR) | (ed[2] & (ED_H | ED_C));
+    td[2] = o->done;
+    o->done = td_pa;
+    const int di = (int)TD_DI(td[0]);
+    if (di < o->done_count) {
+        o->done_count = di;
+    }
+    wr_words(o, td_pa, td, 8);
+    wr_words(o, ed_pa + 8, &ed[2], 1);
+}
+
 /* Walk an ED list; returns whether any ED had TDs queued. */
 static bool service_list(Ohci *o, uint32_t head, bool periodic)
 {
@@ -445,7 +554,13 @@ static bool service_list(Ohci *o, uint32_t head, bool periodic)
         if (!rd_words(o, pa, ed, 4)) {
             break;
         }
-        if (!(ed[0] & (ED_K | ED_F))) {
+        if (!(ed[0] & ED_K) && (ed[0] & ED_F)) {
+            /* isochronous: in the periodic list, with the controller's isochronous enable */
+            if (periodic && (o->ctl & CTL_IE) && !(ed[2] & ED_H) && (ed[2] & PTR_MASK) != (ed[1] & PTR_MASK)) {
+                active = true;
+                service_iso(o, pa, ed);
+            }
+        } else if (!(ed[0] & ED_K)) {
             unsigned tds = 0;
             while (!(ed[2] & ED_H) && (ed[2] & PTR_MASK) != (ed[1] & PTR_MASK) && tds < 64) {
                 active = true;
@@ -698,9 +813,13 @@ void nc_dev_ohci_init(struct NcVm *vm)
     const bool front_hub = fh && atoi(fh) != 0;
     g_front_hub = front_hub;
     NcUsbDev *front = front_hub && players ? nc_usb_hub_new(4) : NULL;
+    const char *voice = getenv("NC_VOICE");
     for (unsigned p = 0; p < 4; p++) {
         g_pad_hub[p] = nc_usb_hub_new(3);
         nc_usb_hub_attach(g_pad_hub[p], 1, nc_xid_gamepad_new(p));
+        if (p == 0 && voice && atoi(voice)) {
+            nc_usb_hub_attach(g_pad_hub[p], 2, nc_comm_new());     /* slot A: the Communicator */
+        }
         if (!((mask >> p) & 1)) {
             continue;
         }

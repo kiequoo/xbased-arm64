@@ -149,6 +149,15 @@ enum { NC_STATE_AT_ENTRY = 1, NC_STATE_AT_IDLE = 2 };
  * with every device quiesced (save.c). NULL: saved; else why not. */
 const char *nc_state_write(const char *path, const NcStateInfo *info, const NcStateSection *secs,
                            unsigned nsecs);
+/* nc_state_write in two steps (#401): the sections saved into memory (at
+ * the pause point, as nc_state_write's), then the file written from them
+ * on any thread, the emulation going on meanwhile; the same bytes. build:
+ * NULL and *err on a failure; write: NULL or why not, the image freed. */
+typedef struct NcStateImage NcStateImage;
+NcStateImage *nc_state_build(const NcStateInfo *info, const NcStateSection *secs, unsigned nsecs,
+                             const char **err);
+size_t nc_state_image_size(const NcStateImage *img);
+const char *nc_state_image_write(NcStateImage *img, const char *path);
 
 /* Reads the state at path: the header into *info, and each section through
  * secs (refused: a section this core doesn't know, or one older than its

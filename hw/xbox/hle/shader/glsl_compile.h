@@ -17,7 +17,6 @@ typedef enum HleShaderStage {
     HLE_SHADER_VERTEX = 0,
     HLE_SHADER_FRAGMENT = 1,
     HLE_SHADER_COMPUTE = 2,
-    HLE_SHADER_GEOMETRY = 3,
 } HleShaderStage;
 
 void hle_glsl_init(void);

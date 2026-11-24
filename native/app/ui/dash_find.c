@@ -543,6 +543,7 @@ void scr_find(void)
     opt_choice(&l, S_VIEW, "ui.view", vv, vn, 3, "large");
     opt_bool(&l, S_FAV_FIRST, "ui.favfirst", true, false);
     opt_bool(&l, S_LAST_FIRST, "ui.lastfirst", true, false);
+    opt_bool(&l, S_SHOW_HIDDEN, "ui.showhidden", false, false);    /* here too: next to the games */
     if (list_row(&l, T(S_CLEAR_FILTERS), NULL, NULL)) {
         clear_all();
     }

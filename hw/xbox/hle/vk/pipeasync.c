@@ -2,14 +2,9 @@
  * xbased HLE GPU — asynchronous pipeline builds, the per-title pipeline
  * record and its prebuild (pipeasync.h).
  *
- * Workers: threads below normal priority, so the guest's CPU and the render
- * thread keep the big cores; jobs carry copies of their key and vertex
- * program, results go back to the render thread (hle_pipe_take). As many as
- * the host has threads beyond the emulation's own six (the guest's CPU, the
- * render thread, the decoder, the audio's), two at least and WORKERS_MAX at
- * most: they build every exact vertex program (vk/draw.c xf_exact, up to 2 s
- * of the driver's each), and the frames draw the stand-ins till the last is
- * in (Prince of Persia - Warrior Within cold: 33 s of building, 16 s on 2).
+ * Workers: WORKERS threads below normal priority, so the guest's CPU and the
+ * render thread keep the big cores; jobs carry copies of their key and
+ * vertex program, results go back to the render thread (hle_pipe_take).
  *
  * The record: a header (magic, version, key size), then records appended as
  * the session makes pipelines: a vertex program (once per file), a pipeline
@@ -21,7 +16,6 @@
 #include "hw/xbox/hle/hle.h"
 
 #include "hw/xbox/hle/vk/pipeasync.h"
-#include "hw/xbox/hle/vk/precision.h"
 #include "hw/xbox/hle/vk/vkdev.h"
 
 #if defined(__ANDROID__) || defined(_WIN32) || defined(NC_DESKTOP)
@@ -33,8 +27,7 @@
 #include <sys/syscall.h>
 #endif
 
-#define WORKERS_MAX 6
-#define EMU_THREADS 6
+#define WORKERS 2
 #define QUEUE_MAX 1024
 #define PREBUILD_THREADS 6
 #define REC_MAGIC 0x43525048u       /* "HPRC" */
@@ -90,7 +83,7 @@ static struct {
 
     HleMutex mu;
     HleCond cv;
-    HleThread th[WORKERS_MAX];
+    HleThread th[WORKERS];
     bool started;
     Job *queue[QUEUE_MAX];
     unsigned qhead, qn;
@@ -131,14 +124,11 @@ void hle_pipe_set_options(bool async, bool prebuild, bool hybrid)
     g_pa.opt_hybrid = hybrid;
 }
 
-/* Fast precision (precision.h) has no hybrid mode: the interpreters are
- * the exact forms' companions, and a device that needs the fast forms is one
- * whose new shaders should not stall the frame either: hybrid's new shaders
- * built asynchronously there (sync stays sync). The same where the device
- * can't have the interpreters (no pipeline libraries: AMD's Windows driver,
- * #307): hybrid was sync there, every new shader a wait of 30 to 45 ms on
- * the render thread (a Ryzen 5600H's), so a scene's first frames came in at
- * a few a second. */
+/* A device that can't have the interpreters (no pipeline libraries: AMD's
+ * Windows driver, #307): hybrid was sync there, every new shader a wait of 30
+ * to 45 ms on the render thread (a Ryzen 5600H's), so a scene's first frames
+ * came in at a few a second; its new shaders are built asynchronously (sync
+ * stays sync). */
 static bool g_no_interp;
 
 void hle_pipe_no_interpreters(void)
@@ -148,7 +138,7 @@ void hle_pipe_no_interpreters(void)
 
 bool hle_pipe_hybrid(void)
 {
-    return g_pa.opt_hybrid && !hle_precision_fast() && !g_no_interp;
+    return g_pa.opt_hybrid && !g_no_interp;
 }
 
 void hle_pipe_init(size_t key_size, HlePipeBuildFn build, const char *variant)
@@ -209,6 +199,14 @@ void hle_pipe_lower_priority(void)
 #endif
 }
 
+/* The host's threads beyond the emulation's own (6), 6 at most, least at least */
+unsigned hle_pipe_spare_threads(unsigned least)
+{
+    enum { EMU_THREADS = 6, SPARE_MAX = 6 };
+    const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    return ncpu > (long)(EMU_THREADS + least) ? MIN((unsigned)(ncpu - EMU_THREADS), (unsigned)SPARE_MAX) : least;
+}
+
 /* For the process's life (the back end has no end) */
 static void *worker(void *opaque)
 {
@@ -239,22 +237,11 @@ static void *worker(void *opaque)
     return NULL;
 }
 
-/* The host's threads beyond the emulation's own (EMU_THREADS), WORKERS_MAX
- * at most, least at least */
-unsigned hle_pipe_spare_threads(unsigned least)
-{
-    const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
-    return ncpu > (long)(EMU_THREADS + least) ? MIN((unsigned)(ncpu - EMU_THREADS), WORKERS_MAX) : least;
-}
-
 bool hle_pipe_queue(uint64_t hash, const void *key, uint64_t vsh, const uint32_t *tok,
                     uint32_t nslots)
 {
     if (!g_pa.started) {
-        const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
-        const unsigned nw = hle_pipe_spare_threads(2);
-        hle_log("xbased-hle-pipe", "pipeline workers: %u (%ld host threads)", nw, ncpu);
-        for (unsigned i = 0; i < nw; i++) {
+        for (unsigned i = 0; i < WORKERS; i++) {
             hle_thread_create(&g_pa.th[i], "hle.pipe", worker, NULL, HLE_THREAD_DETACHED);
         }
         g_pa.started = true;
@@ -520,7 +507,7 @@ void hle_pipe_title(uint32_t title_id, uint32_t timedate)
 void hle_pipe_record(uint64_t hash, const void *key, uint64_t vsh, const uint32_t *tok,
                      uint32_t nslots)
 {
-    if (!g_pa.path || ((const uint8_t *)key)[g_hle_key_stipple_at]) {
+    if (!g_pa.path) {
         return;
     }
     if (vsh && tok && !prog_find(vsh)) {

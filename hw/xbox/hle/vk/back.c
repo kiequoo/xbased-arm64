@@ -12,7 +12,6 @@
 #include "hw/xbox/hle/prop.h"
 #include "hw/xbox/hle/tex/xdk.h"
 #include "hw/xbox/hle/tex/xdk_res.h"
-#include "hw/xbox/hle/tex/zpack.h"
 #include "hw/xbox/hle/front/fe.h"
 #include "hw/xbox/hle/mem/barrier.h"
 #include "hw/xbox/hle/mem/guestmem.h"
@@ -21,7 +20,6 @@
 #include "hw/xbox/hle/vk/batch.h"
 #include "hw/xbox/hle/vk/pcache.h"
 #include "hw/xbox/hle/vk/pipeasync.h"
-#include "hw/xbox/hle/vk/precision.h"
 #include "hw/xbox/hle/hitch.h"
 #include "hw/xbox/hle/prof.h"
 #include "hw/xbox/hle/vk/display.h"
@@ -92,13 +90,11 @@ static struct {
     struct {
         uint32_t index, div, nparts, parts[VIS_MAX_PARTS];
         uint32_t report;                        /* guest PA of the device's report, 0 none */
-        uint32_t flags;                         /* HleCmdVis.flags */
         uint64_t after;                         /* HLE_SURF_PARKED until submitted */
         uint64_t expect;                        /* the value its poller waits for */
     } pend[VIS_PENDING];
     uint32_t npend;
     uint64_t lost;
-    uint64_t run;                               /* the chip's running z-pass sum (HLE_VIS_ACCUM) */
 } g_vis = { .in_pass = -1 };
 static struct {
     int all;                                    /* -1: environment not read yet */
@@ -219,9 +215,8 @@ static void vis_report(uint32_t pa, uint32_t count)
 {
     uint8_t *p = pa ? hle_pa_ptr(pa, 16) : NULL;
     if (p) {
-        const uint64_t ts = hle_host_ptimer();
-        hle_stl_le(p, (uint32_t)ts);
-        hle_stl_le(p + 4, (uint32_t)(ts >> 32));
+        hle_stl_le(p, (uint32_t)HLE_VIS_TIMESTAMP);
+        hle_stl_le(p + 4, (uint32_t)(HLE_VIS_TIMESTAMP >> 32));
         hle_stl_le(p + 8, count);
         hle_smp_wmb();
         hle_atomic_set((uint32_t *)(p + 12), 0);
@@ -237,7 +232,7 @@ static void cmd_vis_end(const HleCmdVis *c)
         vis_pass_end(g_back.fr[g_back.cur].cb);
     }
     g_vis.active = false;
-    if (c->index >= VIS_INDICES && !c->report && !(c->flags & HLE_VIS_ACCUM)) {
+    if (c->index >= VIS_INDICES && !c->report) {
         return;                                 /* HLE_VIS_NO_INDEX has a report */
     }
     if (g_vis.npend >= VIS_PENDING) {
@@ -249,9 +244,7 @@ static void cmd_vis_end(const HleCmdVis *c)
                     g_vis.npend, c->index);
         }
         g_vis.nparts = 0;
-        if (!(c->flags & HLE_VIS_NOWRITE)) {
-            vis_report(c->report, c->flags & HLE_VIS_ACCUM ? (uint32_t)g_vis.run : 0);
-        }
+        vis_report(c->report, 0);
         return;
     }
     typeof(g_vis.pend[0]) *p = &g_vis.pend[g_vis.npend++];
@@ -260,7 +253,6 @@ static void cmd_vis_end(const HleCmdVis *c)
     uint32_t vsc = vrt ? vrt->scale : g_hle_rscale;
     p->div = MAX(c->div, 1u) * vsc * vsc;               /* guest pixels */
     p->report = c->report;
-    p->flags = c->flags;
     p->expect = c->expect;
     p->nparts = g_vis.nparts;
     memcpy(p->parts, g_vis.parts, sizeof(p->parts));
@@ -322,20 +314,7 @@ static void vis_reap(uint64_t completed)
                 count = 640 * 480;
             }
         }
-        if (p->flags & HLE_VIS_ACCUM) {
-            /* (the chip's one running sum: nxdk_pgraph_tests' ZPass_pixel_count, a second
-             * GET_REPORT after more draws and the counting turned off holds both reports'
-             * pixels, 0xC000 after 0xA000) */
-            if (p->flags & HLE_VIS_RESET) {
-                g_vis.run = 0;
-            }
-            g_vis.run += count;
-            if (!(p->flags & HLE_VIS_NOWRITE)) {
-                vis_report(p->report, (uint32_t)g_vis.run);
-            }
-        } else {
-            vis_report(p->report, count);
-        }
+        vis_report(p->report, count);
     }
     g_vis.npend = j;
     g_vis.reaped = MAX(g_vis.reaped, completed);
@@ -355,10 +334,9 @@ static void on_complete(uint64_t completed)
     }
 }
 
-/* GPU time per command buffer while the host-time profile is on (debug), or
- * while auto precision measures whether the GPU keeps up (precision.h): a
+/* GPU time per command buffer while the host-time profile is on (debug): a
  * begin and an end timestamp per frame slot, read when the slot comes round
- * (its submission has completed); the profile's logged once a second. */
+ * (its submission has completed); logged once a second. */
 static struct {
     VkQueryPool pool;
     bool failed, armed[HLE_FRAMES];
@@ -377,14 +355,13 @@ static void gput_collect(unsigned slot)
                                 sizeof(t[0]), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
         t[1] >= t[0]) {
         uint64_t ns = (uint64_t)((double)(t[1] - t[0]) * g_hvk.props.limits.timestampPeriod);
-        hle_precision_gpu_time(ns);
         g_gput.ns += ns;
         g_gput.n++;
         g_gput.max_ns = MAX(g_gput.max_ns, ns);
     }
     int64_t now = hle_now_ns();
     if (now - g_gput.last_log >= 1000000000) {
-        if (g_gput.last_log && g_gput.n && g_hle_prof_on) {
+        if (g_gput.last_log && g_gput.n) {
             hle_log("xbased-hle-prof", "gpu=%.1fms/s cbs=%llu avg=%.2fms max=%.2fms",
                     g_gput.ns / 1e6, (unsigned long long)g_gput.n,
                     g_gput.ns / 1e6 / g_gput.n, g_gput.max_ns / 1e6);
@@ -396,7 +373,7 @@ static void gput_collect(unsigned slot)
 
 static void gput_begin(VkCommandBuffer cb, unsigned slot)
 {
-    if ((!g_hle_prof_on && !hle_precision_measuring()) || g_gput.failed || hle_quirk(HLE_QUIRK_NO_TIMESTAMPS)) {
+    if (!g_hle_prof_on || g_gput.failed || hle_quirk(HLE_QUIRK_NO_TIMESTAMPS)) {
         return;
     }
     if (!g_gput.pool) {
@@ -2085,6 +2062,9 @@ static void cmd_swap_present(const HleCmdSwap *c)
     close_pass_why(PE_SWAP);
     g_pt.ord = 0;                       /* the next frame's first pass */
     hle_draw_psframe_poll(g_back.st.swaps);
+#ifdef XBASED_DEVCTL
+    hle_draw_devcap_swap(g_back.st.swaps);
+#endif
     back_props_poll(g_back.st.swaps);
     hle_pcache_save(false);
     hle_pipe_flush(false);              /* the pipelines made, recorded (at most once a second) */
@@ -2099,7 +2079,6 @@ static void cmd_swap_present(const HleCmdSwap *c)
      * submit each held the back end to ~850 a second, tens of seconds
      * behind, and its movies played at 5 fps meanwhile. */
     static int64_t s_written_ns;
-    hle_precision_swap();               /* the game's frames (precision.h's measure) */
     const int64_t now = hle_now_ns();
     if (now - s_written_ns < SWAP_MIN_NS && hle_ring_ahead(hle_fe_ring(), HLE_OP_SWAP, 256)) {
         static uint64_t s_superseded;
@@ -2205,66 +2184,9 @@ static bool readback_packed(const HleCmdReadback *c, VkBuffer buf, VkDeviceSize 
     return true;
 }
 
-/* HLE_RB_DEPTH: a depth target's depth, then its stencil, into the landing
- * buffer at `at`. Recorded: what the depth copied as and where the stencil's
- * bytes went (hle_tl_land_depth_copied); false, nothing. An image the GPU
- * never wrote holds nothing newer than memory; one at another size than the
- * guest's (a resolution scale) has no texel of the guest's to give. */
-static bool readback_depth(const HleCmdReadback *c, VkBuffer buf, VkDeviceSize at)
-{
-    HleVkSurf *s = hle_surf_get(c->surf);
-    if (!s || s->d.parent || !hle_surf_ensure(s) || !s->img ||
-        !(s->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) || s->layout == VK_IMAGE_LAYOUT_UNDEFINED ||
-        s->scale > 1 || s->w != c->w || s->h != c->h) {
-        return false;
-    }
-    const int zsrc = s->fmt == VK_FORMAT_D16_UNORM ? HLE_ZSRC_D16 :
-                     s->fmt == VK_FORMAT_D24_UNORM_S8_UINT || s->fmt == VK_FORMAT_X8_D24_UNORM_PACK32 ?
-                     HLE_ZSRC_D24 :
-                     s->fmt == VK_FORMAT_D32_SFLOAT || s->fmt == VK_FORMAT_D32_SFLOAT_S8_UINT ?
-                     HLE_ZSRC_F32 : HLE_ZSRC_NONE;
-    const bool stencil = s->aspect & VK_IMAGE_ASPECT_STENCIL_BIT;
-    const uint64_t n = (uint64_t)c->w * c->h;
-    const uint64_t dlen = (n * hle_zsrc_bytes(zsrc) + 3) & ~3ull;   /* (an aspect starts on a word) */
-    if (!zsrc || dlen + (stencil ? n : 0) > c->fb_len) {
-        return false;
-    }
-    VkCommandBuffer cb = cb_get();
-    hle_surf_transition(cb, s, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    const VkBufferImageCopy r[2] = {
-        { .bufferOffset = at, .imageSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 },
-          .imageExtent = { c->w, c->h, 1 } },
-        { .bufferOffset = at + dlen, .imageSubresource = { VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1 },
-          .imageExtent = { c->w, c->h, 1 } },
-    };
-    T.vkCmdCopyImageToBuffer(cb, s->img, s->general ? VK_IMAGE_LAYOUT_GENERAL : s->layout, buf,
-                             stencil ? 2 : 1, r);
-    VkMemoryBarrier2 mb = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
-        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT,
-        .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT };
-    VkDependencyInfo di = {
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .memoryBarrierCount = 1, .pMemoryBarriers = &mb };
-    T.vkCmdPipelineBarrier2(cb, &di);
-    hle_tl_land_depth_copied((uint32_t)at, zsrc, stencil ? (uint32_t)(at + dlen) + 1 : 0);
-    return true;
-}
-
 static void cmd_readback(const HleCmdReadback *c)
 {
     close_pass();
-    if (c->arena_off == HLE_RB_DEPTH) {
-        if (c->fb && readback_depth(c, g_hland.buf ? g_hland.buf : g_harena.buf, c->fb - 1)) {
-            g_back.st.readbacks++;
-        } else {
-            g_back.st.readback_skips++;
-        }
-        submit(c->value);
-        return;
-    }
     if (c->arena_off == HLE_RB_PACKED) {
         /* into the landing buffer at fb - 1, swizzled into guest memory when
          * the GPU reaches the value (hle_tl_land_swz): recorded or dropped */
@@ -2296,14 +2218,21 @@ static void cmd_readback(const HleCmdReadback *c)
     bool linear = s && s->d.pitch && fi && (fi->flags & HLE_FI_LIN);
     bool written = s && s->img && s->layout != VK_IMAGE_LAYOUT_UNDEFINED;
     uint32_t w = s ? (c->w ? c->w : s->d.w) : 0, h = s ? (c->h ? c->h : s->d.h) : 0;
+    /* the rows the decoder asked for, the ones the GPU drew (its landing is
+     * that big): Tomb Raider: Legend draws 448 rows of its 640 x 480 back
+     * buffers and keeps data of its own below them; copied whole, a
+     * writeback didn't fit its landing and was skipped, the memory kept an
+     * old frame, and the title's next write there brought that frame back
+     * into the image (a flash of it) */
+    const uint32_t rows = c->rows && c->rows < h ? c->rows : h;
     /* without zero-copy RAM, the arena copy that lands in guest memory */
-    bool fits = c->fb && s && s->texel_bytes && h &&
-                (uint64_t)c->pitch * (h - 1) + (uint64_t)w * s->texel_bytes <= c->fb_len;
+    bool fits = c->fb && s && s->texel_bytes && rows &&
+                (uint64_t)c->pitch * (rows - 1) + (uint64_t)w * s->texel_bytes <= c->fb_len;
     /* ... and with it, the rows the GPU writes in place: inside guest RAM (a surface's offset,
      * pitch and size are the title's) */
     const bool in_ram = !g_hram.zero_copy ||
-                        (s && s->texel_bytes && h &&
-                         (uint64_t)c->pa + (uint64_t)c->pitch * (h - 1) + (uint64_t)w * s->texel_bytes <=
+                        (s && s->texel_bytes && rows &&
+                         (uint64_t)c->pa + (uint64_t)c->pitch * (rows - 1) + (uint64_t)w * s->texel_bytes <=
                          g_hram.size);
     if (s && linear && written && in_ram && (g_hram.zero_copy || fits) && hle_surf_ensure(s) &&
         (s->aspect & VK_IMAGE_ASPECT_COLOR_BIT) && s->texel_bytes &&
@@ -2322,13 +2251,13 @@ static void cmd_readback(const HleCmdReadback *c)
         VkBufferImageCopy r = {
             .bufferOffset = fb ? c->fb - 1 : c->pa, .bufferRowLength = c->pitch / s->texel_bytes,
             .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-            .imageExtent = { w, h, 1 } };
+            .imageExtent = { w, rows, 1 } };
         if (img) {
             T.vkCmdCopyImageToBuffer(cb, img, il,
                                      !fb ? g_hram.buf : g_hland.buf ? g_hland.buf : g_harena.buf,
                                      1, &r);
             if (fb) {
-                hle_tl_land_copied(c->fb - 1, c->pitch, w * s->texel_bytes, h);
+                hle_tl_land_copied(c->fb - 1, c->pitch, w * s->texel_bytes, rows);
             }
         }
         VkMemoryBarrier2 mb = {
@@ -2379,8 +2308,8 @@ static void cmd_copy(const HleCmdCopy *c)
         }
         return;
     }
-    VkImageCopy2 cr[HLE_CMD_COPY_RECTS];
-    VkImageBlit2 br[HLE_CMD_COPY_RECTS];
+    VkImageCopy2 cr[HLE_CMD_MAX_RECTS];
+    VkImageBlit2 br[HLE_CMD_MAX_RECTS];
     VkImageSubresourceLayers ss = { s->aspect, s->d.parent ? s->d.level : 0,
                                     s->d.parent ? s->d.face : 0, 1 };
     VkImageSubresourceLayers ds = { d->aspect, d->d.parent ? d->d.level : c->dst_level,
@@ -2409,7 +2338,7 @@ static void cmd_copy(const HleCmdCopy *c)
     }
     int32_t k = (int32_t)s->scale, kd = (int32_t)d->scale;
     uint32_t n = 0;
-    for (uint32_t i = 0; i < c->nrects && i < HLE_CMD_COPY_RECTS; i++) {
+    for (uint32_t i = 0; i < c->nrects && i < HLE_CMD_MAX_RECTS; i++) {
         const HleRect *r = &c->rect[i];
         int32_t w = MIN(MIN(r->x2, (int32_t)s->w / k) - r->x1, (int32_t)d->w / kd - c->x[i]);
         int32_t h = MIN(MIN(r->y2, (int32_t)s->h / k) - r->y1, (int32_t)d->h / kd - c->y[i]);

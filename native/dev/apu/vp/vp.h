@@ -91,6 +91,14 @@ typedef struct MCPXAPUVoiceFilter {
     int16_t adpcm_pcm[65 * 2];
     uint32_t adpcm_raw_len;     /* 0: none */
     uint8_t adpcm_channels;
+    /* HRTF filtering off (vp.c voice_process): the voice's last samples and
+     * its autocorrelation (lags 0-30, kept over frames), the level each ear
+     * had, the last frame's to move from. Not saved: a load starts them
+     * again. */
+    float ear_hist[31];
+    float ear_acf[31];
+    float ear_level[2];
+    bool ear_level_set;
 } MCPXAPUVoiceFilter;
 
 typedef struct VoiceWorkItem {

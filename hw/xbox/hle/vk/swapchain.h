@@ -40,6 +40,9 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
 /* A picture of the next refresh that goes through, as the window shows it,
  * written to path (a BMP) on the window's thread. */
 void hle_present_shot(const char *path);
+/* How the picture asked for path ended, once: 1 written, -1 not (why: the
+ * reason, in the log too), 0 not yet (or another path's). */
+int hle_present_shot_end(const char *path, char *why, size_t n);
 /* The CRT filter on the window's picture: 0 none, 1 soft scanlines, 2 a
  * TV, 3 an arcade monitor (any thread; the next refresh). */
 void hle_present_set_crt(int kind);
@@ -47,6 +50,8 @@ void hle_present_set_crt(int kind);
 void hle_present_set_vsync(bool on);
 /* The frame rate shown in the window's corner, 0 none (any thread). */
 void hle_present_set_osd(float fps);
+/* Fast forward on (#404): a >> in the picture's top right corner. */
+void hle_present_set_ff(bool on);
 /* Windows: the pictures drawn for the game's frame (vk/share.h, token: its
  * block's) instead of the window's own swapchain, from the next refresh;
  * hle_present_remote, once they are. */
@@ -60,6 +65,9 @@ const char *hle_present_remote_why(void);
  * events since *at (HleShareMouse each, n at most) */
 void hle_present_remote_size(uint32_t *w, uint32_t *h);
 void hle_present_remote_cursor(bool shown);
+/* the run holds the mouse (the frame hides it, keeps it in the window and
+ * sends its moves raw), or lets it go */
+void hle_present_remote_grab(bool on);
 uint32_t hle_present_remote_mouse(void *out, uint32_t n, int64_t *at);
 /* The picture's pass cut to its middle cx by cy (clip space half sizes, 1:
  * the whole window): the frame grown past its place shows no more of it. */

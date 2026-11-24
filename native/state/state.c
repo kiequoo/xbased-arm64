@@ -250,16 +250,25 @@ static bool write_all(int fd, const void *p, size_t n)
     return true;
 }
 
-const char *nc_state_write(const char *path, const NcStateInfo *info, const NcStateSection *secs,
-                           unsigned nsecs)
+struct NcStateImage {
+    NcBuf head;
+    NcBuf *body;
+    unsigned nsecs;
+};
+
+NcStateImage *nc_state_build(const NcStateInfo *info, const NcStateSection *secs, unsigned nsecs,
+                             const char **err_out)
 {
     static char why[256];
+    NcStateImage *img = calloc(1, sizeof(*img));
     NcBuf *body = calloc(nsecs, sizeof(NcBuf));
     SecEntry *tab = calloc(nsecs, sizeof(SecEntry));
-    if (!body || !tab) {
+    if (!img || !body || !tab) {
+        free(img);
         free(body);
         free(tab);
-        return "out of memory";
+        *err_out = "out of memory";
+        return NULL;
     }
     const char *err = NULL;
     for (unsigned i = 0; i < nsecs && !err; i++) {
@@ -291,7 +300,41 @@ const char *nc_state_write(const char *path, const NcStateInfo *info, const NcSt
             err = "out of memory";
         }
     }
-    if (!err) {
+    free(tab);
+    if (err) {
+        nc_buf_free(&head);
+        for (unsigned i = 0; i < nsecs; i++) {
+            nc_buf_free(&body[i]);
+        }
+        free(body);
+        free(img);
+        *err_out = err;
+        return NULL;
+    }
+    img->head = head;
+    img->body = body;
+    img->nsecs = nsecs;
+    *err_out = NULL;
+    return img;
+}
+
+size_t nc_state_image_size(const NcStateImage *img)
+{
+    size_t n = img ? img->head.len : 0;
+    for (unsigned i = 0; img && i < img->nsecs; i++) {
+        n += img->body[i].len;
+    }
+    return n;
+}
+
+const char *nc_state_image_write(NcStateImage *img, const char *path)
+{
+    static char why[256];
+    const char *err = NULL;
+    const NcBuf head = img->head;
+    NcBuf *body = img->body;
+    const unsigned nsecs = img->nsecs;
+    {
         char tmp[600];
         snprintf(tmp, sizeof(tmp), "%s.tmp", path);
         const int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
@@ -309,13 +352,21 @@ const char *nc_state_write(const char *path, const NcStateInfo *info, const NcSt
             unlink(tmp);
         }
     }
-    nc_buf_free(&head);
+    nc_buf_free(&img->head);
     for (unsigned i = 0; i < nsecs; i++) {
         nc_buf_free(&body[i]);
     }
     free(body);
-    free(tab);
+    free(img);
     return err;
+}
+
+const char *nc_state_write(const char *path, const NcStateInfo *info, const NcStateSection *secs,
+                           unsigned nsecs)
+{
+    const char *err = NULL;
+    NcStateImage *img = nc_state_build(info, secs, nsecs, &err);
+    return img ? nc_state_image_write(img, path) : err;
 }
 
 /* The file mapped whole (NULL: can't). */

@@ -42,25 +42,21 @@ static void test_text(void)
     size_t n = hle_uber_vs_glsl(buf, sizeof(buf), 2);
     HT_CHECK(n > 0 && n == strlen(buf));
     HT_CHECK(strstr(buf, "layout(set = 2, binding = 0, std140) uniform UberCfg { uvec4 u[") != NULL);
-    HT_CHECK(strstr(buf, "int(ix % 192u)") != NULL && strstr(buf, "gl_VertexIndex % 6") != NULL);
+    HT_CHECK(strstr(buf, "int(ix % 192u)") != NULL && strstr(buf, "vFog = fogw ? oFog.x") != NULL);
     dump("uber.vert");
-    static const char *const k_names[5] = { "uber0.frag", "uber1.frag", "uber2.frag", "uber3.frag", "uber4.frag" };
-    for (unsigned d = 0; d < 5; d++) {
-        n = hle_uber_fs_glsl(buf, sizeof(buf), 3, d, true);
-        HT_CHECK(n > 0 && n == strlen(buf));
-        HT_CHECK(strstr(buf, "const int fogk[195] = int[195](") != NULL);
-        HT_CHECK((strstr(buf, "gl_FragDepth") != NULL) == (d != 0));
-        dump(k_names[d]);
+    static const unsigned k_depth[2] = { 0, 3 };
+    static const char *const k_names[2][2] = { { "uber0b.frag", "uber0.frag" }, { "uber3b.frag", "uber3.frag" } };
+    for (unsigned d = 0; d < 2; d++) {
+        for (unsigned f = 0; f < 2; f++) {
+            n = hle_uber_fs_glsl(buf, sizeof(buf), 3, k_depth[d], f != 0);
+            HT_CHECK(n > 0 && n == strlen(buf));
+            HT_CHECK((strstr(buf, "gl_FragDepth") != NULL) == (k_depth[d] != 0));
+            HT_CHECK(strstr(buf, f ? "#define UB_FULL 1" : "#define UB_FULL 0") != NULL);
+            HT_CHECK(strstr(buf, "/ 127.0") != NULL);       /* psh.c's signed bytes */
+            dump(k_names[d][f]);
+        }
     }
     HT_EQ_INT(hle_uber_fs_glsl(buf, 64, 3, 0, true), 0);
-    n = hle_uber_fs_glsl(buf, sizeof(buf), 3, 0, false);
-    HT_CHECK(n > 0 && strstr(buf, "#define UB_FULL 0") != NULL);
-    dump("uberb.frag");
-    n = hle_uber_ff_vs_glsl(buf, sizeof(buf), 2);
-    HT_CHECK(n > 0 && n == strlen(buf));
-    HT_CHECK(strstr(buf, "uint kb(uint i) { return (cw(64u + (i >> 2))") != NULL);
-    HT_CHECK(strstr(buf, "const int CC = 0, CMV = 4, CIMV = 20,") != NULL);
-    dump("uberff.vert");
 }
 
 static void test_ff(void)
@@ -71,7 +67,7 @@ static void test_ff(void)
     k.magic = HLE_FFHW_MAGIC;
     k.skin = 3;
     k.light[2] = 3;
-    k.bsrc[3] = 2;
+    k.points = 1;
     memcpy(tok, &k, sizeof(k));
     memset(cfg, 0, sizeof(cfg));
     HT_CHECK(hle_uber_ff(tok, HLE_FFHW_SLOTS, cfg));
@@ -79,11 +75,19 @@ static void test_ff(void)
     HT_EQ_U32(cfg[HLE_UBER_STEPS_AT], HLE_FFHW_MAGIC);
     HT_EQ_U32(cfg[HLE_UBER_STEPS_AT + 1] & 0xFF, 3);                  /* skin: byte 4 */
     HT_EQ_U32((cfg[HLE_UBER_STEPS_AT + 4] >> 16) & 0xFF, 3);          /* light[2]: byte 18 */
-    HT_EQ_U32((cfg[HLE_UBER_STEPS_AT + 11] >> 24) & 0xFF, 2);         /* bsrc[3]: byte 47 */
+    HT_EQ_U32((cfg[HLE_UBER_STEPS_AT + 10] >> 8) & 0xFF, 1);          /* points: byte 41 */
     HleVshKey vk = { .in_mask = 1 };
     HT_CHECK(hle_uber_ff_ok(&vk, tok, HLE_FFHW_SLOTS));
     HT_CHECK(!hle_uber_ff_ok(&vk, &k_prog[0][0], NSLOTS));
     HT_CHECK(!hle_uber_ff(&k_prog[0][0], NSLOTS, cfg));
+    /* its text: ffhw.c's arithmetic from the key's bytes (D3D's spot, pow for the specular) */
+    const size_t n = hle_uber_ff_vs_glsl(buf, sizeof(buf), 2);
+    HT_CHECK(n > 0);
+    HT_CHECK(strstr(buf, "uint kb(uint i)") != NULL);
+    HT_CHECK(strstr(buf, "rho <= cphi") != NULL);
+    HT_CHECK(strstr(buf, "pow(nh, c[CPAR].x)") != NULL);
+    dump("uber_ff.vert");
+    HT_EQ_INT(hle_uber_ff_vs_glsl(buf, 64, 2), 0);
 }
 
 static void test_prog(void)
@@ -120,9 +124,8 @@ static void test_prog(void)
 
 static void test_keys(void)
 {
-    HleVshKey vk = { .in_mask = 0x19, .int_mask = 0x10, .cmp_mask = 0x8, .flat = 1, .spec_off = 3, .wbuf = 0,
-                     .zfree = 1, .fog_table = HLE_VSH_FOG_NV, .w1_mask = 1, .pt_size = HLE_VSH_PT_FIXED | 12,
-                     .s1_mask = 0x10, .s1_cnt = 2u << 8 };
+    HleVshKey vk = { .in_mask = 0x19, .int_mask = 0x10, .cmp_mask = 0x8, .flat = 1, .spec_off = 1, .wbuf = 0,
+                     .zfree = 1, .fog_table = 1, .w1_mask = 1 };
     HlePshKey pk;
     memset(&pk, 0, sizeof(pk));
     pk.rgb_in[0] = 0x08040000;
@@ -134,19 +137,18 @@ static void test_keys(void)
     pk.ckey[2] = 0xFF00FF00;
     pk.alpha_test = 1;
     pk.alpha_func = 4;
-    pk.fog = 6;
+    pk.fog = 4;
     pk.fog_abs = 1;
     pk.out_bgra = 1;
     pk.specular = 1;
     pk.alpha_kill = 2;
-    pk.vol = HLE_PSH_TWO_SIDE | 1;
+    pk.vol = HLE_PSH_RECT | 1;
     hle_uber_keys(&vk, &pk, 7, cfg);
     HT_EQ_U32(cfg[0], 0x19);
     HT_EQ_U32(cfg[1], 0x10 | 0x8 << 16);
-    HT_EQ_U32(cfg[2], 1 | 0x10 << 16);
-    HT_EQ_U32(cfg[3], 2u << 8);
-    HT_EQ_U32(cfg[4], HLE_UBER_V_FLAT | HLE_UBER_V_SPECOFF | HLE_UBER_V_SPECA1 | HLE_UBER_V_ZFREE |
-                      HLE_UBER_V_PTFIXED | HLE_VSH_FOG_NV << 8 | 12u << 16);
+    HT_EQ_U32(cfg[2], 1);
+    HT_EQ_U32(cfg[3], 0);
+    HT_EQ_U32(cfg[4], HLE_UBER_V_FLAT | HLE_UBER_V_SPECOFF | HLE_UBER_V_ZFREE | 1u << 8);
     HT_EQ_U32(cfg[5], 7);
     HT_EQ_U32(cfg[8], 0x08040000);
     HT_EQ_U32(cfg[23], 0xC0);
@@ -155,14 +157,20 @@ static void test_keys(void)
     HT_EQ_U32(cfg[42], 0x1101);
     HT_EQ_U32(cfg[43], pk.tex_modes);
     HT_EQ_U32(cfg[49], 0xFF00FF00);
-    HT_EQ_U32(cfg[51], 1 | 4 << 1 | 6 << 4 | 1 << 8 | 1 << 9 | 1 << 10 | 2 << 12 | (HLE_PSH_TWO_SIDE | 1u) << 20);
+    HT_EQ_U32(cfg[51], 1 | 4 << 1 | 4 << 4 | 1 << 8 | 1 << 9 | 1 << 10 | 2 << 12 | (HLE_PSH_RECT | 1u) << 20);
     HT_EQ_U32(cfg[52], 0);
+    HT_EQ_U32(cfg[53], 0);
+    pk.dither = 2;
+    hle_uber_keys(&vk, &pk, 7, cfg);
+    HT_EQ_U32(cfg[53], 2);
+    pk.dither = 0;
     HT_EQ_INT(hle_uber_fs_depth(&pk), 0);
-    pk.vol |= HLE_PSH_ZTRUNC;
+    pk.wbuf = 1;
+    HT_EQ_INT(hle_uber_fs_depth(&pk), 3);
+    pk.wbuf = 0;
+    pk.vol |= HLE_PSH_ZCUT;
     HT_EQ_INT(hle_uber_fs_depth(&pk), 1);
-    pk.vol &= ~HLE_PSH_ZTRUNC;
-    pk.compare |= HLE_PSH_ZF16;
-    HT_EQ_INT(hle_uber_fs_depth(&pk), 2);
+    HT_CHECK(hle_uber_ps_ok(&pk));
 }
 
 static void test_gates(void)
@@ -174,11 +182,6 @@ static void test_gates(void)
     static uint32_t ff[4 * HLE_FFHW_SLOTS];
     ff[0] = HLE_FFHW_MAGIC;
     HT_CHECK(!hle_uber_vs_ok(&vk, ff, HLE_FFHW_SLOTS));             /* the fixed function's key */
-    /* a lighting key after the final slot */
-    static uint32_t lt[4 * (NSLOTS + 1 + HLE_FFHW_SLOTS)];
-    memcpy(lt, k_prog, sizeof(k_prog));
-    lt[4 * NSLOTS] = HLE_FFHW_LT_MAGIC;
-    HT_CHECK(!hle_uber_vs_ok(&vk, lt, NSLOTS + 1 + HLE_FFHW_SLOTS));
     vk.zclamp = 1;
     g_hle_glsl_zclamp = true;
     HT_CHECK(!hle_uber_vs_ok(&vk, &k_prog[0][0], NSLOTS));
@@ -189,9 +192,9 @@ static void test_gates(void)
     memset(&pk, 0, sizeof(pk));
     pk.tex_modes = HLE_PST_PROJECT2D | HLE_PST_CUBEMAP << 5 | HLE_PST_CLIPPLANE << 10 | HLE_PST_PASSTHRU << 15;
     pk.count = 2;
-    pk.vol = HLE_PSH_TWO_SIDE | HLE_PSH_ZTRUNC | 1;
-    pk.compare = HLE_PSH_ZF16 | 0xF00;
-    pk.fog = 8;
+    pk.vol = 1;
+    pk.compare = 0xF00;
+    pk.fog = 4;
     HT_CHECK(hle_uber_ps_ok(&pk));
     HlePshKey b = pk;
     b.tex_modes |= HLE_PST_BUMPENVMAP << 5;     /* (stage 1: a bump stage of theirs) */
@@ -200,26 +203,20 @@ static void test_gates(void)
     b.tex_modes = (pk.tex_modes & ~0x1Fu) | HLE_PST_BUMPENVMAP;     /* stage 0: not */
     HT_CHECK(!hle_uber_ps_ok(&b));
     b = pk;
-    b.tex_modes |= (uint32_t)HLE_PST_DOT_ST << 10;  /* stage 2's */
+    b.tex_modes = (pk.tex_modes & ~(0x1Fu << 10)) | (uint32_t)HLE_PST_DOT_ST << 10;  /* stage 2: theirs */
     HT_CHECK(hle_uber_ps_ok(&b) && hle_uber_fs_full(&b));
     b = pk;
-    b.tex_modes = (pk.tex_modes & ~(0x1Fu << 5)) | (uint32_t)HLE_PST_DOT_ST << 5;   /* stage 1's: not */
+    b.tex_modes = (pk.tex_modes & ~(0x1Fu << 5)) | (uint32_t)HLE_PST_DOT_ST << 5;    /* stage 1: not */
     HT_CHECK(!hle_uber_ps_ok(&b));
-    b = pk;
-    b.compare |= HLE_PSH_NVCOL;
-    HT_CHECK(!hle_uber_ps_ok(&b));
-    b = pk;
-    b.compare |= HLE_PSH_TEX_AFFINE;
-    HT_CHECK(!hle_uber_ps_ok(&b));
+    HT_CHECK(!hle_uber_fs_full(&pk));
     b = pk;
     b.dot_map |= 1u << 16;                      /* a signed channel */
     HT_CHECK(hle_uber_ps_ok(&b));
-    HT_CHECK(hle_uber_fs_full(&b) && !hle_uber_fs_full(&pk));
     b = pk;
     b.shadow = 0x41;                            /* a shadow buffer on stage 0 */
-    b.compare |= HLE_PSH_SHADOW_POINT | HLE_PSH_TKIND_BIT(2);
+    b.compare |= HLE_PSH_TKIND_BIT(2);
     HT_CHECK(hle_uber_ps_ok(&b));
-    b.compare |= HLE_PSH_BORDER_BIT(1);
+    b.compare |= 1u << 20;                      /* past the base's bits */
     HT_CHECK(!hle_uber_ps_ok(&b));
     b = pk;
     b.vol |= HLE_PSH_RECT;
@@ -230,10 +227,15 @@ static void test_gates(void)
     b.fbfetch = 1;
     HT_CHECK(!hle_uber_ps_ok(&b));
     b = pk;
-    b.wbuf = 2;
+    b.wbuf = 1;
     HT_CHECK(hle_uber_ps_ok(&b));
-    HT_EQ_INT(hle_uber_fs_depth(&b), 4);
-    b.wbuf = 3;
+    b.wbuf = 2;
+    HT_CHECK(!hle_uber_ps_ok(&b));
+    b = pk;
+    b.fog = 5;
+    HT_CHECK(!hle_uber_ps_ok(&b));
+    b = pk;
+    b.point_sprite = 1;
     HT_CHECK(!hle_uber_ps_ok(&b));
 }
 

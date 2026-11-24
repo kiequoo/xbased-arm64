@@ -534,6 +534,53 @@ bool nc_fold_read(int fd, void *buf, size_t len, uint64_t off)
     return ok;
 }
 
+static bool image_name(const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    return dot && (!strcasecmp(dot, ".iso") || !strcasecmp(dot, ".xiso") || !strcasecmp(dot, ".chd"));
+}
+
+bool nc_fold_attached_image(const char *path, char *out, size_t cap)
+{
+    char xbe[1024], dir[1024];
+    if (!nc_fold_xbe_path(path, xbe, sizeof(xbe))) {
+        return false;
+    }
+    snprintf(dir, sizeof(dir), "%s", xbe);
+    char *b = strrchr(dir, '/'), *b2 = strrchr(dir, '\\');
+    b = b2 > b ? b2 : b;
+    if (!b) {
+        return false;
+    }
+    *b = 0;                                     /* the folder */
+    DIR *d = opendir(dir);
+    if (!d) {
+        return false;
+    }
+    char found[1024] = "";
+    unsigned n = 0;
+    for (struct dirent *de; (de = readdir(d));) {
+        if (!image_name(de->d_name)) {
+            continue;
+        }
+        char p[1024];
+        snprintf(p, sizeof(p), "%s/%s", dir, de->d_name);
+        struct stat st;
+        if (stat(p, &st) || !S_ISREG(st.st_mode) || st.st_size <= (1 << 20)) {
+            continue;
+        }
+        if (!n++) {
+            snprintf(found, sizeof(found), "%s", p);
+        }
+    }
+    closedir(d);
+    if (n != 1) {
+        return false;
+    }
+    snprintf(out, cap, "%s", found);
+    return true;
+}
+
 bool nc_fold_xbe_path(const char *path, char *out, size_t cap)
 {
     struct stat st;

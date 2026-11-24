@@ -9,7 +9,6 @@
 #include "hw/xbox/hle/mem/barrier.h"
 #include "hw/xbox/hle/mem/guestmem.h"
 #include "hw/xbox/hle/pb/pbres.h"
-#include "hw/xbox/hle/pb/pbdraw.h"
 #include "hw/xbox/hle/tex/xdk_res.h"
 #include "hw/xbox/hle/tex/xg_swizzle.h"
 #include "hw/xbox/hle/vk/back.h"
@@ -132,13 +131,11 @@ static uint32_t rgb565(uint16_t c)
     return ((r << 3 | r >> 2) << 16) | ((g << 2 | g >> 4) << 8) | (b << 3 | b >> 2);
 }
 
-/* (the NV2A's: rounded, (2a + b + 1) / 3, nxdk_pgraph_tests' Texture_DXT DXT3 / DXT5:
- * every texel of the console's pictures) */
 static uint32_t mix565(uint32_t a, uint32_t b, unsigned wa, unsigned wb, unsigned div)
 {
     uint32_t o = 0;
     for (unsigned sh = 0; sh < 24; sh += 8) {
-        o |= (((a >> sh & 0xFF) * wa + (b >> sh & 0xFF) * wb + div / 2) / div) << sh;
+        o |= (((a >> sh & 0xFF) * wa + (b >> sh & 0xFF) * wb) / div) << sh;
     }
     return o;
 }
@@ -162,9 +159,9 @@ static void dxt_block(uint32_t xfmt, const uint8_t *s, uint32_t bx, uint32_t by,
         }
     } else if (xfmt == HLE_XFMT_DXT5) {
         unsigned a0 = s[0], a1 = s[1], ap[8] = { a0, a1 };
-        for (unsigned i = 2; i < 8; i++) {          /* (rounded: Texture_DXT DXT5 alpha) */
-            ap[i] = a0 > a1 ? ((8 - i) * a0 + (i - 1) * a1 + 3) / 7 :
-                    i < 6 ? ((6 - i) * a0 + (i - 1) * a1 + 2) / 5 : i == 6 ? 0 : 255;
+        for (unsigned i = 2; i < 8; i++) {
+            ap[i] = a0 > a1 ? ((8 - i) * a0 + (i - 1) * a1) / 7 :
+                    i < 6 ? ((6 - i) * a0 + (i - 1) * a1) / 5 : i == 6 ? 0 : 255;
         }
         uint64_t bits = 0;
         for (unsigned i = 0; i < 6; i++) {
@@ -181,8 +178,7 @@ static void dxt_block(uint32_t xfmt, const uint8_t *s, uint32_t bx, uint32_t by,
     for (unsigned i = 0; i < 16; i++) {
         uint32_t x = bx * 4 + (i & 3), y = by * 4 + i / 4;
         if (x < w && y < h) {
-            const uint32_t c = pal[(idx >> (2 * i)) & 3] | (uint32_t)a[i] << 24;
-            out[y * w + x] = xfmt == HLE_XFMT_DXT1 ? hle_tex_dxt1_dither(c, i & 3, i / 4) : c;
+            out[y * w + x] = pal[(idx >> (2 * i)) & 3] | (uint32_t)a[i] << 24;
         }
     }
 }
@@ -242,27 +238,9 @@ static void yuv_convert(const uint8_t *src, uint32_t pitch, uint32_t w, uint32_t
     }
 }
 
-/* YUY2 / UYVY -> each texel's (Y, Cb, Cr) as the red, green and blue of an
- * A8R8G8B8 (alpha 255), w x h texels: the texture unit's texels, which the pixel
- * stage filters as they are and then converts (shader/psh.c yuv_stage, nvcsc) */
-static void yuv_texels(const uint8_t *src, uint32_t pitch, uint32_t w, uint32_t h, bool uyvy,
-                       uint8_t *dst)
-{
-    for (uint32_t y = 0; y < h; y++) {
-        const uint8_t *l = src + y * pitch;
-        uint8_t *q = dst + y * w * 4;
-        for (uint32_t x = 0; x + 1 < w; x += 2, l += 4, q += 8) {
-            const uint8_t y0 = uyvy ? l[1] : l[0], y1 = uyvy ? l[3] : l[2];
-            const uint8_t u = uyvy ? l[0] : l[1], v = uyvy ? l[2] : l[3];
-            q[0] = v; q[1] = u; q[2] = y0; q[3] = 255;
-            q[4] = v; q[5] = u; q[6] = y1; q[7] = 255;
-        }
-    }
-}
-
-/* A YUY2 / UYVY texture's texels as (Y, Cb, Cr) A8R8G8B8 (yuv_texels) into the
- * arena as object id's image (HLE_OP_TEX), sent as a linear A8R8G8B8 texture
- * (texel coordinates like the source) marked yuv; false if they can't be. */
+/* A YUY2 / UYVY texture's texels converted to A8R8G8B8 into the arena as
+ * object id's image (HLE_OP_TEX), sent as a linear A8R8G8B8 texture (texel
+ * coordinates like the source); false if they can't be. */
 static bool yuv_define(uint32_t id, const uint32_t h5[5], const HleResDesc *d)
 {
     uint32_t pitch;
@@ -277,7 +255,7 @@ static bool yuv_define(uint32_t id, const uint32_t h5[5], const HleResDesc *d)
     if (off == HLE_ARENA_FULL) {
         return false;
     }
-    yuv_texels(src, pitch, d->w, d->h, d->fmt == HLE_XFMT_UYVY, dst);
+    yuv_convert(src, pitch, d->w, d->h, d->fmt == HLE_XFMT_UYVY, dst);
     static unsigned s_logged;
     if (s_logged++ < 4) {               /* movies: when their frames start converting */
         hle_log("xbased-hle-front", "YUV texture %u: %ux%u %s converted (#%u of 4 logged)", id,
@@ -286,7 +264,6 @@ static bool yuv_define(uint32_t id, const uint32_t h5[5], const HleResDesc *d)
     HleCmdTex *c = hle_fe_begin(HLE_OP_TEX, sizeof(*c));
     c->id = id;
     c->xfmt = HLE_XFMT_LIN_A8R8G8B8;
-    c->yuv = 1;
     c->w = d->w;
     c->h = d->h;
     c->d = 1;
@@ -299,17 +276,11 @@ static bool yuv_define(uint32_t id, const uint32_t h5[5], const HleResDesc *d)
 
 /* What header words h5 describe, when it is a kind of texture the back end
  * defines (else logged, the first few). */
-static bool tex_desc(const uint32_t h5[5], uint32_t pitch, HleResDesc *dp, HleResInfo *rip)
+static bool tex_desc(const uint32_t h5[5], HleResDesc *dp, HleResInfo *rip)
 {
     HleResDesc d;
     HleResInfo ri;
-    const bool hdr = hle_res_from_header(h5[0], h5[3], h5[4], &d);
-    const HleFmtInfo *pfi = hdr && pitch ? hle_fmt_info(d.fmt) : NULL;
-    if (pfi && (pfi->flags & HLE_FI_LIN)) {
-        d.pitch = pitch;                /* the stage's own, exact (pitch_exact) */
-        d.pitch_exact = true;
-    }
-    if (!hdr || !hle_res_info(&d, &ri)) {
+    if (!hle_res_from_header(h5[0], h5[3], h5[4], &d) || !hle_res_info(&d, &ri)) {
         static unsigned s_logged;
         if (s_logged++ < 8) {
             hle_log("xbased-hle-front", "texture header not understood: %08x %08x %08x %08x "
@@ -342,17 +313,8 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
     const HleResInfo ri = *rip;
     const HleFmtInfo *fi = hle_fmt_info(d.fmt);
     bool p8 = d.fmt == HLE_XFMT_P8;
-    /* a depth texture of the title's own words (no target there): a shadow
-     * map as it is, 16-bit words or 24 over 8, fixed-point or float (vk/draw.c
-     * shadow_fmt; nxdk_pgraph_tests' Texture_shadow_comparator raw values,
-     * Texture_format's DepthFmt pictures) */
-    const bool zwords = fi && (fi->flags & HLE_FI_DEPTH) &&
-                        (d.fmt == HLE_XFMT_D16 || d.fmt == HLE_XFMT_LIN_D16 ||
-                         d.fmt == HLE_XFMT_D24S8 || d.fmt == HLE_XFMT_LIN_D24S8 ||
-                         d.fmt == HLE_XFMT_F16 || d.fmt == HLE_XFMT_LIN_F16 ||
-                         d.fmt == HLE_XFMT_F24S8 || d.fmt == HLE_XFMT_LIN_F24S8);
-    if (!fi || (fi->flags & HLE_FI_YUV) || ((fi->flags & HLE_FI_DEPTH) && !zwords) || (p8 && !npal)) {
-        /* YUV / other depth textures, P8 without a palette */
+    if (!fi || (fi->flags & (HLE_FI_YUV | HLE_FI_DEPTH)) || (p8 && !npal)) {
+        /* YUV / depth textures, P8 without a palette */
         static uint32_t s_seen[8];
         for (unsigned i = 0; i < 8; i++) {
             if (s_seen[i] == d.fmt + 1) {
@@ -371,14 +333,12 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
     if (!src) {
         return false;
     }
-    /* P8 expands to A8R8G8B8 on the way into the arena, and so does DXT, decoded
-     * as the NV2A's decoder (dxt_block: its rounding, DXT1's dither) rather than a
-     * host GPU's (nxdk_pgraph_tests' Texture_DXT: every picture exact so; a host's
-     * BC decode put a third of the interpolated texels a unit off); a volume's
-     * levels are depth slices (3D swizzle, or DXT blocks in groups of four
-     * slices), depth halving per level */
+    /* P8 expands to A8R8G8B8 on the way into the arena, and so does DXT in a
+     * volume (dxt_volume) or on a GPU without BC (Mali, PowerVR's B-Series:
+     * one slice); a volume's levels are depth slices (3D swizzle, or DXT
+     * blocks in groups of four slices), depth halving per level */
     bool vol = d.kind == HLE_RK_VOLUME;
-    bool dxtd = (fi->flags & HLE_FI_DXT) != 0;
+    bool dxtd = (fi->flags & HLE_FI_DXT) && (vol || !g_hvk.caps.bc);
     /* A4R4G4B4 on a GPU without the 4444 formats: A8R8G8B8 as well (expand_4444),
      * a linear texture a linear one */
     bool x4444 = (d.fmt == HLE_XFMT_A4R4G4B4 || d.fmt == HLE_XFMT_LIN_A4R4G4B4) &&
@@ -386,20 +346,8 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
     /* R6G5B5 (L6V5U5): no host format, A8R8G8B8 too (hle_tex_expand_r6g5b5), its signed
      * channels as h5[2] says */
     bool r655 = d.fmt == HLE_XFMT_R6G5B5 || d.fmt == HLE_XFMT_LIN_R6G5B5;
-    /* the 16-bit formats with signed channels: A8R8G8B8 as well (hle_tex_expand16) */
-    bool s16 = h5[2] && (d.fmt == HLE_XFMT_A1R5G5B5 || d.fmt == HLE_XFMT_LIN_A1R5G5B5 ||
-                         d.fmt == HLE_XFMT_X1R5G5B5 || d.fmt == HLE_XFMT_LIN_X1R5G5B5 ||
-                         d.fmt == HLE_XFMT_A4R4G4B4 || d.fmt == HLE_XFMT_LIN_A4R4G4B4 ||
-                         d.fmt == HLE_XFMT_R5G6B5 || d.fmt == HLE_XFMT_LIN_R5G6B5);
-    bool x16 = x4444 || r655 || s16;    /* 16-bit texels expanded to 32 */
-    /* An R16B16 volume: its texels' bytes as A8R8G8B8, as the texture unit gives a
-     * 32-bit texel of two words (nxdk_pgraph_tests' Volume_texture R16B16, the test's
-     * RGBA8888 layers written as they are: the console shows them as an A8R8G8B8
-     * volume; a 2D R16B16's (hi, lo, lo, hi) words are those bytes on the 2D tests'
-     * data, whose words hold one byte twice). Point-sampled exact; filtered, the bytes
-     * where the unit filters the words. */
-    bool v16b = vol && (d.fmt == HLE_XFMT_V16U16 || d.fmt == HLE_XFMT_LIN_V16U16);
-    uint32_t oxfmt = p8 || dxtd || v16b ? HLE_XFMT_A8R8G8B8 :
+    bool x16 = x4444 || r655;           /* 16-bit texels expanded to 32 */
+    uint32_t oxfmt = p8 || dxtd ? HLE_XFMT_A8R8G8B8 :
                      x16 ? (fi->flags & HLE_FI_LIN ? HLE_XFMT_LIN_A8R8G8B8 : HLE_XFMT_A8R8G8B8) : d.fmt;
     const HleFmtInfo *ofi = hle_fmt_info(oxfmt);
     uint32_t faces = d.kind == HLE_RK_CUBE ? 6 : 1, levels = MAX(ri.levels, 1u);
@@ -485,10 +433,7 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
                     }
                 }
             }
-            if (s16) {
-                hle_tex_expand16(d.fmt, (const uint16_t *)t16, (size_t)w * h * dd, h5[2],
-                                 (uint32_t *)(dst + pos));
-            } else if (x4444) {
+            if (x4444) {
                 expand_4444((const uint16_t *)t16, (size_t)w * h * dd, (uint32_t *)(dst + pos));
             } else if (r655) {
                 hle_tex_expand_r6g5b5((const uint16_t *)t16, (size_t)w * h * dd, h5[2],
@@ -524,7 +469,6 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
     HleCmdTex *c = hle_fe_begin(HLE_OP_TEX, sizeof(*c));
     c->id = id;
     c->xfmt = oxfmt;
-    c->unflipped = p8 || dxtd;
     c->w = d.w;
     c->h = d.h;
     c->d = depth;
@@ -535,27 +479,19 @@ static bool tex_define(uint32_t id, const uint32_t h5[5], const HleResDesc *dp,
     return true;
 }
 
-uint32_t hle_draw_tex_bytes(const uint32_t h5[5], uint32_t pitch)
+uint32_t hle_draw_tex_bytes(const uint32_t h5[5])
 {
     HleResDesc d;
     HleResInfo ri;
-    if (!hle_res_from_header(h5[0], h5[3], h5[4], &d)) {
-        return 0;
-    }
-    const HleFmtInfo *fi = pitch ? hle_fmt_info(d.fmt) : NULL;
-    if (fi && (fi->flags & HLE_FI_LIN)) {
-        d.pitch = pitch;
-        d.pitch_exact = true;
-    }
-    return hle_res_info(&d, &ri) ? ri.bytes : 0;
+    return hle_res_from_header(h5[0], h5[3], h5[4], &d) && hle_res_info(&d, &ri) ? ri.bytes : 0;
 }
 
-uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], uint32_t pitch, const uint32_t *pal,
-                             uint32_t npal, uint32_t *bytes)
+uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], const uint32_t *pal, uint32_t npal,
+                             uint32_t *bytes)
 {
     HleResDesc d;
     HleResInfo ri;
-    if (!tex_desc(h5, pitch, &d, &ri)) {
+    if (!tex_desc(h5, &d, &ri)) {
         return 0;
     }
     *bytes = ri.bytes;
@@ -594,14 +530,10 @@ enum {
     PT_POINTLIST = 1, PT_LINELIST, PT_LINELOOP, PT_LINESTRIP, PT_TRIANGLELIST,
     PT_TRIANGLESTRIP, PT_TRIANGLEFAN, PT_QUADLIST, PT_QUADSTRIP, PT_POLYGON,
     PT_QUADLIST_EDGES, PT_QUADSTRIP_EDGES,      /* pbres.h */
-    PT_TRILIST_LAST, PT_TRISTRIP_LAST, PT_TRIFAN_LAST, PT_POLYGON_HUB,
-    PT_QUADLIST_FLAT, PT_QUADSTRIP_FLAT,
-    PT_QUADLIST_FLATEDGES, PT_QUADSTRIP_FLATEDGES, PT_POLYGON_FLATEDGES,
-    PT_TRISTRIP_LIST, PT_POLYGON_EDGES,
 };
 /* VkPrimitiveTopology (no Vulkan headers here) */
 enum { VT_POINTS = 0, VT_LINES = 1, VT_LINE_STRIP = 2, VT_TRIS = 3, VT_TRI_STRIP = 4,
-       VT_TRI_FAN = 5, VT_LINES_ADJ = 6 };
+       VT_TRI_FAN = 5 };
 
 uint32_t hle_draw_prim_topology(uint32_t pt)
 {
@@ -609,7 +541,6 @@ uint32_t hle_draw_prim_topology(uint32_t pt)
     case PT_POINTLIST:     return VT_POINTS;
     case PT_LINELIST:
     case PT_QUADLIST_EDGES:
-    case PT_POLYGON_EDGES:
     case PT_QUADSTRIP_EDGES: return VT_LINES;
     case PT_LINELOOP:
     case PT_LINESTRIP:     return VT_LINE_STRIP;
@@ -617,9 +548,7 @@ uint32_t hle_draw_prim_topology(uint32_t pt)
     case PT_QUADSTRIP:     return VT_TRI_STRIP;    /* same vertex order */
     case PT_TRIANGLEFAN:
     case PT_POLYGON:       return VT_TRI_FAN;
-    case PT_QUADLIST_FLAT:
-    case PT_QUADSTRIP_FLAT: return VT_LINES_ADJ;    /* four vertices a quad (vk/draw.c) */
-    default:               return VT_TRIS;         /* lists; quads and the flat-shaded orders become triangles */
+    default:               return VT_TRIS;         /* lists; quads become triangles */
     }
 }
 
@@ -637,30 +566,6 @@ uint32_t hle_draw_prim_count(uint32_t pt, uint32_t n)
     if (pt == PT_QUADSTRIP_EDGES) {
         return n >= 4 ? (n / 2 - 1) * 8 : 0;
     }
-    if (pt == PT_POLYGON_EDGES) {
-        return n >= 2 ? n * 2 : 0;
-    }
-    if (pt == PT_TRILIST_LAST) {
-        return n / 3 * 3;
-    }
-    if (pt == PT_QUADLIST_FLAT) {
-        return n / 4 * 4;
-    }
-    if (pt == PT_QUADSTRIP_FLAT) {
-        return n >= 4 ? (n / 2 - 1) * 4 : 0;
-    }
-    if (pt == PT_QUADLIST_FLATEDGES) {
-        return n / 4 * 12;
-    }
-    if (pt == PT_QUADSTRIP_FLATEDGES) {
-        return n >= 4 ? (n / 2 - 1) * 12 : 0;
-    }
-    if (pt == PT_POLYGON_FLATEDGES) {
-        return n >= 2 ? n * 3 : 0;
-    }
-    if (pt == PT_TRISTRIP_LAST || pt == PT_TRIFAN_LAST || pt == PT_POLYGON_HUB || pt == PT_TRISTRIP_LIST) {
-        return n >= 3 ? (n - 2) * 3 : 0;
-    }
     return n;
 }
 
@@ -676,78 +581,13 @@ void hle_draw_prim_indices(uint32_t pt, const uint16_t *in, uint32_t n, uint32_t
         return;
     }
     if (pt == PT_QUADLIST_EDGES || pt == PT_QUADSTRIP_EDGES) {
-        /* each quad's four sides (a strip's quad i: 2i, 2i + 1, 2i + 3, 2i + 2), in
-         * the order the NV2A draws them (pbres.h, HLE_PT_POLYGON_EDGES) */
+        /* each quad's four sides (a strip's quad i: 2i, 2i + 1, 2i + 3, 2i + 2) */
         const bool st = pt == PT_QUADSTRIP_EDGES;
-        static const uint8_t k_ord[2][4] = { { 1, 0, 2, 3 }, { 3, 0, 1, 2 } };
-        for (uint32_t q = 0; q + 3 < n; q += st ? 2 : 4) {
-            const uint32_t v[4] = { q, q + 1, st ? q + 3 : q + 2, st ? q + 2 : q + 3 };
-            for (unsigned i = 0; i < 4; i++) {
-                const unsigned e = k_ord[st][i];
-                *out++ = IN(v[e]);
-                *out++ = IN(v[(e + 1) & 3]);
-            }
-        }
-        return;
-    }
-    if (pt == PT_POLYGON_EDGES) {
-        for (uint32_t i = 0; i < n && n >= 2; i++) {
-            const uint32_t e = n > 2 && i < 2 ? 1 - i : i;
-            *out++ = IN(e);
-            *out++ = IN(e + 1 < n ? e + 1 : 0);
-        }
-        return;
-    }
-    if (pt == PT_QUADLIST_FLATEDGES || pt == PT_QUADSTRIP_FLATEDGES) {
-        const bool st = pt == PT_QUADSTRIP_FLATEDGES;
         for (uint32_t q = 0; q + 3 < n; q += st ? 2 : 4) {
             const uint32_t v[4] = { q, q + 1, st ? q + 3 : q + 2, st ? q + 2 : q + 3 };
             for (unsigned e = 0; e < 4; e++) {
-                *out++ = IN(q + 3); *out++ = IN(v[e]); *out++ = IN(v[(e + 1) & 3]);
-            }
-        }
-        return;
-    }
-    if (pt == PT_POLYGON_FLATEDGES) {
-        for (uint32_t e = 0; e < n && n >= 2; e++) {
-            *out++ = IN(0); *out++ = IN(e); *out++ = IN(e + 1 < n ? e + 1 : 0);
-        }
-        return;
-    }
-    if (pt == PT_QUADLIST_FLAT || pt == PT_QUADSTRIP_FLAT) {
-        /* each quad, four vertices around it, the one whose colours it takes
-         * last (a strip: 2i + 2, 2i, 2i + 1, 2i + 3, whose two triangles are
-         * the strip's own) */
-        const bool st = pt == PT_QUADSTRIP_FLAT;
-        for (uint32_t q = 0; q + 3 < n; q += st ? 2 : 4) {
-            *out++ = IN(st ? q + 2 : q); *out++ = IN(st ? q : q + 1);
-            *out++ = IN(st ? q + 1 : q + 2); *out++ = IN(q + 3);
-        }
-        return;
-    }
-    if (pt == PT_TRISTRIP_LIST) {
-        /* (the winding kept: an odd triangle's first two swapped) */
-        for (uint32_t t = 0; t + 2 < n; t++) {
-            *out++ = IN(t & 1 ? t + 1 : t); *out++ = IN(t & 1 ? t : t + 1); *out++ = IN(t + 2);
-        }
-        return;
-    }
-    if (pt == PT_TRILIST_LAST) {
-        for (uint32_t t = 0; t + 2 < n; t += 3) {
-            *out++ = IN(t + 2); *out++ = IN(t); *out++ = IN(t + 1);
-        }
-        return;
-    }
-    if (pt == PT_TRISTRIP_LAST || pt == PT_TRIFAN_LAST || pt == PT_POLYGON_HUB) {
-        /* triangle lists whose first vertex is the one a flat shade takes
-         * (Vulkan's): a strip's or fan's last, a polygon's first; the winding kept */
-        for (uint32_t t = 0; t + 2 < n; t++) {
-            if (pt == PT_TRISTRIP_LAST) {
-                *out++ = IN(t + 2); *out++ = IN(t & 1 ? t + 1 : t); *out++ = IN(t & 1 ? t : t + 1);
-            } else if (pt == PT_TRIFAN_LAST) {
-                *out++ = IN(t + 2); *out++ = IN(0); *out++ = IN(t + 1);
-            } else {
-                *out++ = IN(0); *out++ = IN(t + 1); *out++ = IN(t + 2);
+                *out++ = IN(v[e]);
+                *out++ = IN(v[(e + 1) & 3]);
             }
         }
         return;

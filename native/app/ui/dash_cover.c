@@ -123,10 +123,11 @@ void scr_cover(void)
     }
     const bool from_file = list_row(&l, T(S_COVER_FILE), NULL, NULL);
     list_end(&l);
-    /* the list's state: being read, unreadable, no name fits */
+    /* the list's state: being read, unreadable, no name fits; under the
+     * rows (on the second it was over From a file's, #385) */
     const char *note = n == -1 ? T(S_COVER_LOADING) : n == -2 ? T(S_COVER_OFFLINE) : n == 0 ? T(S_COVER_NONE) : NULL;
     if (note) {
-        ui_text_fit(lx + 20, ly + 52 * 1.25f, note, 20, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_LEFT, lw - 40);
+        ui_text_fit(lx + 20, ly + 52 * 2.25f, note, 20, UI_FONT_REGULAR, UI_GREY, UI_ALIGN_LEFT, lw - 40);
     }
     if (from_file) {
         edit(false);

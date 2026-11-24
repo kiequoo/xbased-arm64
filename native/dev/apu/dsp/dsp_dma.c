@@ -63,12 +63,42 @@ const char *space_names[] = {
 
 #endif
 
+/* xbased: a run of words a transfer reads or writes, when it lies whole in
+ * X RAM, the mix buffer (or its alias at X:0xc00) or Y RAM: the words
+ * themselves, as dsp56k_read_memory/write_memory reach them; NULL, the word
+ * by word way (P, the peripherals, past the memories) */
+static uint32_t *dma_words(dsp_core_t *c, int space, uint32_t addr, uint32_t count)
+{
+    if (space == DSP_SPACE_X) {
+        if (addr + count <= 0xc00) {
+            return &c->xram[addr];
+        }
+        if (addr >= DSP_MIXBUFFER_BASE && addr + count <= DSP_MIXBUFFER_BASE + DSP_MIXBUFFER_SIZE) {
+            return &c->mixbuffer[addr - DSP_MIXBUFFER_BASE];
+        }
+        if (addr >= 0xc00 && addr + count <= 0xc00 + DSP_MIXBUFFER_SIZE) {
+            return &c->mixbuffer[addr - 0xc00];
+        }
+    } else if (space == DSP_SPACE_Y && addr + count <= DSP_YRAM_SIZE) {
+        return &c->yram[addr];
+    }
+    return NULL;
+}
+
+/* xbased: the DMA moves whole items (2 or 4 bytes) at addresses aligned to
+ * their size, the address's low bits left out, and its circular buffer
+ * wraps after the item that reaches its end. Tomb Raider: Legend's own
+ * delay effect has its lines at odd byte offsets and sizes (the XBE's data
+ * as built): taken byte for byte, its reads joined halves of two samples,
+ * a noise that its feedback kept up for ever (the waterfalls, through the
+ * pause too). Aligned buffers, every other title's, move as before. */
 static void scratch_circular_copy(
     DSPDMAState *s,
     uint32_t     scratch_base,
     uint32_t    *scratch_offset,
     uint32_t     scratch_size,
     uint32_t     transfer_size,
+    uint32_t     item_size,
     uint8_t     *scratch_buf,
     int          direction)
 {
@@ -80,9 +110,9 @@ static void scratch_circular_copy(
     uint32_t buf_offset = 0;
 
     while (transfer_size > 0) {
-        size_t bytes_until_wrap = scratch_size - *scratch_offset;
-        size_t chunk_size = MIN(transfer_size, bytes_until_wrap);
-        uint32_t scratch_addr = scratch_base + *scratch_offset;
+        size_t items_until_wrap = (scratch_size - *scratch_offset + item_size - 1) / item_size;
+        size_t chunk_size = MIN(transfer_size, items_until_wrap * item_size);
+        uint32_t scratch_addr = (scratch_base + *scratch_offset) & ~(item_size - 1);
 
         // R/W to scratch memory from chunk in buffer
         s->scratch_rw(s->rw_opaque, &scratch_buf[buf_offset], scratch_addr, chunk_size, direction);
@@ -179,7 +209,7 @@ static void dsp_dma_run(DSPDMAState *s)
             break;
         }
 
-        size_t scratch_addr = scratch_base + scratch_offset;
+        size_t scratch_addr = (scratch_base + scratch_offset) & ~(size_t)(item_size - 1);
         uint32_t mem_address = 0;
         int mem_space = DSP_SPACE_X;
 
@@ -237,6 +267,15 @@ static void dsp_dma_run(DSPDMAState *s)
                         }
                     }
                 }
+            } else if (dma_words(s->core, mem_space, mem_address, count) && (item_size == 2 || item_size == 4)) {
+                const uint32_t *w = dma_words(s->core, mem_space, mem_address, count);
+                if (item_size == 4) {
+                    memcpy(scratch_buf, w, count * 4);
+                } else {
+                    for (int i = 0; i < count; i++) {
+                        *(uint16_t*)(scratch_buf + i*2) = w[i] >> 8;
+                    }
+                }
             } else {
                 for (int i = 0; i < count; i++) {
                     uint32_t v = dsp56k_read_memory(s->core, mem_space, mem_address+i);
@@ -264,7 +303,7 @@ static void dsp_dma_run(DSPDMAState *s)
                 s->fifo_rw(s->rw_opaque, scratch_buf, buf_id, transfer_size, 1);
                 break;
             case 0xE:
-                scratch_circular_copy(s, scratch_base, &scratch_offset, scratch_size, transfer_size, scratch_buf, 1);
+                scratch_circular_copy(s, scratch_base, &scratch_offset, scratch_size, transfer_size, item_size, scratch_buf, 1);
                 break;
             case 0xF:
                 s->scratch_rw(s->rw_opaque, scratch_buf, scratch_addr, transfer_size, 1);
@@ -277,14 +316,24 @@ static void dsp_dma_run(DSPDMAState *s)
             assert(!dsp_interleave);
 
             if (buf_id == 0xe) {
-                scratch_circular_copy(s, scratch_base, &scratch_offset, scratch_size, transfer_size, scratch_buf, 0);
+                scratch_circular_copy(s, scratch_base, &scratch_offset, scratch_size, transfer_size, item_size, scratch_buf, 0);
             } else if (buf_id == 0xf) {
                 s->scratch_rw(s->rw_opaque, scratch_buf, scratch_addr, transfer_size, 0);
             } else {
                 (void)APU_CHECK(!"a known DMA buffer");
             }
 
-            for (int i = 0; i < count; i++) {
+            uint32_t *w = (item_size == 2 || item_size == 4)
+                ? dma_words(s->core, mem_space, mem_address, count) : NULL;
+            if (w && item_size == 4) {
+                for (int i = 0; i < count; i++) {
+                    w[i] = (*(uint32_t*)(scratch_buf + i*4)) & item_mask;
+                }
+            } else if (w) {
+                for (int i = 0; i < count; i++) {
+                    w[i] = *(uint16_t*)(scratch_buf + i*2) << 8;
+                }
+            } else for (int i = 0; i < count; i++) {
                 uint32_t v;
                 switch(item_size) {
                 case 2:

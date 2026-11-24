@@ -7,14 +7,17 @@
  * A disc's folders: mods/<TITLE ID>.<version> (its default.xbe's
  * certificate) and mods/<TITLE ID> (any release), beside the executable
  * (the ones that ship) and in the data folder (the user's own). A mod is a
- * folder with a mod.txt, or an .ips file: the usual patch of default.xbe
- * (file offsets, as Lunar IPS applies it), its name the file's. A mod is on
+ * folder with a mod.txt, an .ips file: the usual patch of default.xbe
+ * (file offsets, as Lunar IPS applies it), its name the file's, or a .jmp
+ * file (Jay's Magic Patcher's, mod_jmp.c), also in mods/ itself for the
+ * title its header names (#391). A mod is on
  * when an option names it, "mod=<id>" ("mod=*": all of the game's), a
  * cheat with "cheat=<name>". Every mod's patches are listed, an off one's
  * as patchoff (a savestate made with it on gets the disc's bytes back).
  */
 #include "native/app/win_mods.h"
 #include "native/app/mod_fit.h"
+#include "native/app/mod_jmp.h"
 #include "native/core/mods.h"
 #include "native/core/xdvdfs.h"
 
@@ -33,11 +36,12 @@
 #define MAX_MODS 64
 
 typedef struct {
-    char id[128];
+    char id[160];
     char name[256];
     char dir[MAX_PATH * 2];     /* the folder it's in */
+    char ext[8];                /* a patch file's extension (.ips, .jmp, as the file has it) */
     int refresh;
-    bool on, ips;               /* ips: dir/<id>.ips */
+    bool on, ips, jmp;          /* ips: dir/<id>.ips; jmp: dir/<id><ext> */
 } Mod;
 
 static bool opt_has(char **opts, int n, const char *kind, const char *value)
@@ -153,9 +157,10 @@ static int mod_cmp(const void *a, const void *b)
     return strcasecmp(((const Mod *)a)->id, ((const Mod *)b)->id);
 }
 
-/* A folder's mods: subfolders with a mod.txt, .ips files (an id met
- * before, in an earlier folder, is that one) */
-static void scan_mods(const char *dir, Mod *mods, int *n)
+/* A folder's mods: subfolders with a mod.txt, .ips and .jmp files (an id
+ * met before, in an earlier folder, is that one); in mods/ itself (title:
+ * the disc's), only the .jmp files that name its title */
+static void scan_mods(const char *dir, Mod *mods, int *n, uint32_t title)
 {
     char pattern[MAX_PATH * 2 + 4];
     snprintf(pattern, sizeof(pattern), "%s/*", dir);
@@ -163,15 +168,24 @@ static void scan_mods(const char *dir, Mod *mods, int *n)
     HANDLE h = FindFirstFileA(pattern, &fd);
     while (h != INVALID_HANDLE_VALUE && *n < MAX_MODS) {
         const size_t len = strlen(fd.cFileName);
-        const bool sub = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != '.';
-        const bool ips = !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && len > 4 &&
-                         !strcasecmp(fd.cFileName + len - 4, ".ips");
-        if (sub || ips) {
+        const bool file = !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+        bool sub = !file && fd.cFileName[0] != '.';
+        bool ips = file && len > 4 && !strcasecmp(fd.cFileName + len - 4, ".ips");
+        bool jmp = file && nc_jmp_name(fd.cFileName);
+        if (title) {
+            char path[MAX_PATH * 2 + 4];
+            snprintf(path, sizeof(path), "%s/%s", dir, fd.cFileName);
+            sub = ips = false;
+            jmp = jmp && nc_jmp_title(path) == title;
+        }
+        if (sub || ips || jmp) {
             Mod *m = &mods[*n];
             memset(m, 0, sizeof(*m));
-            snprintf(m->id, sizeof(m->id), "%.*s", (int)(ips ? len - 4 : len), fd.cFileName);
+            snprintf(m->id, sizeof(m->id), "%.*s", (int)(ips || jmp ? len - 4 : len), fd.cFileName);
             snprintf(m->dir, sizeof(m->dir), "%s", dir);
+            snprintf(m->ext, sizeof(m->ext), "%s", ips || jmp ? fd.cFileName + len - 4 : "");
             m->ips = ips;
+            m->jmp = jmp;
             bool dup = false;
             for (int i = 0; i < *n; i++) {
                 dup |= !strcasecmp(mods[i].id, m->id);
@@ -516,6 +530,31 @@ void nc_win_mods_cleanup(const char *exe_dir)
     cleanup_list(exe_dir, "cheats", "a cheat that patches without checking the game's build");
 }
 
+/* A .jmp's offset records, written blind where it names no executable's
+ * CRC-32 (a patch for another release's build lands on other code): where
+ * they land in code, as the database's IPS patches are checked */
+static bool jmp_code_fits(int disc_fd, const char *path, char *why, size_t wn)
+{
+    size_t len = 0;
+    bool crc = false;
+    uint8_t *ips = nc_jmp_offsets_ips(path, &len, &crc);
+    const bool ok = !ips || crc || fit_ips_code(disc_fd, ips, len, why, wn);
+    free(ips);
+    return ok;
+}
+
+bool nc_win_mods_jmp_fits(int disc_fd, const char *path, JmpInfo *info, char *why, size_t wn)
+{
+    uint32_t len = 0;
+    uint8_t *x = read_xbe(disc_fd, &len);
+    FitXbe fx;
+    const uint32_t title = x && fit_read_xbe(disc_fd, &fx) ? fx.title_id : 0;
+    const bool ok = nc_jmp_lines(path, x, len, title, NULL, "", false, info, why, wn) >= 0 &&
+                    jmp_code_fits(disc_fd, path, why, wn);
+    free(x);
+    return ok;
+}
+
 bool nc_win_mods_ips_fits(const char *exe_dir, int disc_fd, const char *dir, const char *id, char *why, size_t wn)
 {
     FitXbe x;
@@ -559,11 +598,20 @@ bool nc_win_mods_prepare(const char *exe_dir, int disc_fd, char **opts, int nopt
     snprintf(dirs[3], sizeof(dirs[3]), "%smods/%.8s", cfg_data_dir(), key);
     static Mod mods[MAX_MODS];
     int n = 0;
+    const bool portable = !strcmp(cfg_data_dir(), exe_dir);   /* the one folder */
     for (int d = 0; d < 4; d++) {
-        if (d == 2 && !strcmp(cfg_data_dir(), exe_dir)) {
-            break;  /* portable: the one folder */
+        if (d == 2 && portable) {
+            break;
         }
-        scan_mods(dirs[d], mods, &n);
+        scan_mods(dirs[d], mods, &n, 0);
+    }
+    /* .jmp patches put in mods/ itself: the ones for this title */
+    const uint32_t title = (uint32_t)strtoul(key, NULL, 16);
+    char roots[2][MAX_PATH * 2];
+    snprintf(roots[0], sizeof(roots[0]), "%smods", cfg_data_dir());
+    snprintf(roots[1], sizeof(roots[1]), "%smods", exe_dir);
+    for (int d = 0; d < (portable ? 1 : 2); d++) {
+        scan_mods(roots[d], mods, &n, title);
     }
     /* the widescreen database's patches for the title (a mod of its own) */
     static WsPatch ws;
@@ -588,14 +636,35 @@ bool nc_win_mods_prepare(const char *exe_dir, int disc_fd, char **opts, int nopt
         snprintf(mods[i].name, sizeof(mods[i].name), "%s", mods[i].id);
         mods[i].refresh = 0;
         on += mods[i].on;
-        if (mods[i].on && !mods[i].ips) {
+        if (mods[i].on && !mods[i].ips && !mods[i].jmp) {
             char files[MAX_PATH * 2 + 16];
             snprintf(files, sizeof(files), "%s/%s/files", mods[i].dir, mods[i].id);
             list_files(out, files, "");
         }
     }
+    uint8_t *xbe = NULL;    /* default.xbe, for the .jmp patches */
+    uint32_t xbe_len = 0;
     for (int i = 0; i < n; i++) {
         char path[MAX_PATH * 2 + 16];
+        if (mods[i].jmp) {
+            snprintf(path, sizeof(path), "%s/%s%s", mods[i].dir, mods[i].id, mods[i].ext);
+            if (!xbe) {
+                xbe = read_xbe(disc_fd, &xbe_len);
+            }
+            char why[200] = "";
+            const int recs = !jmp_code_fits(disc_fd, path, why, sizeof(why)) ? -1
+                             : nc_jmp_lines(path, xbe, xbe_len, title, out, mods[i].id, mods[i].on, NULL, why,
+                                            sizeof(why));
+            if (recs < 0) {
+                nc_log("xbased-mods", "%s patch %s%s: not for this executable (%s), left off", key, mods[i].id,
+                       mods[i].ext, why);
+                on -= mods[i].on;
+                continue;
+            }
+            nc_log("xbased-mods", "%s patch %s%s (%d records): %s", key, mods[i].id, mods[i].ext, recs,
+                   mods[i].on ? "on" : "off (mod=<its name> turns it on)");
+            continue;
+        }
         if (mods[i].ips) {
             snprintf(path, sizeof(path), "%s/%s.ips", mods[i].dir, mods[i].id);
             char why[160] = "";
@@ -646,6 +715,7 @@ bool nc_win_mods_prepare(const char *exe_dir, int disc_fd, char **opts, int nopt
         nc_log("xbased-mods", "%s mod %s (\"%s\"): %s", key, mods[i].id, mods[i].name,
                mods[i].on ? "on" : "off (mod=<its folder> turns it on)");
     }
+    free(xbe);
     if (have_ws) {
         const bool won = opt_has(opts, nopts, "mod", "widescreen-db");
         const int hits = widescreen_patches(out, disc_fd, &ws, "widescreen-db", won);

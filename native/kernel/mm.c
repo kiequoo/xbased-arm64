@@ -781,41 +781,61 @@ static uint32_t slack_window(uint32_t size, uint32_t lo, uint32_t hi, uint32_t a
     return best_pa;
 }
 
+/* The top of RAM, virtual pages moved out of the way (vm.c), then the window
+ * needing the fewest moves; neither when there are fewer free pages than
+ * asked for. */
+static uint32_t contig_place(NcKernel *k, uint32_t size, uint32_t lo, uint32_t hi, uint32_t align,
+                             uint32_t *moved)
+{
+    if (nc_vm_free_bytes(k->vm) < size) {
+        return UINT32_MAX;
+    }
+    uint32_t pa = nc_vm_alloc_phys_top(k->vm, size, lo, hi, align, moved);
+    if (pa == UINT32_MAX && g_ncontig < MAX_CONTIG) {
+        pa = nc_vm_alloc_phys_compact(k->vm, size, lo, hi, align, moved);
+    }
+    if (pa == UINT32_MAX && g_ncontig < MAX_CONTIG) {
+        /* the last resort: pages whose address went out moved too (vm.h),
+         * and the file reads and writes in flight completed first, their
+         * buffers' pages locked meanwhile (io.c pin_buffer): Project Gotham
+         * Racing copies a city to its cache as it asks for the city's
+         * 22.6 MiB, the copy's buffers in the way (#239) */
+        pa = nc_vm_alloc_phys_compact_known(k->vm, size, lo, hi, align, moved);
+        if (pa == UINT32_MAX && !nc_io_state_drain(k, 2000000000ull)) {
+            pa = nc_vm_alloc_phys_compact_known(k->vm, size, lo, hi, align, moved);
+        }
+        if (pa != UINT32_MAX) {
+            nc_log("xbased-native", "mm: contiguous allocation of %u KiB at %08x only with pages whose address "
+                   "went out moved (%u pages relocated)", size >> 10, pa, *moved);
+        }
+    }
+    return pa;
+}
+
 static uint32_t contig_alloc(NcKernel *k, uint32_t size, uint32_t lo, uint32_t hi, uint32_t align,
                              uint32_t protect, uint32_t ra)
 {
     /* more than the console has: the failure the sizes below end in (and
      * past 0xFFFFF000 the rounding wrapped to nothing, which "succeeded") */
     size = size > k->vm->ram_size ? k->vm->ram_size + NC_PAGE : nc_align_up(size ? size : 1, NC_PAGE);
-    /* The top of RAM, virtual pages moved out of the way (vm.c), then the
-     * window needing the fewest moves; neither when there are fewer free
-     * pages than asked for. */
     uint32_t pa = UINT32_MAX, moved = 0, rest = 0;
     static unsigned s_failed;           /* failures since the last success (reports below) */
     if (g_ncontig < MAX_CONTIG && size <= k->vm->ram_size) {
         pa = slack_window(size, lo, hi, align, &rest);
     }
     const bool in_slack = pa != UINT32_MAX;
-    if (!in_slack && nc_vm_free_bytes(k->vm) >= size) {
-        pa = nc_vm_alloc_phys_top(k->vm, size, lo, hi, align, &moved);
+    if (!in_slack) {
+        pa = contig_place(k, size, lo, hi, align, &moved);
     }
-    if (pa == UINT32_MAX && g_ncontig < MAX_CONTIG && nc_vm_free_bytes(k->vm) >= size) {
-        pa = nc_vm_alloc_phys_compact(k->vm, size, lo, hi, align, &moved);
-    }
-    if (pa == UINT32_MAX && g_ncontig < MAX_CONTIG && nc_vm_free_bytes(k->vm) >= size) {
-        /* the last resort: pages whose address went out moved too (vm.h),
-         * and the file reads and writes in flight completed first, their
-         * buffers' pages locked meanwhile (io.c pin_buffer): Project Gotham
-         * Racing copies a city to its cache as it asks for the city's
-         * 22.6 MiB, the copy's buffers in the way (#239) */
-        pa = nc_vm_alloc_phys_compact_known(k->vm, size, lo, hi, align, &moved);
-        if (pa == UINT32_MAX && !nc_io_state_drain(k, 2000000000ull)) {
-            pa = nc_vm_alloc_phys_compact_known(k->vm, size, lo, hi, align, &moved);
-        }
-        if (pa != UINT32_MAX) {
-            nc_log("xbased-native", "mm: contiguous allocation of %u KiB at %08x only with pages whose address "
-                   "went out moved (%u pages relocated)", size >> 10, pa, moved);
-        }
+    /* No window: the kernel pool's pages with nothing left in them go back
+     * to RAM, and the search runs again. Armed and Dangerous asks for
+     * 40 MiB as its second level loads, with 49.4 MiB free: its first
+     * level's blocks had filled RAM down to 0x24cd000, the pool grew by a
+     * 64 KiB chunk just under them, and once they were freed the chunk,
+     * empty, stood in every window of that size: the call failed and the
+     * title showed its dirty disc screen (#245). */
+    if (pa == UINT32_MAX && g_ncontig < MAX_CONTIG && size <= k->vm->ram_size && nc_pool_give_back(k)) {
+        pa = contig_place(k, size, lo, hi, align, &moved);
     }
     if (pa != UINT32_MAX && moved) {
         static unsigned s_moves;

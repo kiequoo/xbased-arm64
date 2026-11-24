@@ -17,13 +17,11 @@ uint32_t hle_draw_arena_alloc16(uint32_t len, uint8_t **ptr);
 void hle_draw_arena_hold(bool on);
 /* The texels of header words h5 (P8: palette pal, npal entries) defined as
  * object id's image (HLE_OP_TEX); id, or 0 if they can't be. *bytes: the
- * span of guest memory they came from. pitch: a linear format's rows as the
- * stage's register has them (0: the header's, a multiple of 64). */
-uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], uint32_t pitch, const uint32_t *pal,
-                             uint32_t npal, uint32_t *bytes);
-/* The span of guest memory header words h5's texels take (0: not a texture;
- * pitch as hle_draw_tex_define's) */
-uint32_t hle_draw_tex_bytes(const uint32_t h5[5], uint32_t pitch);
+ * span of guest memory they came from. */
+uint32_t hle_draw_tex_define(uint32_t id, const uint32_t h5[5], const uint32_t *pal, uint32_t npal,
+                             uint32_t *bytes);
+/* The span of guest memory header words h5's texels take (0: not a texture) */
+uint32_t hle_draw_tex_bytes(const uint32_t h5[5]);
 /* The video overlay's surface (header words h5, YUY2 / UYVY) as B8G8R8A8 in
  * the arena: its offset, HLE_ARENA_FULL = none. */
 uint32_t hle_draw_overlay_upload(const uint32_t h5[5], uint32_t *w, uint32_t *h);
@@ -35,37 +33,6 @@ uint32_t hle_draw_overlay_upload(const uint32_t h5[5], uint32_t *w, uint32_t *h)
  * draws a quad's outline, not the triangles' diagonals) */
 #define HLE_PT_QUADLIST_EDGES  11u
 #define HLE_PT_QUADSTRIP_EDGES 12u
-/* 13 .. 16: a triangle list, strip or fan whose flat shade takes each
- * triangle's last vertex (SET_FLAT_SHADE_OP VERTEX_LAST), and a polygon,
- * whose flat shade takes its first vertex whatever the op: as triangle
- * lists with that vertex first */
-#define HLE_PT_TRILIST_LAST    13u
-#define HLE_PT_TRISTRIP_LAST   14u
-#define HLE_PT_TRIFAN_LAST     15u
-#define HLE_PT_POLYGON_HUB     16u
-/* 17, 18: the quads of a quad list / strip, flat shaded: four vertices each
- * (lines with adjacency: a geometry stage draws the two triangles with the
- * colours of the last vertex of the quad, the one the NV2A takes whatever the op) */
-#define HLE_PT_QUADLIST_FLAT   17u
-#define HLE_PT_QUADSTRIP_FLAT  18u
-/* 19 .. 21: the sides of a flat-shaded quad list, quad strip or polygon
- * (GL_LINE mode), a triangle each: the vertex whose colours the primitive
- * takes, then the side (HleCmdDraw.quads 2: the geometry stage draws that side) */
-#define HLE_PT_QUADLIST_FLATEDGES  19u
-#define HLE_PT_QUADSTRIP_FLATEDGES 20u
-#define HLE_PT_POLYGON_FLATEDGES   21u
-/* 23: a polygon's sides as lines (GL_LINE mode), in the order the NV2A draws them:
- * 1 - 2, 0 - 1, 2 - 3 .. n-1 - 0 (the sides of its triangles 0, i, i + 1, each
- * 1 - 2, 2 - 0, 0 - 1 without the diagonals; the last drawn is on top where two
- * overlap at a corner: nxdk_pgraph_tests' Line_width). A quad list's go the same
- * way (b c, a b, c d, d a) and a strip's quad d a, a b, b c, c d (its triangles
- * q, q + 1, q + 2 and q + 2, q + 1, q + 3). */
-#define HLE_PT_POLYGON_EDGES       23u
-/* 22: a triangle or quad strip as a triangle list, an odd triangle's first
- * two vertices swapped (the winding): the order the NV2A weights its
- * colours in (psh.c nvcol; Vulkan's own strips give an odd triangle's
- * corners as i, i + 2, i + 1) */
-#define HLE_PT_TRISTRIP_LIST       22u
 uint32_t hle_draw_prim_topology(uint32_t pt);
 uint32_t hle_draw_prim_count(uint32_t pt, uint32_t n);
 void hle_draw_prim_indices(uint32_t pt, const uint16_t *in, uint32_t n, uint32_t base,

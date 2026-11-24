@@ -19,6 +19,10 @@
  * XBASED_AUTO_CMD=<file>: the same actions, one per line, done as
  * they are appended ("shot <name>" names the picture). */
 void nc_auto_init(const char *exe_dir, void (*save)(int slot), void (*load)(int slot));
+#ifdef XBASED_DEVCTL
+/* One action now (dev control): the scripted inputs on from then. */
+void nc_auto_act(const char *a);
+#endif
 /* Each pass of the window's loop: the actions due. */
 void nc_auto_tick(void);
 /* Player 1's state with the scripted buttons held now. */

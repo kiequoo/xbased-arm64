@@ -37,6 +37,9 @@ static const NcKExport *k_by_ordinal[NC_KORDINAL_MAX];
 #define K_DATA_BIG 0xA000u  /* data exports larger than a slot, past the last slot */
 #define K_KPCR     0x10000u
 #define K_IDT      0x11000u /* 256 gates of 8 bytes */
+#define K_GDT      0x11800u /* NC_GDT_LIMIT + 1 bytes */
+#define K_TSS      0x11900u /* 0x68 bytes, then the ring-3 state (TSS_RING3) */
+#define TSS_RING3  0x70u    /* CS, SS of the ring-3 code an IRETD went to; 0: in ring 0 */
 #define K_FAST     0x12000u /* exports run as guest code (install_fast_paths) */
 #define K_FAST_END 0x13000u
 /* The physical pages the kernel keeps of its area: what it uses, rounded up.
@@ -551,6 +554,31 @@ bool nc_kernel_init(NcKernel *k, NcVm *vm)
      * with SIDT and edit gates. Every gate is a 32-bit interrupt gate to the
      * trap stub, which reports an exception nothing handled. */
     k->idt_va = NC_KERNEL_VA + K_IDT;
+    /* The GDT (SGDT) and its TSS. Xbox Music Mixer runs code in ring 3:
+     * it reads the GDT, takes descriptor 18h's base as its TSS and puts
+     * its ring-0 stack in the TSS's ESP0, loads a copy of the GDT with
+     * its ring-3 descriptors added (LGDT), and its handlers load FS with
+     * 20h. With SGDT's base 0 it read the GDT at address 0 and faulted
+     * as it started (a black screen). The flat model's segments stay;
+     * the descriptors are what the title reads. 28h is the KPCR's too
+     * (the selector the CPU reports for FS). */
+    k->gdt_va = NC_KERNEL_VA + K_GDT;
+    k->tss_va = NC_KERNEL_VA + K_TSS;
+    {
+        struct { uint32_t base, limit; uint8_t access, flags; } d[6] = {
+            {0, 0, 0, 0},
+            {0, 0xFFFFFu, 0x9B, 0xC}, {0, 0xFFFFFu, 0x93, 0xC},
+            {k->tss_va, 0x67, 0x89, 0},
+            {k->kpcr_va, 0xFFFu, 0x93, 0x4}, {k->kpcr_va, 0xFFFu, 0x93, 0x4}};
+        for (unsigned i = 0; i < 6; i++) {
+            nc_wr32(km + K_GDT + 8 * i, (d[i].limit & 0xFFFFu) | (d[i].base & 0xFFFFu) << 16);
+            nc_wr32(km + K_GDT + 8 * i + 4, ((d[i].base >> 16) & 0xFFu) | (uint32_t)d[i].access << 8 |
+                                                 ((d[i].limit >> 16) & 0xFu) << 16 |
+                                                 (uint32_t)d[i].flags << 20 | (d[i].base & 0xFF000000u));
+        }
+        nc_wr32(km + K_TSS + 8, 0x10);      /* SS0 */
+        nc_wr32(km + K_TSS + 0x64, 0x68u << 16); /* the I/O map past the end: none */
+    }
     for (unsigned v = 0; v < 256; v++) {
         nc_wr32(km + K_IDT + 8 * v, (0x08u << 16) | (k->trap_va & 0xFFFFu));
         nc_wr32(km + K_IDT + 8 * v + 4, (k->trap_va & 0xFFFF0000u) | 0x8E00u);
@@ -1466,6 +1494,27 @@ static void port_io(NcFrame *f, const uint8_t *insn, unsigned size, bool out)
     }
 }
 
+/* Where a trap's frame goes: below ESP in ring 0; from ring 3 (an IRETD
+ * went there) below the TSS's ESP0, the ring-3 SS and ESP pushed first, as
+ * a CPU's change of privilege does, and *cs the ring-3 CS to push. */
+static uint32_t ring0_stack(NcKernel *k, NcFrame *f, uint32_t need, uint32_t *cs)
+{
+    const uint32_t r3 = nc_vm_rd32(k->vm, k->tss_va + TSS_RING3);
+    *cs = nc_frame_cs(f);
+    if (!r3) {
+        return nc_frame_gpr(f, NC_ESP) - need;
+    }
+    const uint32_t esp0 = nc_vm_rd32(k->vm, k->tss_va + 4) - 8;
+    if (nc_vm_phys(k->vm, esp0) == UINT32_MAX || nc_vm_phys(k->vm, esp0 + 7) == UINT32_MAX) {
+        return nc_frame_gpr(f, NC_ESP) - need;
+    }
+    nc_vm_wr32(k->vm, esp0 + 4, r3 >> 16);
+    nc_vm_wr32(k->vm, esp0, nc_frame_gpr(f, NC_ESP));
+    nc_vm_wr32(k->vm, k->tss_va + TSS_RING3, 0);
+    *cs = r3 & 0xFFFFu;
+    return esp0 - need;
+}
+
 /* An exception without an error code, or a software interrupt, through a
  * gate of the IDT the title put its own handler in (as Fable does for page
  * faults, nc_kernel_page_fault): EFLAGS, CS and the EIP to return to pushed
@@ -1478,12 +1527,16 @@ bool nc_kernel_trap(NcKernel *k, NcFrame *f, unsigned vector, uint32_t ret_eip)
 #else
     const uint8_t *gate = nc_vm_host(k->vm, k->idt_va + 8 * (vector & 0xFF));
     const uint32_t handler = (nc_rd32(gate + 4) & 0xFFFF0000u) | (nc_rd32(gate) & 0xFFFFu);
-    const uint32_t esp = nc_frame_gpr(f, NC_ESP) - 12;
-    if (handler == k->trap_va || nc_vm_phys(k->vm, esp) == UINT32_MAX || nc_vm_phys(k->vm, esp + 11) == UINT32_MAX) {
+    if (handler == k->trap_va) {
+        return false;
+    }
+    uint32_t cs;
+    const uint32_t esp = ring0_stack(k, f, 12, &cs);
+    if (nc_vm_phys(k->vm, esp) == UINT32_MAX || nc_vm_phys(k->vm, esp + 11) == UINT32_MAX) {
         return false;
     }
     nc_vm_wr32(k->vm, esp + 8, nc_frame_eflags(f));
-    nc_vm_wr32(k->vm, esp + 4, nc_frame_cs(f));
+    nc_vm_wr32(k->vm, esp + 4, cs);
     nc_vm_wr32(k->vm, esp, ret_eip);
     nc_frame_set_gpr(f, NC_ESP, esp);
     nc_frame_set_if(f, false);
@@ -1495,15 +1548,19 @@ bool nc_kernel_trap(NcKernel *k, NcFrame *f, unsigned vector, uint32_t ret_eip)
 bool nc_kernel_page_fault(NcKernel *k, NcFrame *f, uint32_t va, bool write)
 {
     const uint32_t handler = pf_handler(k);
-    const uint32_t esp = nc_frame_gpr(f, NC_ESP) - 16;
-    if (handler == k->trap_va || nc_vm_phys(k->vm, esp) == UINT32_MAX || nc_vm_phys(k->vm, esp + 15) == UINT32_MAX) {
+    if (handler == k->trap_va) {
+        return false;
+    }
+    uint32_t cs;
+    const uint32_t esp = ring0_stack(k, f, 16, &cs);
+    if (nc_vm_phys(k->vm, esp) == UINT32_MAX || nc_vm_phys(k->vm, esp + 15) == UINT32_MAX) {
         return false;
     }
     /* As a ring-0 interrupt gate: EFLAGS, CS, EIP (the faulting instruction,
      * which runs again after IRET) and the error code (P for a page there, a
      * read-only one's store; supervisor; W for a write); IF clears. */
     nc_vm_wr32(k->vm, esp + 12, nc_frame_eflags(f));
-    nc_vm_wr32(k->vm, esp + 8, nc_frame_cs(f));
+    nc_vm_wr32(k->vm, esp + 8, cs);
     nc_vm_wr32(k->vm, esp + 4, nc_frame_eip(f));
     nc_vm_wr32(k->vm, esp, (write ? 2u : 0u) | (nc_vm_phys(k->vm, va) != UINT32_MAX ? 1u : 0u));
     nc_frame_set_gpr(f, NC_ESP, esp);
@@ -1667,6 +1724,11 @@ void nc_kernel_set_paused(NcKernel *k, bool on)
  * it stopped: no time jump, no timers due at once. It went on running, the
  * audio with it. */
 static uint64_t g_pause_c0;
+#ifdef XBASED_DEVCTL
+/* While paused in a kernel entry (not idle): the running thread's frame, its
+ * registers whole (the dev control's thread list reads it) */
+NcFrame *volatile g_nc_paused_frame;
+#endif
 
 uint64_t nc_kernel_pause_cycles(void)
 {
@@ -1686,6 +1748,9 @@ void nc_kernel_pause_point(NcKernel *k, NcFrame *f, bool idle)
     /* Paused, the guest's CPU still takes a savestate (nc_state_save):
      * here its frame is whole (a kernel entry: nothing of the call done
      * yet; idle: every thread switched out). */
+#ifdef XBASED_DEVCTL
+    g_nc_paused_frame = idle ? NULL : f;
+#endif
     for (;;) {
         nc_pause_wait();
         if (!nc_paused()) {
@@ -1695,6 +1760,9 @@ void nc_kernel_pause_point(NcKernel *k, NcFrame *f, bool idle)
             nc_state_cpu_work(k, f, idle);
         }
     }
+#ifdef XBASED_DEVCTL
+    g_nc_paused_frame = NULL;
+#endif
     const uint64_t c1 = nc_cpu_host_cycles();
     if (k->cpu) {
         nc_cpu_cycle_offset_add(k->cpu, c1 - c0);
@@ -1823,7 +1891,23 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
         if (insn[0] == 0xCF) {
             const uint32_t esp = nc_frame_gpr(f, NC_ESP);
             const uint32_t to = nc_vm_rd32(k->vm, esp), fl = nc_vm_rd32(k->vm, esp + 8);
-            nc_frame_set_gpr(f, NC_ESP, esp + 12);
+            const uint32_t cs = nc_vm_rd32(k->vm, esp + 4) & 0xFFFFu;
+            if ((cs & 3) == 3) {
+                /* to ring 3 (a selector of RPL 3): its ESP and SS off the
+                 * stack too, the CPU's segments as flat as before; the next
+                 * interrupt or exception there comes in on the TSS's ESP0
+                 * (ring0_stack) */
+                nc_vm_wr32(k->vm, k->tss_va + TSS_RING3, cs | (nc_vm_rd32(k->vm, esp + 16) & 0xFFFFu) << 16);
+                nc_frame_set_gpr(f, NC_ESP, nc_vm_rd32(k->vm, esp + 12));
+                static bool s_logged;
+                if (!s_logged) {
+                    s_logged = true;
+                    nc_log("xbased-native", "ring 3: an IRETD to %04x:%08x, its stack %08x (first logged)", cs, to,
+                           nc_vm_rd32(k->vm, esp + 12));
+                }
+            } else {
+                nc_frame_set_gpr(f, NC_ESP, esp + 12);
+            }
             nc_frame_set_eflags(f, fl);
             nc_frame_set_eip(f, to);
             break;
@@ -1871,6 +1955,12 @@ static bool sysop(void *opaque, NcFrame *f, enum NcSysOp op, unsigned size)
         }
         nc_kernel_request_stop(k, f, "system op %d at %08x (%02x %02x %02x)", (int)op, eip, insn[0], insn[1],
                                insn[2]);
+        break;
+    case NC_SYSOP_LGDT:
+        /* a title's own GDT (Xbox Music Mixer's, with its ring-3
+         * descriptors): the flat model's segments stay; SGDT goes on
+         * reporting the kernel's, which the title loads again after */
+        nc_frame_set_eip(f, eip + size);
         break;
     case NC_SYSOP_UD2:
         /* an invalid opcode (UD2, or bytes that are no instruction): the

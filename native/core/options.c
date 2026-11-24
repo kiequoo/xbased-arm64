@@ -16,6 +16,7 @@
 #include <string.h>
 
 void nc_audio_set_channels(int n);  /* dev/apu/out.c */
+void nc_apu_set_hrtf(bool on);      /* dev/apu/apu.c */
 
 void nc_options_init(NcOptions *o)
 {
@@ -85,8 +86,7 @@ bool nc_option(NcOptions *o, const char *arg)
             o->shaders = NC_SHADERS_ASYNC;  /* (0: the mode as it is) */
         }
     } else if ((v = value(arg, "precision="))) {
-        /* the GPU's precision (hw/xbox/hle/vk/precision.h): auto, exact or fast */
-        nc_hle_set_precision(!strcmp(v, "exact") ? 1 : !strcmp(v, "fast") ? 2 : 0);
+        (void)v;                        /* (taken and left: the GPU has one form here) */
     } else if ((v = value(arg, "prebuild="))) {
         o->prebuild = atoi(v) != 0;
     } else if ((v = value(arg, "devtime="))) {
@@ -94,6 +94,13 @@ bool nc_option(NcOptions *o, const char *arg)
                                                  * (1, a quarter of it, gone in 1.0.80: the drive's) */
     } else if ((v = value(arg, "pads="))) {
         setenv("NC_PAD_MASK", v, 1);            /* read by the USB at boot (ohci.c) */
+    } else if ((v = value(arg, "voice="))) {
+        /* the Communicator in player 1's controller (dev/communicator.c), read at boot */
+        if (atoi(v) != 0) {
+            setenv("NC_VOICE", "1", 1);
+        } else {
+            unsetenv("NC_VOICE");
+        }
     } else if ((v = value(arg, "video="))) {
         o->video = (int64_t)strtoul(v, NULL, 16);
     } else if ((v = value(arg, "avpack="))) {
@@ -109,6 +116,9 @@ bool nc_option(NcOptions *o, const char *arg)
         nc_kernel_set_audio(surround);
         nc_audio_set_channels(surround ? 6 : 2);
         nc_log("xbased-app", "audio %s", surround ? "5.1 (Dolby Digital)" : "stereo");
+    } else if ((v = value(arg, "hrtf="))) {
+        nc_apu_set_hrtf(atoi(v) != 0);          /* the 3D voices' HRTF filters (on by default) */
+        nc_log("xbased-app", "HRTF filtering %s", atoi(v) ? "on" : "off");
     } else if ((v = value(arg, "pal60="))) {
         nc_kernel_set_pal60(atoi(v) != 0);      /* PAL titles at 60 Hz (default) or 50 */
     } else if ((v = value(arg, "lang="))) {

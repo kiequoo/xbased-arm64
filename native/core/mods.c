@@ -600,6 +600,15 @@ static bool mem_write(void *opaque, uint32_t va, const void *buf, unsigned n)
     return true;
 }
 
+#ifdef XBASED_DEVCTL
+void (*nc_mods_vblank_hook)(void);
+
+bool nc_mods_write(uint32_t va, const void *buf, unsigned n)
+{
+    return g_vm && mem_write(NULL, va, buf, n);
+}
+#endif
+
 void nc_mods_bind(NcVm *vm, NcCpu *cpu, const HleXbeInfo *xbe)
 {
     g_vm = vm;
@@ -626,6 +635,11 @@ void nc_mods_poll(void)
     }
     g_vblank = v;
     nc_memscan_poll(g_vm);              /* debug.xbased.memscan */
+#ifdef XBASED_DEVCTL
+    if (nc_mods_vblank_hook) {
+        nc_mods_vblank_hook();       /* the dev control's writes (win_devctl.c) */
+    }
+#endif
     if (!nc_cheat_count()) {
         return;
     }

@@ -1,5 +1,323 @@
 # xbased changelog
 
+## 1.2.11 (2026-11)
+
+### Fixes
+- Frame rate limit: games that keep three frames ready, like Crash Bandicoot
+  The Wrath of Cortex, could go over the limit on a busy PC (64-65 fps at
+  Up to 60 on a laptop). Right after a frame went through, a second one could
+  be let through a millisecond later before the emulated GPU had moved on
+  (#411).
+- Games that flip in their own interrupt handler, like Star Wars Republic
+  Commando, went about one frame a second over the limit (61 fps at Up to 60):
+  a frame they flipped outside that handler didn't count against it.
+
+## 1.2.10 (2026-11)
+
+### Fixes
+- Glow and blur effects at higher resolutions: a game's blur passes, which
+  sample a target at offsets of one pixel of the console's resolution, now
+  run at the console's resolution, so above 1x they blur instead of breaking
+  into copies. Splinter Cell Pandora Tomorrow's goggles had a grid of green
+  dots round them instead of a soft halo (#412, #421).
+- SoulCalibur II after loading a state: the picture went softer and slower.
+  A frame buffer taller than the screen came back from the state shorter than
+  it is, and the game's final filter, which reads all of it, went through
+  memory at the console's resolution every frame (#418).
+- Dead or Alive 3 kept its 16:9 picture only until a state was loaded, which
+  brought it back in 4:3. Its shape is now read from the game at boot as well.
+
+### Controls
+- Pressure modifier: a new input under each player's buttons. While it's held,
+  A, B, X, Y, Black and White are pressed at the amount set in the controller
+  settings (50% by default), for games that read how hard the face buttons
+  are pressed, like Metal Gear Solid 2 (#420).
+- A trigger assigned to a face button presses it as far as the trigger goes,
+  with the triggers' dead zone and full press applied.
+- DualShock 3: its buttons' pressure goes to the game when SDL reads the pad
+  with its PS3 driver (now on for Windows, with Sony's driver or DsHidMini).
+
+## 1.2.9 (2026-11)
+
+### Fixes
+- Crazy Taxi 3: no longer drops to 30 or 20 fps after a few levels (#407).
+  Its menus draw into its frame buffers from the CPU, and those buffers kept
+  counting as the CPU's for the rest of the session: each time the game
+  changed what it draws to (about 150 times a frame in Glitter Oasis) a
+  whole frame buffer was copied back to memory, and every frame missed its
+  vblank. A buffer now counts as the CPU's only while the CPU keeps writing
+  it. Forza Motorsport's buffers did the same after its menus.
+- The frame pacing hold (which keeps a game's frames in step with the
+  display) lets go of a game it slows down: Crazy Taxi 3 waits for a vblank
+  after each frame, and held it missed one more each time (20 fps). Games
+  that need the hold keep it, such as GTA Vice City at its own 30 fps and
+  Ninja Gaiden Black.
+
+## 1.2.8 (2026-11)
+
+### Fixes
+- Armed and Dangerous: a level no longer starts at half its frame rate for
+  its first seconds (#365). Each time a game looked for one file by name in
+  a folder, the whole folder was listed, and on the hard disk with a lookup
+  of every file in it: the game looks up each sound of a level in its cache
+  as the level loads, about 16 ms each on Windows with the game held. The
+  loading screen is shorter too.
+- Grand Theft Auto III: the raindrops on the screen show in the rain
+  (#389). A draw that reads the very picture it draws into now reads it
+  where it asks to, as the console does: each drop shows the scene behind
+  it through the water, and read at its own spot it drew the picture over
+  itself, unseen.
+
+## 1.2.7 (2026-11)
+
+### Fixes
+- Screenshots no longer freeze the picture (#401). The picture is read,
+  encoded and written on a thread of its own (the screen stood still for
+  about a third of a second, longer at 4K), and its notice no longer makes
+  the screen redraw every refresh while it shows.
+- Savestates hold the game only while it is taken (#401). The file is
+  written once the game runs again, and the wait for the game's next frame
+  is shorter (Republic Commando 680 ms down to 90, San Andreas about 130).
+  States saved by earlier versions load as before.
+- HRTF filtering off (Audio, or a game's settings): the sounds a game
+  places in 3D play at the level they have with the filter, instead of 7 to
+  8 dB louder (#410). Max Payne's gunshots and effects covered its dialogue.
+
+## 1.2.6 (2026-11)
+
+### New
+- Pause when a controller disconnects (Controls, on by default, #400): if a
+  player's controller goes during a game, the in-game menu opens, the game
+  waits, and a notice says whose controller it was. A controller connected
+  again while the menu is up is taken by the game as it closes.
+- Fast forward (toggle) (#404): a second fast forward shortcut, F3 by
+  default and none on the controller, that stays on until pressed again.
+  While fast forward is on, by either shortcut, two arrows show in the top
+  right corner of the picture.
+- The in-game menu closes with the shortcut that opens it (#404): Guide on
+  the controller, F1 on the keyboard, or whatever they were set to.
+- LB and RB jump between the sections of a game's settings (video, audio,
+  system) and between mods and cheats (#400).
+- A clear warning that frame rate patches and an unlocked frame rate can
+  get you banned from Insignia (#400), as one is turned on and under those
+  rows, with the advice to turn on Online mode before playing online.
+
+### Fixes
+- Star Wars Republic Commando: its legal screen stays on screen while the
+  game loads, instead of garbage (#398). The game keeps a copy of that
+  screen to show while its graphics are released, and xbased kept showing
+  the old frame buffer, which the loader was filling with its data.
+- The mouse wheel moves the settings lists whatever row is selected (#400):
+  a list didn't move when the selected row would have left it. The wheel
+  selects the row under the pointer, and past an end, after a pause, goes
+  round to the other end as the controller does (#404).
+- The warnings of a setting (fast disc, 128 MB, full screen refresh,
+  asynchronous shaders, the frame rate patch tip) go as soon as you leave
+  their row or tab, instead of covering the next ones; they show in the
+  in-game menu too, and end in a full stop in every language (#400).
+- Interface sounds are only under Interface (#400), and a game's own
+  controls are called "Game controls" (#404).
+- The frame rate unlock no longer suggests the game's frame rate patch when
+  one of its patches is on already.
+
+## 1.2.5 (2026-11)
+
+### Fixes
+- Stereo: what a game sends to the centre or the rear speakers is heard
+  again (#402). The new audio path of 1.2.4 played only the front pair in
+  stereo, so Dynasty Warriors 5's officers' voice lines, which it sends to
+  the centre speaker even in stereo, were lost. The centre and the rears
+  now go into the front speakers as the console mixes them for its analog
+  out (at -3 dB, the LFE left out); 5.1 is as it was.
+
+## 1.2.4 (2026-11)
+
+### New
+- Sound as the console makes it (#375): the audio processor's own DSP
+  program, which many games use for their mix, their reverb and the like
+  and their 5.1 output, now runs recompiled to x86-64, and its speaker
+  outputs are what you hear. Each game plays its own mix and effects, and
+  in 5.1 every speaker gets what the game sends it.
+- Jay's Magic Patcher patches (#391): a .JMP file copied into the mods
+  folder shows up in its game's Mods & patches. It's offered only on the
+  executable it fits (its game, the builds its CRC-32s name, every record's
+  bytes there, offsets only on its region's release), and goes in whole or
+  not at all.
+
+### Fixes
+- Frame pacing in games that show each frame as soon as it's drawn (Star
+  Wars Republic Commando, #395): a frame that took a little longer moved
+  the limiter's timing, and about once a second two frames came out almost
+  together, at Original, Up to 60 and Up to 30 alike. A late frame now
+  keeps its place and the next one comes on time.
+- Tomb Raider: Legend: no more flashes of older frames while Lara moves.
+  The rows of a picture the game wrote with the CPU are uploaded as they
+  are, without the rows the GPU had drawn since.
+- Box art (#385): titles with trade marks (007: NightFire), names with
+  dotted acronyms (Codename: Kids Next Door) and names the libretro list
+  writes with a licence's words around them or without the subtitle
+  (Lotus Challenge, Wakeboarding Unleashed, Splinter Cell Double Agent,
+  NightCaster) find their covers. Download cover says how it went and,
+  when no cover matches, opens Choose cover image. The picker's "No covers
+  match." no longer covers its From a file row. A game that had a cover
+  keeps the same one.
+- Screenshots: the shortcut writes a line in xbased.log, and a screenshot
+  that can't be saved says so on screen, with the reason in the log,
+  instead of nothing (#383).
+
+## 1.2.3 (2026-11)
+
+### Fixes
+- Pirates: The Legend of Black Kat: the sea shows its reflections again,
+  without the white edges and the colour that changed as the camera moved.
+  The NV2A's offset textures (bump environment maps) read the coordinates
+  as they come, without dividing them by q, and xbased divided them.
+- Graphics cards whose Vulkan 1.3 driver lacks descriptor indexing (Intel
+  HD Graphics 5500 on Linux's Mesa hasvk) can start games (#378): xbased
+  asked for it even where it draws without it. When a game can't start for
+  the graphics driver, it now stops while the message shows, instead of
+  playing on with its sound.
+
+## 1.2.2 (2026-11)
+
+### New
+- Audio: HRTF filtering (3D sound) can be turned off, globally or per game
+  (#374). It's the console's filter for the sounds a game places around you;
+  on by default, as before.
+- Library: a game folder kept as on a modded Xbox, the game's image with an
+  ISO attacher's default.xbe beside it, is added and played as that image
+  (#367). Before, xbased ran the attacher, which can't load here.
+- Time played leaves out the time a game is paused: the pause key, the
+  in-game menu, its window minimized (#379).
+
+### Fixes
+- Frame rate: a game no longer runs too fast for a moment after a stutter,
+  and its frame rate no longer drops when the PC is busy. The emulated
+  console's vblank, its clock, could fall behind on a loaded PC or a laptop
+  saving power, then caught up in a burst (#370). Its thread now runs at a
+  high priority, it never catches up in a burst, and xbased stays out of
+  Windows' power throttling, which on laptops moves programs to the slower
+  cores and delays their timers.
+- Frame rate limits that are a whole number of the display's refreshes (Up
+  to 30 or 60 on a 60 Hz display, Unlocked at the display's refresh rate)
+  show every frame for the same time. Before, some frames were shown a
+  refresh early or late (Otogi at Up to 30, Crash Bandicoot at Up to 60
+  without V-Sync).
+- Games that present without waiting for the vblank (Total Immersion Racing
+  and others) are shown evenly too: before, about one frame a second was
+  shown twice and the next skipped at 60 Hz.
+- 50 Hz games (European discs) at Up to 30 or Up to 60 with V-Sync no
+  longer get stuck behind after a stutter: once one frame missed its
+  refresh, every frame after it was shown a refresh late for the rest of the
+  session, almost three times the delay from the game to the screen (Crash
+  Bandicoot at Up to 60: 37 ms instead of 13).
+- Up to 120 on a 60 Hz display with V-Sync shows each frame 14 ms after the
+  game made it instead of 34, and its frames are more even.
+- The emulated vblank no longer drifts off the display when Windows' frame
+  statistics miss a refresh, which happens now and then: frames were then
+  shown a refresh late for a moment.
+- Games that present without waiting for the vblank are timed like the
+  others: their frames went to the screen as they came, and when they came
+  close to the display's refresh some were never shown (Total Immersion
+  Racing: 19 in 12 s in one run, none now).
+- 50 Hz games run at their real speed on 144 Hz and 240 Hz displays. Their
+  vblank kept to the display's refreshes when it shouldn't have, and they
+  ran at 48 fps, 4 % slow.
+- 120 Hz displays show every frame for the same time: some frames were
+  shown a refresh late (Otogi at Up to 30: 19 in 12 s, Crash Bandicoot at
+  Up to 30: 4; none now).
+- High frame rates are all shown: at Unlocked on a 280 Hz display, Crash
+  Bandicoot made 253 frames a second and only 113 reached the screen; now
+  208 of its 220.
+- With G-Sync or FreeSync, frames under a frame rate limit reach the screen
+  at exactly even times. Before, they were up to almost a millisecond off.
+- Tomb Raider: Legend no longer crashes on its first screen (#376). It
+  happened on the boot that sets up its cache partition on the hard disk (the
+  first after playing other games): xbased wrote rows of the picture the
+  game never draws over the memory right after its frame buffer, where the
+  game keeps its heap.
+- Dead or Alive 2 Ultimate: the palace stage's floor no longer shows white
+  and blue specks along its step edges (#42). The NV2A's signed blend
+  equations are now done as the console does them, with any blend factors.
+- Psychonauts no longer stands on its logo on the first boot (#360). That
+  boot unpacks its data to the hard disk's cache, and when the PC read the
+  disc image slower than it wrote the hard disk, the copy stopped just short
+  of its end. Disc and hard disk requests now complete in the order the game
+  asked for them, as on the console, where both drives share one channel.
+
+## 1.2.1 (2026-11)
+
+- The About screen includes a link to the website, xbased-emu.com.
+
+## 1.2.0 (2026-11)
+
+### The GPU layer
+- xbased draws with 1.0.94's GPU layer again, the last before the exact
+  NV2A work of 1.0.95 to 1.1.15, with every game fix and improvement made
+  since kept on it and the hybrid shaders' interpreters built for it. Games
+  run 9 to 21% faster than in 1.1.15 (Vice City, The Two Thrones, Burnout 3,
+  Conker, Dead or Alive 3, Driv3r, Fable, Prince of Persia) (#309).
+- With fresh caches the hybrid mode builds new shaders without holding the
+  game: a few milliseconds in all where 1.1.15 spent seconds (Forza, Conker,
+  Halo 2, The Two Thrones, Dead or Alive 3).
+- This update sets the shader mode back to Hybrid once, and the GPU
+  precision setting is gone: this layer has one.
+
+### New
+- Frame rate: games without a frame cap of their own (Total Immersion
+  Racing, Star Wars Republic Commando and others) keep the console's pace at
+  Original instead of running at hundreds of frames a second, and the
+  limits apply to them too (#351). Up to 30 fps per game, and 90 fps for the
+  global limit.
+- Controls: Face buttons, Xbox or Nintendo, for controllers with A on the
+  right; it applies to the menus and the games (#337).
+- Controls: the mouse can move player 1's left or right stick, with its own
+  sensitivity, and its buttons can be assigned like keys (#255).
+- Controls: Xbox Communicator, a voice headset in player 1's controller
+  that uses your PC's microphone and speakers (#254).
+
+### Fixes
+- Super Monkey Ball Deluxe: no more Fatal Error as it starts (a folder of
+  more than 2048 files).
+- StarCraft: Ghost (the v1.256 build): its first mission loads; builds for
+  the debug kit get its 128 MB.
+- The Nightmare Before Christmas: Oogie's Revenge no longer stays on Now
+  Loading now and then.
+- Fable: the ripples on rivers and puddles no longer draw over the people
+  and things in front of them.
+- Ninja Gaiden Black: Ryu's shadow no longer comes and goes (hanging from a
+  ledge, on the wall below him).
+- Spider-Man 2: the night sky is dark with its stars again, not white
+  between the clouds (games that draw in points or lines get them).
+- Xbox Music Mixer: no more black screen as it starts; it reaches its menus.
+  It runs part of itself in ring 3 and reads the GDT, the page tables and
+  the hard disk's serial number, which the emulated console now has (#361).
+- Lines keep their width at higher internal resolutions, as points already
+  did; before, they stayed one pixel wide and looked thinner at each step up.
+  Metal Gear Solid 2: Substance: Otacon's glasses in the codec are drawn as
+  on the console again at 2x and above, not as a lattice of thin lines, and
+  Ninja Gaiden Black's sparks keep their size (#350).
+- Cold Fear: things a few metres from the hero cast their own shadows
+  instead of black blocks that moved as he walked (#241).
+- Tomb Raider: Legend: the water's reflections follow the scene again;
+  after the PDA or walking about they could stick on an old frame (a white
+  screen, a blurred Lara) (#185).
+- Tomb Raider: Legend: no more crashes a little way into a level. The game
+  loads code over its own as it goes, and the emulated CPU now notices.
+- Prince of Persia: Warrior Within: the screen no longer turns white and
+  stays that way after a bright flash. The game builds its glow out of
+  pieces of one image, and each piece is now read from where it was drawn
+  last.
+- Armed and Dangerous: the second level loads instead of a dirty disc error
+  after a long loading screen (#245). The kernel's memory pool now gives back
+  pages with nothing in them when a game asks for a large block and finds no
+  room.
+- Games: hidden games can be shown again from Search (Show hidden games, as
+  in Settings > Interface); hiding one says so, and the Games screen counts
+  them.
+- The main menu no longer comes back cut off after hiding a game (its logo's
+  left half and the buttons' hints gone).
+
 ## 1.1.15 (2026-11)
 
 ### Fixes

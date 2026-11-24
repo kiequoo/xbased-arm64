@@ -44,7 +44,9 @@ static uint32_t *g_nbr_t;
  * that faults and counts). */
 static uint32_t *g_wseq;            /* per page: writes reported */
 static uint32_t *g_cseq;            /* per page: g_wseq + 1 at its last clean */
+#if defined(__aarch64__)
 static uint32_t g_line = 64;        /* data cache line bytes (CTR_EL0.DminLine) */
+#endif
 
 static uint32_t g_wepoch;          /* writes reported anywhere (atomic): hle_mem_write_epoch */
 static uint32_t *g_bseq;            /* per WBLOCK pages: their writes reported (hle_mem_wseq_blocks) */

@@ -4,11 +4,17 @@
 
 <p align="center">
   <b>The original Xbox, on your PC.</b><br>
-  xbased is an original Xbox emulator for Windows and Linux, developed by <b>crazyriddler</b>.<br>
-  Free and open source, with a console-style dashboard. Based on <a href="https://github.com/rfandango/hakuX">hakuX</a>.
+  xbased is an original Xbox emulator for Windows and Linux.<br>
+  Free and open source, with a console-style dashboard.
 </p>
 
 <p align="center">
+  <b>New:</b> the official website, <a href="https://xbased-emu.com"><b>xbased-emu.com</b></a>, with the downloads, the
+  compatibility list and your own game reports (<a href="https://github.com/crazyriddler/xbased/issues/369">announcement</a>).
+</p>
+
+<p align="center">
+  <a href="https://xbased-emu.com"><img src="https://img.shields.io/badge/website-xbased--emu.com-6fd12a?style=for-the-badge&labelColor=0b1a06" alt="Website"></a>
   <a href="https://github.com/crazyriddler/xbased/releases/latest"><img src="https://img.shields.io/github/v/release/crazyriddler/xbased?style=for-the-badge&color=6fd12a&labelColor=0b1a06&label=download" alt="Download"></a>
   <img src="https://img.shields.io/badge/Windows-x64-6fd12a?style=for-the-badge&labelColor=0b1a06&logo=windows&logoColor=white" alt="Windows x64">
   <img src="https://img.shields.io/badge/Linux-AppImage-6fd12a?style=for-the-badge&labelColor=0b1a06&logo=linux&logoColor=white" alt="Linux AppImage">
@@ -56,8 +62,8 @@ No BIOS, MCPX ROM or hard-disk image is needed.
 
 | Platform | File | |
 |---|---|---|
-| **Windows** 10/11 (x64) | `xbased-1.1.15-windows-x64.zip` | Unzip anywhere and run `xbased.exe`. Portable: everything stays in its folder. |
-| **Linux** (x86-64) | `xbased-1.1.15-x86_64.AppImage` | `chmod +x` it and run. Ubuntu 22.04 or newer, or any distribution of the same age. |
+| **Windows** 10/11 (x64) | `xbased-1.2.11-windows-x64.zip` | Unzip anywhere and run `xbased.exe`. Portable: everything stays in its folder. |
+| **Linux** (x86-64) | `xbased-1.2.11-x86_64.AppImage` | `chmod +x` it and run. Ubuntu 22.04 or newer, or any distribution of the same age. |
 
 Get them from **[Releases](https://github.com/crazyriddler/xbased/releases/latest)**.
 
@@ -125,8 +131,6 @@ xbased doesn't include any copyrighted Xbox software.
   own widescreen choice), widescreen and video modes.
 - **Hybrid shaders**: a new shader is drawn at once while its own builds in
   the background, so games don't stutter compiling.
-- **GPU precision**: Exact, the console graphics chip's own arithmetic, or
-  Fast for older and integrated GPUs; Automatic picks for your hardware.
 - **Interface in 4:3** for bezels and frame shaders over a 4:3 picture.
 - **FXAA** and **anisotropic filtering** up to 16x.
 - **Upscaling**: bilinear or AMD FSR 1.
@@ -144,11 +148,12 @@ xbased doesn't include any copyrighted Xbox software.
 - **Cheats for 500 games**: the Xbox scene's cheat files (.etm, .xbtf)
   come with xbased and their options show up in each game's Mods & patches.
   Add your own to `cheats/<TITLE ID>/`.
-- **Frame rate per game**: Original, up to 60, up to 120 or unlocked, where
-  the game allows it (anything but Original can break a game). An unlocked
-  game is held to your monitor's refresh rate by default, never under 60
-  (Settings › Video › Uncapped games' limit), as some games have no frame
-  cap of their own.
+- **Frame rate per game**: Original, up to 30, up to 60, up to 120 or
+  unlocked, where the game allows it (anything but Original can break a
+  game). Games with no frame cap of their own (they swap without waiting for
+  the screen) keep the console's 60 at Original. An unlocked game is held to
+  your monitor's refresh rate by default, never under 60 (Settings › Video ›
+  Uncapped games' limit).
 - **Downloaded content and title updates** copied into
   `hdd/Partition1/TDATA/<title id>/` are signed for xbased as the game starts.
 - **Add your own**: drop the IPS patches shared online into
@@ -174,7 +179,13 @@ xbased doesn't include any copyrighted Xbox software.
 
 ### Controls, online, languages
 - **4 controller ports**: Automatic, any gamepad or the keyboard; remap every
-  button, per game too; dead zone and vibration.
+  button, per game too; dead zone and vibration; a Nintendo layout for
+  controllers with A on the right (A and B, X and Y swapped everywhere).
+- **Mouse as a stick**: player 1's mouse can move the left or right stick
+  (click the game to hold it, Esc lets it go), with its own sensitivity, per
+  game too, and its buttons can be assigned like keys.
+- **Xbox Communicator**: a voice headset in player 1's controller, your PC's
+  microphone and speakers, for games with voice chat or voice commands.
 - **Sticks like the Xbox controller's**: a modern stick's circle reaches the
   Duke's full square, so diagonals register. Stick range and shape are set
   on a screen that shows both sticks live, the range games expect and the
@@ -365,8 +376,8 @@ More options (link-time optimization, the dependencies' location) are in
   BloodRayne 2, NFL Fever 2004, Panzer Dragoon Orta and more), internal
   resolution up to 8x, 5.1 audio, the automatic updates and every release
   ([CHANGELOG.md](CHANGELOG.md)).
-- Based on **[hakuX](https://github.com/rfandango/hakuX)**. Its README and
-  changelog are in [docs/hakuX](docs/hakuX/).
+- **[hakuX](https://github.com/rfandango/hakuX)**, the emulator xbased started from. Its
+  README and changelog are in [docs/hakuX](docs/hakuX/).
 - Box art from the [libretro-thumbnails](https://github.com/libretro-thumbnails)
   project. Interface font: Play (SIL Open Font License).
 - SDL3, Zydis, libslirp, libchdr, xxHash, volk, Vulkan Memory Allocator, glslang,

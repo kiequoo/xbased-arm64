@@ -35,5 +35,5 @@ cmake -S "$REPO/native" -B "$BUILD" -G Ninja \
   -DSDL_UNIX_CONSOLE_BUILD=ON
 
 echo "=== Building ==="
-cmake --build "$BUILD" --target hakux
+cmake --build "$BUILD" --target xbased
 echo "=== Done: $BUILD/xbased ==="

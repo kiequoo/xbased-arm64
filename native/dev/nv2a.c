@@ -6,11 +6,10 @@
  *   PMC_BOOT_0      0x000000  chip identification
  *   PMC_INTR_0      0x000100  pending summary (bit 24 PCRTC, 20 PTIMER), read-only
  *   PMC_INTR_EN_0   0x000140  bit 0: interrupts to the CPU
- *   PTIMER          0x009400/0x009410  the time, low/high: the core clock
- *                   times 32 * DENOMINATOR (0x009210) / NUMERATOR (0x009200)
- *                   on the guest's clock, writable; ALARM_0 0x009420: INTR_0
- *                   0x009100 bit 0 when the low word reaches it (write 1 to
- *                   clear), INTR_EN_0 0x009140
+ *   PTIMER          0x009400/0x009410  free-running time (ns, the guest's
+ *                   clock), low/high; ALARM_0 0x009420: INTR_0 0x009100 bit
+ *                   0 when the low word reaches it (write 1 to clear),
+ *                   INTR_EN_0 0x009140
  *   PFB_CSTATUS     0x10020C  installed memory size
  *   PCRTC_INTR_0    0x600100  bit 0 vblank, write 1 to clear
  *   PCRTC_INTR_EN_0 0x600140
@@ -64,9 +63,6 @@
 #define NV_PFIFO_CACHE1_DMA_SUBROUTINE 0x00324Cu
 #define NV_PGRAPH_INTR      0x400100u
 #define NV_PGRAPH_INTR_EN   0x400140u
-#define NV_PGRAPH_STATUS    0x400700u
-#define NV_PGRAPH_RDI_INDEX 0x400750u   /* select 24:16, word address 12:2 */
-#define NV_PGRAPH_RDI_DATA  0x400754u
 #define NV_PGRAPH_SURFACE   0x400710u
 #define NV_PGRAPH_INCREMENT 0x40071Cu
 #define NV_PGRAPH_FIFO      0x400720u
@@ -77,20 +73,15 @@
 #define NV_PVIDEO_STOP      0x008704u
 #define NV_PTIMER_INTR_0    0x009100u
 #define NV_PTIMER_INTR_EN_0 0x009140u
-#define NV_PTIMER_NUMERATOR   0x009200u
-#define NV_PTIMER_DENOMINATOR 0x009210u
 #define NV_PTIMER_TIME_0    0x009400u
 #define NV_PTIMER_TIME_1    0x009410u
 #define NV_PTIMER_ALARM_0   0x009420u
-#define NV_PFB_CFG0         0x100200u
 #define NV_PFB_CSTATUS      0x10020Cu
 #define NV_PFB_WBC          0x100410u
 #define NV_PCRTC_INTR_0     0x600100u
 #define NV_PCRTC_INTR_EN_0  0x600140u
 #define NV_PCRTC_START      0x600800u
 #define NV_PCRTC_RASTER     0x600808u
-#define NV_PRAMDAC_NVPLL_COEFF 0x680500u
-#define NV_PRAMDAC_VPLL_COEFF  0x680508u
 
 #define PMC_INTR_PCRTC   (1u << 24)
 #define PMC_INTR_PTIMER  (1u << 20)
@@ -332,63 +323,9 @@ static void update_irq(void)
     pthread_mutex_unlock(&g_irq_mu);
 }
 
-/* ---- PTIMER's time ---- */
+/* ---- PTIMER's alarm ---- */
 
 uint64_t nc_ke_host_ns(uint64_t guest_ns);  /* native/kernel/ke.c */
-
-/* The time counts the core clock (16.666666 MHz * 28 / 2, NVPLL) times 32 *
- * DENOMINATOR / NUMERATOR: 0.99995 GHz at the console's 56966 / 7629, the
- * low 5 bits read 0, the high word 29 bits; a zero in either stops it. It
- * goes on the guest's clock from where it was last set or rescaled
- * (nxdk_low_level_nv2a_tests' ptimer_alarm_test: Time R/W, Rollover, Clock
- * Scaling Ratios; it was the guest's nanoseconds, fixed). */
-#define PTIMER_CORE_HZ 233333324ull
-#define PTIMER_NUM0    56966u
-#define PTIMER_DEN0    7629u
-static struct {
-    pthread_mutex_t mu;
-    uint64_t ticks, ns;             /* the time at the guest's ns (ns 0: at the first look) */
-    uint64_t set_ns;                /* the guest's ns when it last set the time (TIME_0 / TIME_1),
-                                       0: not since the start or the state's load */
-    bool strict;                    /* the alarm was set (or the time) within ALARM_STRICT_NS
-                                       of that: the console's rule for it (alarm_due) */
-} g_pt = {PTHREAD_MUTEX_INITIALIZER, 0, 0, 0, false};
-
-/* (g_pt.mu held) */
-static uint64_t pt_at(uint64_t now)
-{
-    if (!g_pt.ns) {
-        g_pt.ticks = g_pt.ns = now;
-    }
-    const uint64_t num = ld(NV_PTIMER_NUMERATOR), den = ld(NV_PTIMER_DENOMINATOR);
-    if (!num || !den || now <= g_pt.ns) {
-        return g_pt.ticks;
-    }
-    return g_pt.ticks + (uint64_t)((unsigned __int128)(now - g_pt.ns) * (PTIMER_CORE_HZ * 32u * den) /
-                                   (num * 1000000000ull));
-}
-
-/* The guest ns the time takes to go d further, rounded up; UINT64_MAX if it
- * stands still (g_pt.mu held) */
-static uint64_t pt_ns_for(uint64_t d)
-{
-    const uint64_t num = ld(NV_PTIMER_NUMERATOR), den = ld(NV_PTIMER_DENOMINATOR);
-    if (!num || !den) {
-        return UINT64_MAX;
-    }
-    const unsigned __int128 q = PTIMER_CORE_HZ * 32u * den;
-    return (uint64_t)(((unsigned __int128)d * num * 1000000000ull + q - 1) / q);
-}
-
-static uint64_t pt_now(void)
-{
-    pthread_mutex_lock(&g_pt.mu);
-    const uint64_t t = pt_at(nc_ke_now_ns());
-    pthread_mutex_unlock(&g_pt.mu);
-    return t;
-}
-
-/* ---- PTIMER's alarm ---- */
 
 /* The alarm interrupt comes when the time's low word reaches ALARM_0: D3D
  * times its vblank work with it in the modes whose vblank it doesn't take
@@ -396,23 +333,11 @@ static uint64_t pt_now(void)
  * flip at the alarm's vblanks, and with no alarm the first one never did),
  * and its timer callbacks. The ptimer thread, started at the first alarm a
  * title sets, waits for it on the guest's clock, which stands still while
- * the emulation is paused and goes on from a savestate's.
- *
- * The console's alarm comes only as the low word gets to it: one set where
- * the time already is or behind it waits for the word to come round (4.3 s;
- * ptimer_alarm_test's Alarm Set In The Past, 0x10000000 behind, and
- * Unaligned Target, 0x201F over a time of 0x2000). Here one the time passed
- * less than ALARM_LATE ago comes at once: D3D sets its alarms ahead of a time
- * it read, and the emulation (a hitch of ours) can make that late, where its
- * handler checks the 64-bit time itself. The console's rule holds for an
- * alarm set right after the guest set the time (within ALARM_STRICT_NS:
- * the tests set the time, then an alarm against it). D3D sets the time too,
- * to 0 at its start (Prince of Persia - Warrior Within, Grand Theft Auto -
- * Vice City): with the rule kept for every guest that ever set it, their
- * late alarms waited for the low word to come round, the loading screens
- * black and the play stopped for seconds. */
-#define ALARM_LATE      1000000000u /* in the time's units, ~1 s */
-#define ALARM_STRICT_NS 10000000ull /* 10 ms of the guest's time */
+ * the emulation is paused and goes on from a savestate's. An alarm the time
+ * passed less than ALARM_LATE_NS ago comes at once, not after the low word
+ * wraps (4.3 s): the guest set it late, by its own slowness or ours, and
+ * D3D's handler checks the 64-bit time itself. */
+#define ALARM_LATE_NS  1000000000u
 #define ALARM_POLL_NS  20000000ull  /* the pause looked at this often */
 static struct {
     pthread_mutex_t mu;
@@ -423,25 +348,11 @@ static struct {
     uint64_t due;                   /* guest ns; 0: none */
 } g_alarm = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, PTHREAD_ONCE_INIT, true, 0};
 
-/* The guest ns at which the time's low word, at now, next reaches alarm
- * (UINT64_MAX: the time stands still) */
+/* When the time's low word, at now, next reaches alarm */
 static uint64_t alarm_due(uint32_t alarm, uint64_t now)
 {
-    pthread_mutex_lock(&g_pt.mu);
-    const uint32_t d = (alarm & ~0x1Fu) - ((uint32_t)pt_at(now) & ~0x1Fu);
-    const bool late = !g_pt.strict && d >= (uint32_t)-ALARM_LATE;
-    const uint64_t w = d == 0 || late ? 0 : pt_ns_for(d);
-    pthread_mutex_unlock(&g_pt.mu);
-    return w == UINT64_MAX ? UINT64_MAX : now + w;
-}
-
-/* The guest ns the low word takes to come round (UINT64_MAX: it doesn't) */
-static uint64_t alarm_period(void)
-{
-    pthread_mutex_lock(&g_pt.mu);
-    const uint64_t w = pt_ns_for(1ull << 32);
-    pthread_mutex_unlock(&g_pt.mu);
-    return w;
+    const uint32_t d = alarm - ((uint32_t)now & ~0x1Fu);
+    return d >= (uint32_t)-ALARM_LATE_NS ? now : now + d;
 }
 
 static void *ptimer_thread(void *arg)
@@ -463,12 +374,11 @@ static void *ptimer_thread(void *arg)
         if (now >= g_alarm.due) {
             __atomic_fetch_or(reg(NV_PTIMER_INTR_0), PTIMER_ALARM, __ATOMIC_ACQ_REL);
             update_irq();
-            const uint64_t p = alarm_period();  /* the low word comes round to it again */
-            g_alarm.due = p == UINT64_MAX ? UINT64_MAX : g_alarm.due + p;
+            g_alarm.due += 1ull << 32;      /* the low word comes round to it again */
             continue;
         }
+        uint64_t until = nc_ke_host_ns(g_alarm.due);
         const uint64_t cap = now_ns() + ALARM_POLL_NS;
-        uint64_t until = g_alarm.due == UINT64_MAX ? cap : nc_ke_host_ns(g_alarm.due);
         until = until < cap ? until : cap;
         const struct timespec ts = {(time_t)(until / 1000000000ull), (long)(until % 1000000000ull)};
         pthread_cond_timedwait(&g_alarm.cv, &g_alarm.mu, &ts);
@@ -499,70 +409,6 @@ static void alarm_set(void)
     g_alarm.rearm = true;
     pthread_cond_signal(&g_alarm.cv);
     pthread_mutex_unlock(&g_alarm.mu);
-}
-
-/* The time set or rescaled: when the alarm comes again, if anything waits
- * for it (a guest that sets the time itself starts the alarm too: INTR_0
- * latches what it crosses, armed or not; D3D's scale written at its start
- * doesn't, for a title that never sets an alarm) */
-static bool g_alarm_started;
-static void alarm_retime(bool start)
-{
-    if (start || __atomic_load_n(&g_alarm_started, __ATOMIC_ACQUIRE)) {
-        __atomic_store_n(&g_alarm_started, true, __ATOMIC_RELEASE);
-        alarm_set();
-    }
-}
-
-/* INTR_0 or PMC's summary read: an alarm the time has reached is latched
- * now, as the console's is the moment the low word gets there (the thread's
- * wake is late by the host's timer, a millisecond or more on Windows: the
- * Interrupt Acknowledge test reads INTR_0 1 ms after the alarm) */
-static void alarm_poll(void)
-{
-    if (!__atomic_load_n(&g_alarm_started, __ATOMIC_ACQUIRE)) {
-        return;
-    }
-    bool fired = false;
-    pthread_mutex_lock(&g_alarm.mu);
-    const uint64_t now = nc_ke_now_ns();
-    if (g_alarm.rearm) {
-        g_alarm.rearm = false;
-        g_alarm.due = alarm_due(ld(NV_PTIMER_ALARM_0), now);
-    }
-    if (now >= g_alarm.due) {
-        __atomic_fetch_or(reg(NV_PTIMER_INTR_0), PTIMER_ALARM, __ATOMIC_ACQ_REL);
-        const uint64_t p = alarm_period();
-        g_alarm.due = p == UINT64_MAX ? UINT64_MAX : g_alarm.due + p;
-        fired = true;
-    }
-    pthread_mutex_unlock(&g_alarm.mu);
-    if (fired) {
-        update_irq();
-    }
-}
-
-/* TIME_0 / TIME_1 / NUMERATOR / DENOMINATOR written */
-static void ptimer_write(uint32_t off, uint32_t v)
-{
-    const uint64_t now = nc_ke_now_ns();
-    pthread_mutex_lock(&g_pt.mu);
-    uint64_t t = pt_at(now);
-    if (off == NV_PTIMER_TIME_0) {
-        t = (t & ~0xFFFFFFFFull) | (v & ~0x1Fu);
-        g_pt.set_ns = now ? now : 1;
-        g_pt.strict = true;
-    } else if (off == NV_PTIMER_TIME_1) {
-        t = (t & 0xFFFFFFFFull) | (uint64_t)(v & 0x1FFFFFFFu) << 32;
-        g_pt.set_ns = now ? now : 1;
-        g_pt.strict = true;
-    } else {
-        __atomic_store_n(reg(off), v & 0xFFFFu, __ATOMIC_RELEASE);
-    }
-    g_pt.ticks = t;
-    g_pt.ns = now;
-    pthread_mutex_unlock(&g_pt.mu);
-    alarm_retime(off == NV_PTIMER_TIME_0 || off == NV_PTIMER_TIME_1);
 }
 
 static uint64_t nv2a_read_reg(uint32_t off, unsigned size);
@@ -602,11 +448,6 @@ static uint64_t nv2a_read_reg(uint32_t off, unsigned size)
         case NV_PFB_WBC:
             v = 0; /* no write-combine flush pending (Riddick spins on it) */
             break;
-        case NV_PGRAPH_STATUS:
-            if (g_pbmode && fifo_empty()) {
-                hle_pbd_idle_seen();    /* the guest waited for the GPU (pbkit's pb_busy) */
-            }
-            goto plain;
         default:
             goto plain;
         }
@@ -615,26 +456,11 @@ static uint64_t nv2a_read_reg(uint32_t off, unsigned size)
 plain:
     switch (off) {
     case NV_PMC_INTR_0:
-        alarm_poll();
         return pmc_intr();
-    case NV_PTIMER_INTR_0:
-        alarm_poll();
-        break;
-    case NV_PGRAPH_RDI_DATA: {
-        /* RDI: the word at RDI_INDEX's address in the RAM its select names,
-         * the address one on after each read. The vertex constants (0x17,
-         * 0xCC: xemu's names) give each constant's words w, z, y, x; a
-         * program's writes to them under CXT_WRITE_EN are read so
-         * (pbdraw.c cxt_after). Other RAMs read 0 here. */
-        const uint32_t idx = ld(NV_PGRAPH_RDI_INDEX), sel = (idx >> 16) & 0x1FFu, addr = (idx >> 2) & 0x7FFu;
-        __atomic_store_n(reg(NV_PGRAPH_RDI_INDEX), (idx & ~0x1FFCu) | (((addr + 1) & 0x7FFu) << 2),
-                         __ATOMIC_RELEASE);
-        return sel == 0x17 || sel == 0xCC ? hle_pbd_rdi_constant(addr) : 0;
-    }
     case NV_PTIMER_TIME_0:
-        return (uint32_t)pt_now() & ~0x1Fu;
+        return (uint32_t)nc_ke_now_ns() & ~0x1Fu;
     case NV_PTIMER_TIME_1:
-        return (uint32_t)(pt_now() >> 32) & 0x1FFFFFFFu;
+        return (uint32_t)(nc_ke_now_ns() >> 32) & 0x1FFFFFFFu;
     case NV_PCRTC_RASTER: { /* the line since the last vblank */
         const uint64_t since = now_ns() - __atomic_load_n(&g_last_vblank_ns, __ATOMIC_ACQUIRE);
         return (uint32_t)((since % g_frame_ns) * LINES / g_frame_ns);
@@ -756,6 +582,7 @@ static void nv2a_write(void *opaque, uint32_t off, uint64_t value, unsigned size
                        (n >> 24) & 7, (n >> 20) & 7, ld(NV_PCRTC_START));
             }
             hle_host_gpu_trace(HLE_GTR_INCREMENT, (n >> 24) & 7);
+            hle_pb_flip_read();
             hle_pb_flipped(ld(NV_PCRTC_START));
             hle_pb_kick();
         }
@@ -778,26 +605,9 @@ static void nv2a_write(void *opaque, uint32_t off, uint64_t value, unsigned size
         update_irq();
         return;
     case NV_PTIMER_ALARM_0:
-        /* (the low 5 bits read 0: ptimer_alarm_test's Register Bitmasks) */
-        __atomic_store_n(reg(off), (uint32_t)value & ~0x1Fu, __ATOMIC_RELEASE);
-        pthread_mutex_lock(&g_pt.mu);
-        {
-            const uint64_t now = nc_ke_now_ns();
-            g_pt.strict = g_pt.set_ns && now - g_pt.set_ns < ALARM_STRICT_NS;
-        }
-        pthread_mutex_unlock(&g_pt.mu);
-        __atomic_store_n(&g_alarm_started, true, __ATOMIC_RELEASE);
+        __atomic_store_n(reg(off), (uint32_t)value, __ATOMIC_RELEASE);
         alarm_set();
         return;
-    case NV_PTIMER_TIME_0:
-    case NV_PTIMER_TIME_1:
-    case NV_PTIMER_NUMERATOR:
-    case NV_PTIMER_DENOMINATOR:
-        if (size == 4) {
-            ptimer_write(off, (uint32_t)value);
-            return;
-        }
-        break;
     case NV_PMC_INTR_EN_0:
     case NV_PCRTC_INTR_EN_0:
         if (off == NV_PMC_INTR_EN_0) {
@@ -930,12 +740,26 @@ void nc_dev_nv2a_display_pickup(uint64_t ns)
     }
 }
 
-/* The next vblank after one at prev: a frame later, or locked to the panel
- * (its period times the vsyncs per frame, the phase nudged at most 0.5 ms a
- * vblank so the guest's clock never jumps). */
-static uint64_t place_vblank(uint64_t prev, bool *locked, bool *timed)
+/* How long before a vsync a timed present goes (display_grid): half a
+ * refresh at 60 Hz and below, above it PRESENT_AFTER past the vsync before,
+ * up to PRESENT_ROOM (120 Hz 6.8 ms, 144 Hz 5.4, 240 Hz 2.7). */
+#define PRESENT_AFTER 1500000ll
+#define PRESENT_ROOM  8333333ll
+
+static int64_t present_room(uint64_t pd)
 {
-    const uint64_t frame = __atomic_load_n(&g_frame_ns, __ATOMIC_RELAXED);
+    const int64_t h = (int64_t)pd / 2, r = (int64_t)pd - PRESENT_AFTER;
+    const int64_t d = r < PRESENT_ROOM ? r : PRESENT_ROOM;
+    return d > h ? d : h;
+}
+
+/* The display's vsyncs as the vblank keeps to them: one's instant, the
+ * period, and the phase a vblank takes after a vsync (*timed: placed for the
+ * presenter's timed presents); false while there are none to keep to (no
+ * panel: the app in the background; not the panel's own: a variable refresh
+ * rate display's, which follow the presents). */
+static bool display_grid(uint64_t *vs_out, uint64_t *pd_out, int64_t *at_out, bool *timed)
+{
     uint64_t vs = __atomic_load_n(&g_disp_vsync_ns, __ATOMIC_ACQUIRE);
     uint64_t pd = __atomic_load_n(&g_disp_period_ns, __ATOMIC_RELAXED);
     /* the presenter's own, while they come: exact where the compositor's
@@ -950,18 +774,12 @@ static uint64_t place_vblank(uint64_t prev, bool *locked, bool *timed)
         lead = __atomic_load_n(&g_sync_lead_ns, __ATOMIC_RELAXED);
     }
     if (!vs || !pd || (!exact && now - vs > VSYNC_STALE)) {
-        return prev + frame;                /* no panel (the app in the background) */
-    }
-    const uint64_t k = (frame + pd / 2) / pd;
-    if (k < 1 || k > 4 || llabs((int64_t)(k * pd) - (int64_t)frame) > (int64_t)(frame / 20)) {
-        return prev + frame;                /* 90 Hz and the like: free running */
+        return false;
     }
     const uint64_t nominal = __atomic_load_n(&g_disp_nominal_ns, __ATOMIC_RELAXED);
     if (nominal && llabs((int64_t)pd - (int64_t)nominal) > (int64_t)(nominal / 50)) {
-        return prev + frame;                /* not the panel's vsyncs (variable refresh): free running */
+        return false;
     }
-    *locked = true;
-    const uint64_t next = prev + k * pd;
     const int64_t pick = __atomic_load_n(&g_pick_off_ns, __ATOMIC_RELAXED);
     int64_t at = pick < 0 ? -VSYNC_LEAD : pick + (int64_t)pd / 2;  /* after a vsync */
     if (lead) {
@@ -972,20 +790,80 @@ static uint64_t place_vblank(uint64_t prev, bool *locked, bool *timed)
          * the presenter happened to pick frames up, which the queue behind
          * it moves, a flip now and then fell on the pickup: one frame shown
          * twice and the next never (Burnout 3 at 60 Hz with V-Sync: once in
-         * 45 s). */
-        at = (int64_t)pd / 2 - (int64_t)(lead % pd);
-        *timed = true;
+         * 45 s). Not nearer the vsync for less latency: a quarter of a
+         * refresh before it (4.2 ms at 60 Hz, 5 ms off the 14 from a vblank
+         * to the screen), presents made at that instant like their
+         * neighbours missed it, 3 to 5 in 12 s (Crash Bandicoot at Up to 60,
+         * a high priority queue for the presenter the same): the screen
+         * takes a present some ms before its vsync, by the GPU's load.
+         * Above 60 Hz half a refresh is less than that (4.2 ms at 120 Hz:
+         * Crash at Up to 30, presents midway like their neighbours, 2 in
+         * 12 s a refresh late): there the present goes PRESENT_AFTER after
+         * the vsync before, as near the next one as that leaves (timed, a
+         * present comes no earlier than its place), PRESENT_ROOM at most. */
+        at = (int64_t)pd - present_room(pd) - (int64_t)(lead % pd);
     }
+    *vs_out = vs;
+    *pd_out = pd;
+    *at_out = at;
+    if (timed) {
+        *timed = lead != 0;
+    }
+    return true;
+}
+
+/* The first instant at or after t of the grid display_grid gives. */
+static uint64_t grid_at_or_after(uint64_t t, uint64_t vs, uint64_t pd, int64_t at)
+{
+    const int64_t base = (int64_t)vs + at, d = (int64_t)t - base, p = (int64_t)pd;
+    const int64_t n = d >= 0 ? (d + p - 1) / p : -((-d) / p);
+    return (uint64_t)(base + n * p);
+}
+
+/* The next vblank after one at prev: a frame later, or locked to the panel
+ * (its period times the vsyncs per frame, the phase nudged at most 0.5 ms a
+ * vblank so the guest's clock never jumps). */
+/* How near whole refreshes a frame (or a limit's pace) must be to keep to
+ * them: 1 %, a 59.94 Hz vblank beside a 60 Hz display (0.1 %) and a display's
+ * own clock a little off. At 5 % a 50 Hz title's vblank kept to three
+ * refreshes of a 144 Hz display (20.8 ms) or five of 240 Hz: it ran at 48
+ * fps, 4 % slow (Crash Bandicoot's European disc at Original). */
+#define LOCK_PART 100
+
+static uint64_t place_vblank(uint64_t prev, bool *locked, bool *timed)
+{
+    const uint64_t frame = __atomic_load_n(&g_frame_ns, __ATOMIC_RELAXED);
+    uint64_t vs, pd;
+    int64_t at;
+    bool lead;
+    if (!display_grid(&vs, &pd, &at, &lead)) {
+        return prev + frame;                /* no panel's vsyncs to keep to: free running */
+    }
+    const uint64_t k = (frame + pd / 2) / pd;
+    if (k < 1 || k > 4 || llabs((int64_t)(k * pd) - (int64_t)frame) > (int64_t)(frame / LOCK_PART)) {
+        return prev + frame;                /* 90 Hz and the like: free running */
+    }
+    *locked = true;
+    *timed = lead;
+    const uint64_t next = prev + k * pd;
     const int64_t ph = wrap_half((int64_t)next - (int64_t)vs - at, (int64_t)pd);
     int64_t c = -ph / 8;
     c = c > 500000 ? 500000 : c < -500000 ? -500000 : c;
     return next + (uint64_t)c;
 }
 
+static bool cap_grid(uint64_t *vs, uint64_t *pd, int64_t *at, bool *timed);
+
 static uint64_t next_vblank(uint64_t prev)
 {
     bool locked = false, timed = false;
     const uint64_t next = place_vblank(prev, &locked, &timed);
+    uint64_t vs, pd;
+    int64_t at;
+    bool cap_timed = false;
+    if (!timed && cap_grid(&vs, &pd, &at, &cap_timed)) {
+        timed = cap_timed;              /* the limit's frames on the vsyncs, the vblank not */
+    }
     __atomic_store_n(&g_vblank_locked, locked, __ATOMIC_RELAXED);
     __atomic_store_n(&g_vblank_timed, timed, __ATOMIC_RELAXED);
     return next;
@@ -994,6 +872,9 @@ static uint64_t next_vblank(uint64_t prev)
 /* Uncapped (the app's setting: XBASED_HLE_UNCAP; debug.xbased.uncap 1 / 0
  * on demand), read by the vblank thread now and then. */
 static uint64_t g_cap_ns;           /* uncapped: a frame at most this often (0: no limit) */
+static uint64_t g_frame_due_ns;     /* uncapped: the instant the limit's last frame stands for (frame_due) */
+static uint64_t g_trap_slot_ns;     /* a trap's handler's next flip: its slot (hle_host_flip_slot; 0: none) */
+static uint64_t g_trap_every_ns;    /* ... and its pace */
 static volatile int g_own_pace;     /* the title runs at its own rate whatever the options say */
 static uint32_t g_title_id;         /* the title that boots (nc_dev_nv2a_title_pace) */
 
@@ -1045,6 +926,8 @@ void nc_dev_nv2a_title_pace(uint32_t title_id, const char *name)
     }
 }
 
+static volatile int g_uncap_on;     /* uncapped(), as it last read: the frame rate lifted */
+
 static bool uncapped(void)
 {
     static int on = -1, cap = -1;
@@ -1064,12 +947,98 @@ static bool uncapped(void)
             cap = atoi(v);
         }
     }
-    g_cap_ns = cap > 0 ? 1000000000ull / (uint64_t)cap : 0;
+    __atomic_store_n(&g_cap_ns, cap > 0 ? 1000000000ull / (uint64_t)cap : 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_uncap_on, on && !g_own_pace, __ATOMIC_RELAXED);
     return on && !g_own_pace;
+}
+
+/* A frame limit of whole refreshes of a display the vblank keeps to (Up to
+ * 30 or 60 on a 60 Hz one, Unlocked's limit at the display's rate): its
+ * frames flip on the display's vsyncs (wait_vblank), whatever the vblank's
+ * own rate. *timed: placed for the presenter's timed presents (V-Sync), so
+ * it is told the frames are on the vsyncs, as at Original. A 50 Hz title
+ * (Crash Bandicoot's European disc) at Up to 60 ran so with its vblank free
+ * beside the display: the presenter was told nothing, queued each picture
+ * behind the one before, and once one missed its vsync every one after it
+ * was a refresh late, for good (the lead driven to its most, 33 ms from a
+ * flip to the screen instead of 13).
+ *
+ * A limit of a whole fraction of a refresh (Up to 120 on a 60 Hz display)
+ * likewise, on the vsyncs' grid cut in as many steps (*pd the step): the
+ * frame of the step the display's grid has is the one on screen (its
+ * present midway between two vsyncs), the others' presents a moment after
+ * a vsync, replaced before the next. Free of the grid, its presents fell
+ * anywhere in a refresh and the one shown changed from one to the next;
+ * queued, with V-Sync, they ran into the same late state (Crash Bandicoot:
+ * 34 ms from a flip to the screen). */
+#define CAP_STEP_AFTER 500000ll     /* a step's present after a vsync: past it, sure */
+
+/* The grid frames `every` apart flip on (display_grid's, or its steps for a
+ * fraction of a refresh); false: none (no display grid, or a pace of no
+ * whole refreshes or fraction of one). */
+static bool every_grid(uint64_t every, uint64_t *vs, uint64_t *pd, int64_t *at, bool *timed)
+{
+    if (!every || !display_grid(vs, pd, at, timed)) {
+        return false;
+    }
+    const uint64_t m = (every + *pd / 2) / *pd;
+    if (m >= 1 && llabs((int64_t)(m * *pd) - (int64_t)every) <= (int64_t)(every / LOCK_PART)) {
+        return true;
+    }
+    /* (half a 60 Hz refresh rounds to one as often as to none) */
+    const uint64_t n = (*pd + every / 2) / every;
+    if (n < 2 || n > 4 || llabs((int64_t)(*pd / n) - (int64_t)every) > (int64_t)(every / LOCK_PART)) {
+        return false;
+    }
+    /* steps of pd/n from the display grid's place, all a moment later: the
+     * one before a vsync's is then past it too */
+    *pd /= n;
+    *at += CAP_STEP_AFTER;
+    return true;
+}
+
+static bool cap_grid(uint64_t *vs, uint64_t *pd, int64_t *at, bool *timed)
+{
+    return g_pbmode && __atomic_load_n(&g_uncap_on, __ATOMIC_RELAXED) &&
+           every_grid(__atomic_load_n(&g_cap_ns, __ATOMIC_RELAXED), vs, pd, at, timed);
+}
+
+/* The least time between the flips a trap's handler does (D3D's IMMEDIATE
+ * presents, hw/xbox/hle/pb/pbmode.c pace_flip): a vblank's at Original (the
+ * console's display rate, 60 or 50 Hz, a mod's multiple included), the
+ * limit's lifted (Up to 30, 60, 120, the global one), 0 for none (Unlocked
+ * without a limit, fast forward). */
+int64_t hle_host_flip_min_ns(void)
+{
+    if (__atomic_load_n(&g_uncap_on, __ATOMIC_RELAXED)) {
+        return (int64_t)__atomic_load_n(&g_cap_ns, __ATOMIC_RELAXED);
+    }
+    return (int64_t)__atomic_load_n(&g_frame_ns, __ATOMIC_RELAXED);
+}
+
+/* The flips a trap's handler does on the display's vsyncs too, where the
+ * pace is whole refreshes of a display the vblank keeps to (display_grid):
+ * on a grid of their own beside the display's, as the limit's frames were
+ * (wait_vblank), they fell anywhere in a refresh (Total Immersion Racing at
+ * Original, 60 Hz with V-Sync: in 12 s 11 pictures on for two refreshes and
+ * 11 never shown; on the grid, every one for one). A pace of a fraction of
+ * a refresh (Up to 120 on 60 Hz) on its steps (every_grid). */
+int64_t hle_host_flip_slot(int64_t want, int64_t every)
+{
+    uint64_t vs, pd;
+    int64_t at;
+    int64_t slot = want;
+    if (every > 0 && want > 0 && every_grid((uint64_t)every, &vs, &pd, &at, NULL)) {
+        slot = (int64_t)grid_at_or_after((uint64_t)want - pd / 2, vs, pd, at);
+    }
+    __atomic_store_n(&g_trap_every_ns, every > 0 ? (uint64_t)every : 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_trap_slot_ns, every > 0 && slot > 0 ? (uint64_t)slot : 0, __ATOMIC_RELEASE);
+    return slot;
 }
 
 #define EARLY_GAP_NS 1000000ull     /* uncapped: early vblanks at most this often */
 #define EARLY_POLL_NS 250000ull
+#define FRAME_DUE_SPAN 4000000ull   /* a limit's frame's further early vblanks come within this of its first */
 
 /* Uncapped push-buffer mode: the title's own D3D flips in its vblank
  * handler (and with a presentation interval of n, every n vblanks), so
@@ -1106,6 +1075,44 @@ static void flip_waits(void)
 }
 #endif
 
+/* A frame limit on the display's grid (wait_vblank): the vsync's place a
+ * frame waiting at t flips at, the limit's refreshes after the last frame's
+ * (at last), or one just gone by (the timer woke late: a quarter of a
+ * refresh). */
+/* A limit's frame, its early vblank's instant: its place on the limit's
+ * grid when the timer woke just after it, not the wake (as a vblank's own
+ * instant is the grid's, not its thread's wake): the presenter shows the
+ * frame a lead after that instant, and a variable refresh rate display at
+ * that time. With the wake, Otogi at Up to 30 on a 280 Hz G-Sync display
+ * went on screen 32.9 to 34.8 ms apart, at Original 33.4 to 33.7. */
+#define ON_LIMIT_WAKE 1000000ull
+
+/* A limit's frame: the instant its first early vblank stands for, which its
+ * flip is due at whichever of its vblanks it comes on (hle_host_flip_vblank_ns):
+ * a presentation interval of 2 flips on the second, EARLY_GAP_NS and a poll
+ * after the first, and its picture went on screen that much past its place
+ * (Otogi at Up to 30 on a 120 Hz display: presents 3 ms before a vsync, not
+ * 4.2, one picture in eight a refresh late). */
+static uint64_t frame_due(uint64_t at)
+{
+    __atomic_store_n(&g_frame_due_ns, at, __ATOMIC_RELEASE);
+    return at;
+}
+
+static uint64_t on_limit(uint64_t t, uint64_t at)
+{
+    return at <= t && t - at <= ON_LIMIT_WAKE ? at : t;
+}
+
+static uint64_t cap_slot(uint64_t t, uint64_t last, uint64_t vs, uint64_t pd, int64_t at)
+{
+    const uint64_t cap = __atomic_load_n(&g_cap_ns, __ATOMIC_RELAXED);
+    const uint64_t earliest = last + cap - pd / 2;
+    uint64_t from = t > pd / 4 ? t - pd / 4 : 0;
+    from = from > earliest ? from : earliest;
+    return grid_at_or_after(from, vs, pd, at);
+}
+
 static uint64_t wait_vblank(uint64_t next, uint64_t last)
 {
     if (g_pbmode && uncapped()) {
@@ -1115,6 +1122,21 @@ static uint64_t wait_vblank(uint64_t next, uint64_t last)
          * 2 flips on the second) as they come. */
         static uint32_t s_stall;
         static uint64_t s_frame_t;
+        /* A limit of whole refreshes of the display (Up to 30 or 60 on a
+         * 60 Hz one, Unlocked's limit at the display's rate): each frame's
+         * first early vblank on the display's vsyncs, where the vblank keeps
+         * to them (display_grid), at least the limit's refreshes after the
+         * last frame's. On a grid of its own, the limit's period beside the
+         * display's, the frames fell anywhere in a refresh, and those near a
+         * vsync were shown a refresh early or late: Otogi at Up to 30 with
+         * one picture in four on for 50 or 17 ms instead of 33 (12 s at 60 Hz
+         * with V-Sync), Crash Bandicoot's 60 fps at Up to 60 without V-Sync
+         * one in four 8 or 26 ms; another run's at the display's limit, on
+         * the same grid, none, its phase by chance. */
+        uint64_t gvs = 0, gpd = 0;
+        int64_t gat = 0;
+        bool gtimed;
+        const bool aligned = cap_grid(&gvs, &gpd, &gat, &gtimed);
         for (uint64_t t = now_ns(); t < next; t = now_ns()) {
 #ifdef NC_DESKTOP
             const uint32_t seen = __atomic_load_n(&g_flip_waits, __ATOMIC_ACQUIRE);
@@ -1123,12 +1145,26 @@ static uint64_t wait_vblank(uint64_t next, uint64_t last)
             const bool paced = !g_cap_ns || stall == s_stall || t - s_frame_t >= g_cap_ns;
             if (t - last >= EARLY_GAP_NS && hle_pb_flip_waiting() &&
                 !(ld(NV_PCRTC_INTR_0) & PCRTC_VBLANK)) {
+                if (aligned && stall != s_stall) {
+                    const uint64_t slot = cap_slot(t, s_frame_t, gvs, gpd, gat);
+                    if (t + EARLY_POLL_NS >= slot) {
+                        s_stall = stall;
+                        s_frame_t = slot;
+                        frame_due(slot);
+                        return t;
+                    }
+                    const uint64_t until = next < slot ? next : slot;
+                    const struct timespec ts = {(time_t)(until / 1000000000ull), (long)(until % 1000000000ull)};
+                    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
+                    continue;
+                }
                 if (paced) {
                     if (stall != s_stall) {
                         s_stall = stall;
                         /* on the limit's grid while frames keep up with it (the
                          * timer wakes a little late), else from now */
                         s_frame_t = g_cap_ns && t - s_frame_t < 2 * g_cap_ns ? s_frame_t + g_cap_ns : t;
+                        return frame_due(on_limit(t, s_frame_t));
                     }
                     return t;
                 }
@@ -1157,6 +1193,23 @@ static uint64_t wait_vblank(uint64_t next, uint64_t last)
          * second at once: Prince of Persia - Warrior Within ran at 53 fps
          * under Up to 30, at 56 under Up to 60; a frame of 1 flipped at the
          * display's rate whatever the limit below it. */
+        if (aligned && hle_pb_flip_waiting() && hle_pb_flip_stalls() != s_stall) {
+            /* the vblank due, a waiting frame's first, on the display's grid
+             * too: held till its vsync's place if it comes before */
+            const uint64_t slot = cap_slot(now_ns(), s_frame_t, gvs, gpd, gat);
+            for (uint64_t t = now_ns(); t + EARLY_POLL_NS < slot && hle_pb_flip_waiting(); t = now_ns()) {
+                const uint64_t u = slot < t + EARLY_POLL_NS * 4 ? slot : t + EARLY_POLL_NS * 4;
+                const struct timespec ts = {(time_t)(u / 1000000000ull), (long)(u % 1000000000ull)};
+                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
+            }
+            const uint64_t t = now_ns();
+            if (hle_pb_flip_waiting() && hle_pb_flip_stalls() != s_stall) {
+                s_stall = hle_pb_flip_stalls();
+                s_frame_t = slot;
+                frame_due(slot > next ? slot : next);
+            }
+            return t > next ? t : next;
+        }
         if (g_cap_ns && hle_pb_flip_waiting() && hle_pb_flip_stalls() != s_stall &&
             now_ns() < s_frame_t + g_cap_ns) {
             /* (held only while it would come before the limit allows: past
@@ -1167,17 +1220,19 @@ static uint64_t wait_vblank(uint64_t next, uint64_t last)
                 const struct timespec ts = {(time_t)(u / 1000000000ull), (long)(u % 1000000000ull)};
                 clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
             }
+            const uint64_t t = now_ns();
             if (hle_pb_flip_waiting() && hle_pb_flip_stalls() != s_stall) {
                 s_stall = hle_pb_flip_stalls();
                 s_frame_t = until;          /* on the limit's grid (the wake's overshoot left out) */
+                return frame_due(on_limit(t, until > next ? until : next));
             }
-            const uint64_t t = now_ns();
             return t > next ? t : next;
         }
         /* the vblank due takes a waiting frame on: the limit counts from it */
         if (hle_pb_flip_waiting() && hle_pb_flip_stalls() != s_stall) {
             s_stall = hle_pb_flip_stalls();
             s_frame_t = next;
+            frame_due(next);
         }
         return next;
     }
@@ -1187,9 +1242,39 @@ static uint64_t wait_vblank(uint64_t next, uint64_t last)
     return next;
 }
 
+/* A vblank thread that woke late (held up: a loaded PC, a laptop's power
+ * saving putting the run on its slow cores and its timers together) sent
+ * the vblanks it had missed one after the other, as fast as the guest took
+ * them; a game that flips at each vblank flipped at that rate (made to stall
+ * for 150 ms: 7 vblanks 0.0 ms apart after it), and its fps count read over
+ * its rate after reading under it. The console's vblanks come at their time
+ * whatever the CPU does, and a guest that takes its interrupt late takes one:
+ * the vblanks missed by more than a period are dropped, the grid kept, and
+ * the first few reported (each its lateness). */
+static uint64_t late_skip(uint64_t at, uint64_t step)
+{
+    const uint64_t t = now_ns();
+    if (!step || t <= at + step) {
+        return at;
+    }
+    const uint64_t n = (t - at) / step;
+    static unsigned s_logged;
+    const unsigned c = ++s_logged;
+    if (c <= 8 || !(c & (c - 1))) {
+        nc_log("xbased-native", "nv2a: the vblank thread woke %.1f ms late: %llu vblanks dropped, not sent "
+               "one after the other (#%u)", (double)(t - at) / 1e6, (unsigned long long)n, c);
+    }
+    return at + n * step;
+}
+
 static void *vblank_thread(void *arg)
 {
     nc_pause_register("vblank");
+#ifdef _WIN32
+    /* the console's clock: before the emulation's busy threads (the vCPU's
+     * is above normal), which a loaded PC can't run all at once */
+    nc_win_thread_priority(2);
+#endif
     uint64_t next = now_ns();
     for (;;) {
         if (nc_paused()) {
@@ -1198,8 +1283,9 @@ static void *vblank_thread(void *arg)
             nc_pause_wait();
             next = now_ns();
         }
-        const uint64_t due = next_vblank(next);
-        next = wait_vblank(due, next);
+        const uint64_t prev = next;
+        const uint64_t due = next_vblank(prev);
+        next = wait_vblank(due, prev);
         __atomic_store_n(&g_last_vblank_ns, next, __ATOMIC_RELEASE);
         __atomic_fetch_or(reg(NV_PCRTC_INTR_0), PCRTC_VBLANK, __ATOMIC_ACQ_REL);
         __atomic_fetch_add(&g_vblanks, 1, __ATOMIC_RELAXED);
@@ -1214,6 +1300,7 @@ static void *vblank_thread(void *arg)
                 census_log();
             }
         }
+        next = late_skip(next, due > prev ? due - prev : __atomic_load_n(&g_frame_ns, __ATOMIC_RELAXED));
     }
     return NULL;
 }
@@ -1230,16 +1317,6 @@ void nc_dev_nv2a_init(void)
     g_regs = calloc(1, NV2A_SIZE + 16); /* pages are touched only where the guest writes (a word of slack past the end) */
     nc_wr32(g_regs + NV_PMC_BOOT_0, 0x02A000A1u);
     nc_wr32(g_regs + NV_PFB_CSTATUS, 64u << 20);
-    /* What the console's own start-up leaves in them, for code that programs
-     * the chip itself rather than through D3D (pbkit checks both before it
-     * sets its channel up, and gives up on a core clock that isn't the
-     * console's 233.33 MHz: 16.67 MHz * 28 / 2). */
-    nc_wr32(g_regs + NV_PFB_CFG0, 3);                       /* memory partitions */
-    nc_wr32(g_regs + NV_PRAMDAC_NVPLL_COEFF, 0x00011C01u);  /* P 1, N 28, M 1 */
-    nc_wr32(g_regs + NV_PRAMDAC_VPLL_COEFF, 0x0003C20Du);
-    /* PTIMER's scale at the console's ratio (D3D writes the same): ~1 GHz */
-    nc_wr32(g_regs + NV_PTIMER_NUMERATOR, PTIMER_NUM0);
-    nc_wr32(g_regs + NV_PTIMER_DENOMINATOR, PTIMER_DEN0);
     char v[PROP_VALUE_MAX] = "";
     hle_prop_get("debug.xbased.nvcensus", v);
     const char *e = getenv("NC_NV2A_CENSUS");
@@ -1394,6 +1471,70 @@ uint64_t hle_host_vblank_ns(void)
     return __atomic_load_n(&g_last_vblank_ns, __ATOMIC_ACQUIRE);
 }
 
+/* A flip's vblank, the one its frame is due on screen from: the last one's,
+ * or the next one's for a flip in the last quarter of a frame, which on the
+ * console is on screen whole from the next scan (a vblank handler's flip
+ * comes just after its vblank). Total Immersion Racing flips its IMMEDIATE
+ * presents 1.4 ms before each vblank: due at the one before, its pictures
+ * were ready 17 ms after it, later than any lead, and went to the screen as
+ * they came, untimed, wherever its flips fell against the vsyncs (3 ms
+ * before one: in one run of 12 s 19 never shown). */
+uint64_t hle_host_flip_vblank_ns(void)
+{
+    const uint64_t last = __atomic_load_n(&g_last_vblank_ns, __ATOMIC_ACQUIRE);
+    const uint64_t frame = __atomic_load_n(&g_frame_ns, __ATOMIC_RELAXED);
+    const uint64_t now = now_ns();
+    /* a trap's handler's flip on its pace: due at its slot, the place the
+     * pace gave it, a little before or after (held to it, or let go less
+     * than an eighth of the pace early): at 120 Hz Total Immersion Racing's
+     * slots at Up to 30 fell between two vblanks, its flips went to the one
+     * before, 8 ms earlier, ready 12 ms after it and 18 ms to the screen
+     * (12 where they fell on vblanks); on a variable refresh rate display
+     * the pace's own instants */
+    /* (a flip that came late, up to half its pace past the slot it is on:
+     * pbmode.c pace_flip) */
+    const uint64_t ts = __atomic_load_n(&g_trap_slot_ns, __ATOMIC_ACQUIRE);
+    const uint64_t te = __atomic_load_n(&g_trap_every_ns, __ATOMIC_RELAXED);
+    const uint64_t late = te / 2 > FRAME_DUE_SPAN ? te / 2 + EARLY_POLL_NS : FRAME_DUE_SPAN;
+    static uint64_t s_given;    /* the trap's pace's slot given last */
+    if (ts && now + FRAME_DUE_SPAN >= ts && now < ts + late) {
+        /* a slot is one picture's: one that comes before the pace has
+         * moved on (a late frame on its slot, the next drawn at once after
+         * it) is due at the slot after the last one given (it was due at the
+         * same instant as that one, or a slot before it, one never on
+         * screen) */
+        const uint64_t d = te && ts <= s_given && s_given - ts < te ? s_given + te : ts;
+        s_given = d;
+        return d;
+    }
+    /* On the pace, outside its slot's window (the decoder met the flip
+     * before pace_flip, or a while after): the slot after the last one given,
+     * the one a picture a slot keeps to, when that is within a slot of now.
+     * The vblank's rules below gave such flips an instant off the pace's grid
+     * (at Up to 60 the console's 59.94 Hz vblank drifts past the limit's 60:
+     * Republic Commando had one picture due 2 to 10 ms after the one before
+     * and the next 30 to 23 after it, a few times in 30 s), or the last
+     * one's. */
+    if (ts && te && s_given && now < ts + 3 * te && now + te > s_given + te && now < s_given + 2 * te) {
+        s_given += te;
+        return s_given;
+    }
+    /* a limit's frame: due at its first early vblank's place (frame_due) */
+    const uint64_t fd = __atomic_load_n(&g_frame_due_ns, __ATOMIC_ACQUIRE);
+    uint64_t d = fd && __atomic_load_n(&g_uncap_on, __ATOMIC_RELAXED) && now + EARLY_POLL_NS >= fd && now < fd + FRAME_DUE_SPAN
+                     ? fd
+                     : last && now >= last + frame - frame / 4 && now < last + frame + frame / 2 ? last + frame : last;
+    /* and a flip on the trap's pace those rules put at the slot given last,
+     * before it or less than half a slot after it (a late frame drawn at once
+     * after the one before: due at its instant, one of the two never on
+     * screen) is on the slot after it */
+    if (ts && te && s_given && now < ts + 3 * te && d < s_given + te / 2 && s_given + te < now + 2 * te) {
+        s_given += te;
+        d = s_given;
+    }
+    return d;
+}
+
 int64_t hle_host_vblank_period_ns(void)
 {
     return (int64_t)__atomic_load_n(&g_frame_ns, __ATOMIC_RELAXED);
@@ -1401,27 +1542,7 @@ int64_t hle_host_vblank_period_ns(void)
 
 uint32_t hle_host_gpu_reg(uint32_t off)
 {
-    if (g_regs && (off & ~3u) == NV_PTIMER_TIME_0) {
-        return (uint32_t)pt_now() & ~0x1Fu;     /* the time now (a notifier's stamp) */
-    }
-    if (g_regs && (off & ~3u) == NV_PTIMER_TIME_1) {
-        return (uint32_t)(pt_now() >> 32) & 0x1FFFFFFFu;
-    }
     return g_regs && off < NV2A_SIZE - 3 ? ld(off & ~3u) : 0;
-}
-
-uint64_t hle_host_ptimer(void)
-{
-    if (!g_regs) {
-        return 0;
-    }
-    const uint64_t t = pt_now();
-    return (t >> 32 & 0x1FFFFFFFu) << 32 | ((uint32_t)t & ~0x1Fu);
-}
-
-const uint32_t *hle_host_gpu_reg_ptr(uint32_t off)
-{
-    return g_regs && off < NV2A_SIZE - 3 ? reg(off & ~3u) : NULL;
 }
 
 void hle_host_gpu_reg_set(uint32_t off, uint32_t v)
@@ -1493,7 +1614,7 @@ void nc_dev_misc_init(void)
 typedef struct NcNv2aState {
     uint64_t vblanks, frame_ns;
     uint32_t npages;
-    uint32_t pt_set;                /* PTIMER (v2): g_pt */
+    uint32_t pt_set;                /* (v2: the PTIMER rework's, kept 0 here for the record's layout) */
     uint64_t pt_ticks, pt_ns;
     uint32_t av_mode, av_title;     /* (v3) the AV mode and the title's shape: g_av_mode, g_av_title */
 } NcNv2aState;
@@ -1556,11 +1677,9 @@ static bool pages_get(NcRd *r, uint8_t *base, uint32_t size, uint32_t n)
 
 bool nc_nv2a_state_save(NcBuf *b)
 {
-    pthread_mutex_lock(&g_pt.mu);
     const NcNv2aState st = {__atomic_load_n(&g_vblanks, __ATOMIC_RELAXED), g_frame_ns,
-                            pages_put(NULL, g_regs, NV2A_SIZE, true), g_pt.set_ns != 0, g_pt.ticks, g_pt.ns,
+                            pages_put(NULL, g_regs, NV2A_SIZE, true), 0, 0, 0,
                             nc_dev_nv2a_av_mode(), nc_dev_nv2a_av_title()};
-    pthread_mutex_unlock(&g_pt.mu);
     nc_rec_put(b, &nc_rec_NcNv2aState, &st);
     pages_put(b, g_regs, NV2A_SIZE, false);
     return true;
@@ -1575,23 +1694,6 @@ bool nc_nv2a_state_load(NcRd *r, unsigned v)
     if (!pages_get(r, g_regs, NV2A_SIZE, st.npages)) {
         return false;
     }
-    pthread_mutex_lock(&g_pt.mu);
-    if (v < 2) {
-        /* the time was the guest's ns: it goes on from there, at the
-         * console's scale unless the title set one */
-        if (!ld(NV_PTIMER_NUMERATOR) && !ld(NV_PTIMER_DENOMINATOR)) {
-            nc_wr32(g_regs + NV_PTIMER_NUMERATOR, PTIMER_NUM0);
-            nc_wr32(g_regs + NV_PTIMER_DENOMINATOR, PTIMER_DEN0);
-        }
-        st.pt_set = 0;
-        st.pt_ticks = st.pt_ns = 0;     /* the first look: the guest's ns then */
-    }
-    g_pt.set_ns = 0;                    /* (pt_set: the time was set once; the rule's window
-                                           is long past at a load) */
-    g_pt.strict = false;
-    g_pt.ticks = st.pt_ticks;
-    g_pt.ns = st.pt_ns;
-    pthread_mutex_unlock(&g_pt.mu);
     __atomic_store_n(&g_vblanks, st.vblanks, __ATOMIC_RELAXED);
     /* the state's video mode (50 Hz: a 20 ms frame), at this run's rate (the
      * mods on now: a state saved with or without them) */
@@ -1599,8 +1701,7 @@ bool nc_nv2a_state_load(NcRd *r, unsigned v)
     g_last_vblank_ns = now_ns();
     g_disp_vsync_ns = 0;
     g_pick_off_ns = -1;
-    if (ld(NV_PTIMER_ALARM_0) || ld(NV_PTIMER_INTR_EN_0) || st.pt_set) {
-        __atomic_store_n(&g_alarm_started, true, __ATOMIC_RELEASE);
+    if (ld(NV_PTIMER_ALARM_0) || ld(NV_PTIMER_INTR_EN_0)) {
         alarm_set();                    /* due from the state's alarm, on its clock */
     }
     update_irq();

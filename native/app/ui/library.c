@@ -10,6 +10,7 @@
 #include "native/app/ui/library.h"
 #include "native/app/ui/config.h"
 #include "native/app/ui/ui.h"
+#include "native/core/fold_image.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -699,7 +700,13 @@ static void scan_dir(const char *dir, int depth)
         if (!SDL_GetPathInfo(p, &pi)) {
             continue;
         }
-        if (pi.type == SDL_PATHTYPE_DIRECTORY && is_game_folder(p) && strlen(p) < sizeof(((XdGame *)0)->path) - 1) {
+        char img[1200];
+        SDL_PathInfo ii;
+        if (pi.type == SDL_PATHTYPE_DIRECTORY && is_game_folder(p) && nc_fold_attached_image(p, img, sizeof(img)) &&
+            SDL_GetPathInfo(img, &ii) && strlen(img) < sizeof(((XdGame *)0)->path) - 1) {
+            add_game(img, &ii);     /* an attacher's folder (#367): the image is the disc */
+        } else if (pi.type == SDL_PATHTYPE_DIRECTORY && is_game_folder(p) &&
+                   strlen(p) < sizeof(((XdGame *)0)->path) - 1) {
             add_game(p, &pi);       /* an extracted game: the folder is the disc */
         } else if (pi.type == SDL_PATHTYPE_DIRECTORY) {
             scan_dir(p, depth + 1);
@@ -1054,6 +1061,20 @@ void lib_show_hidden(bool show)
     g_show_hidden = show;
 }
 
+int lib_hidden_count(void)
+{
+    if (!L.mu) {
+        return 0;
+    }
+    SDL_LockMutex(L.mu);
+    int k = 0;
+    for (int i = 0; i < L.n; i++) {
+        k += !L.games[i]->gone && !L.games[i]->dup && L.games[i]->hidden;
+    }
+    SDL_UnlockMutex(L.mu);
+    return k;
+}
+
 bool lib_set_cover_file(LibGame *g, const char *path)
 {
     int w, h, c;
@@ -1129,13 +1150,24 @@ static bool download(const char *url, const char *to)
     return rename(tmp, to) == 0;
 }
 
-/* lowercase words, "&" as "and", groups dropped */
+/* lowercase words, "&" as "and", groups dropped; a dotted acronym one word
+ * (the list's Codename Kids Next Door - Operation V.I.D.E.O.G.A.M.E.), a
+ * symbol or a dash between words (U+0080-00BF, U+2000-2BFF, U+3000-303F: a
+ * title's trade marks kept "007™: NightFire™" from "007 - Nightfire", #385) */
 static void norm(const char *s, char *out, size_t n)
 {
+    const unsigned char *u = (const unsigned char *)s;
     size_t o = 0;
     int depth = 0;
-    for (; *s && o + 5 < n; s++) {
-        const unsigned char c = (unsigned char)*s;
+    for (size_t i = 0; u[i] && o + 5 < n; i++) {
+        const unsigned char c = u[i];
+        int sym = 0;    /* a symbol: its bytes after the first */
+        if (c == 0xC2 && u[i + 1] >= 0x80 && u[i + 1] <= 0xBF) {
+            sym = 1;
+        } else if ((c == 0xE2 && u[i + 1] >= 0x80 && u[i + 1] <= 0xAF && u[i + 2] >= 0x80) ||
+                   (c == 0xE3 && u[i + 1] == 0x80 && u[i + 2] >= 0x80)) {
+            sym = 2;
+        }
         if (c == '(' || c == '[') {
             depth++;
         } else if ((c == ')' || c == ']') && depth) {
@@ -1145,6 +1177,14 @@ static void norm(const char *s, char *out, size_t n)
         } else if (c == '&') {
             memcpy(out + o, " and ", 5);
             o += 5;
+        } else if (c == '.' && i && isalnum(u[i - 1]) && (i < 2 || !isalnum(u[i - 2])) && isalnum(u[i + 1]) &&
+                   !isalnum(u[i + 2])) {
+            continue;   /* a dot between two letters alone */
+        } else if (sym) {
+            if (o && out[o - 1] != ' ') {
+                out[o++] = ' ';
+            }
+            i += sym;
         } else if (isalnum(c) || c >= 0x80) {
             out[o++] = (char)tolower(c);
         } else if (o && out[o - 1] != ' ') {
@@ -1157,24 +1197,28 @@ static void norm(const char *s, char *out, size_t n)
     out[o] = 0;
 }
 
+enum { NWORDS = 32 };
+typedef char Word[32];
+
+/* norm's words, "the", "and" and "of" left out */
+static int words_of(const char *s, Word *w)
+{
+    char tmp[512];
+    snprintf(tmp, sizeof(tmp), "%s", s);
+    int n = 0;
+    for (char *p = tmp, *t; n < NWORDS && (t = tok(&p, " "));) {
+        if (*t && strcmp(t, "the") && strcmp(t, "and") && strcmp(t, "of")) {
+            snprintf(w[n++], sizeof(Word), "%s", t);
+        }
+    }
+    return n;
+}
+
 /* words shared, over the words of both (articles and "the" ignored) */
 static float score(const char *a, const char *b)
 {
-    char wa[32][32], wb[32][32];
-    int na = 0, nb = 0;
-    char tmp[512];
-    snprintf(tmp, sizeof(tmp), "%s", a);
-    for (char *s = tmp, *t; na < 32 && (t = tok(&s, " "));) {
-        if (*t && strcmp(t, "the") && strcmp(t, "and") && strcmp(t, "of")) {
-            snprintf(wa[na++], 32, "%s", t);
-        }
-    }
-    snprintf(tmp, sizeof(tmp), "%s", b);
-    for (char *s = tmp, *t; nb < 32 && (t = tok(&s, " "));) {
-        if (*t && strcmp(t, "the") && strcmp(t, "and") && strcmp(t, "of")) {
-            snprintf(wb[nb++], 32, "%s", t);
-        }
-    }
+    Word wa[NWORDS], wb[NWORDS];
+    const int na = words_of(a, wa), nb = words_of(b, wb);
     int common = 0;
     for (int i = 0; i < na; i++) {
         for (int j = 0; j < nb; j++) {
@@ -1266,15 +1310,8 @@ static bool prerelease(const char *nm)
                  strstr(g, "Kiosk") || strstr(g, "Sample"));
 }
 
-static float game_score(const XdGame *g, const char *a, const char *f, const char *raw, const char *nm)
+static float bonus(const XdGame *g, const char *raw, const char *nm, float s)
 {
-    char b[256];
-    norm(nm, b, sizeof(b));
-    const float st = score(a, b), sf = score(f, b);
-    float s = (st > sf ? st : sf) + 0.02f * sf;
-    if (s < 0.6f) {
-        return -1;
-    }
     if (prerelease(nm)) {
         s -= 0.3f;
     }
@@ -1296,13 +1333,199 @@ static float game_score(const XdGame *g, const char *a, const char *f, const cha
     return s;
 }
 
-/* a game's title and file name, normalised (norm), and the file's name as
- * it is (its groups kept) */
-static void game_words(const XdGame *g, char *a, size_t an, char *f, size_t fn, char *raw, size_t rn)
+/* (the names' ".png" a word of theirs, as the 0.6 was found with) */
+static float game_score(const XdGame *g, const char *a, const char *f, const char *raw, const char *nm)
+{
+    char b[256];
+    norm(nm, b, sizeof(b));
+    const float st = score(a, b), sf = score(f, b);
+    const float s = (st > sf ? st : sf) + 0.02f * sf;
+    return s < 0.6f ? -1 : bonus(g, raw, nm, s);
+}
+
+/* The second try, for a game no name fits by game_score: a name with the
+ * title's words or the file name's but a licence's around them ("Motor Trend
+ * presents" Lotus Challenge, Wakeboarding Unleashed "featuring Shaun Murray",
+ * "Tom Clancy's" Splinter Cell Double Agent for Splinter Cell-DA, initials
+ * for words), or the title without its subtitle (NightCaster for NightCaster -
+ * Defeat the Darkness, a sequel's number not left out), #385. A game some
+ * name fits is never given another's. */
+
+/* w the first letters of b's words from k, none of them matched */
+static bool initials_at(const char *w, Word *b, int nb, const bool *mb, int k)
+{
+    const int n = (int)strlen(w);
+    if (k + n > nb) {
+        return false;
+    }
+    for (int j = 0; j < n; j++) {
+        if (mb[k + j] || b[k + j][0] != w[j]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* a's words not matched yet, initials of a run of b's (DA: Double Agent) */
+static void initials(Word *a, int na, bool *ma, Word *b, int nb, bool *mb)
+{
+    for (int i = 0; i < na; i++) {
+        const int n = (int)strlen(a[i]);
+        bool letters = !ma[i] && n >= 2;
+        for (int j = 0; letters && j < n; j++) {
+            letters = isalpha((unsigned char)a[i][j]) != 0;
+        }
+        for (int k = 0; letters && k + n <= nb; k++) {
+            if (initials_at(a[i], b, nb, mb, k)) {
+                ma[i] = true;
+                for (int j = 0; j < n; j++) {
+                    mb[k + j] = true;
+                }
+                break;
+            }
+        }
+    }
+}
+
+/* every word of a matched in b and every word of b in a, one the same word
+ * at least */
+static bool same_words(Word *a, int na, Word *b, int nb)
+{
+    if (!na || !nb) {
+        return false;
+    }
+    bool ma[NWORDS] = {false}, mb[NWORDS] = {false};
+    int same = 0;
+    for (int i = 0; i < na; i++) {
+        for (int j = 0; j < nb; j++) {
+            if (!strcmp(a[i], b[j])) {
+                same += !ma[i];
+                ma[i] = mb[j] = true;
+            }
+        }
+    }
+    initials(a, na, ma, b, nb, mb);
+    initials(b, nb, mb, a, na, ma);
+    for (int i = 0; i < na; i++) {
+        if (!ma[i]) {
+            return false;
+        }
+    }
+    for (int j = 0; j < nb; j++) {
+        if (!mb[j]) {
+            return false;
+        }
+    }
+    return same > 0;
+}
+
+/* a series' number: digits, or II to X */
+static bool sequel_word(const char *w)
+{
+    static const char *const roman[] = {"ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"};
+    for (int i = 0; i < (int)(sizeof(roman) / sizeof(roman[0])); i++) {
+        if (!strcmp(w, roman[i])) {
+            return true;
+        }
+    }
+    size_t k = 0;
+    while (isdigit((unsigned char)w[k])) {
+        k++;
+    }
+    return k && !w[k];
+}
+
+/* a title's words before its subtitle (" - ", " – ", ": "); "" none */
+static void main_title(const char *t, char *out, size_t n)
+{
+    static const char *const seps[] = {" - ", " \xE2\x80\x93 ", ": "};
+    const char *at = NULL;
+    for (int i = 0; i < 3; i++) {
+        const char *p = strstr(t, seps[i]);
+        if (p && p > t && (!at || p < at)) {
+            at = p;
+        }
+    }
+    out[0] = 0;
+    if (at) {
+        snprintf(out, n, "%.*s", (int)(at - t), t);
+    }
+}
+
+/* t (a title or file name, as it is and norm's) against a name's words: 0.6
+ * it fits, else 0 */
+static float fits2(const char *t, const char *tn, Word *b, int nb)
+{
+    Word a[NWORDS];
+    const int na = words_of(tn, a);
+    if (!na || !nb) {
+        return 0;
+    }
+    /* the name's words without a licence's before or after them */
+    int pre[6] = {0}, npre = 1, suf[NWORDS], nsuf = 0;
+    for (int k = 1; k < nb - 1 && k < 5; k++) {
+        if (!strcmp(b[k], "presents") || (!strcmp(b[k], "s") && k <= 3)) {
+            pre[npre++] = k + 1;
+        }
+    }
+    suf[nsuf++] = nb;
+    for (int k = 2; k < nb; k++) {
+        if (!strcmp(b[k], "featuring") || !strcmp(b[k], "starring")) {
+            suf[nsuf++] = k;
+        }
+    }
+    for (int i = 0; i < npre; i++) {
+        for (int j = 0; j < nsuf; j++) {
+            if ((pre[i] || suf[j] != nb) && suf[j] > pre[i] && same_words(a, na, b + pre[i], suf[j] - pre[i])) {
+                return 0.6f;
+            }
+        }
+    }
+    /* the name the title's words before its subtitle */
+    char m[256], mn[256];
+    main_title(t, m, sizeof(m));
+    if (m[0]) {
+        Word w[NWORDS];
+        norm(m, mn, sizeof(mn));
+        const int nw = words_of(mn, w);
+        bool eq = nw == nb && nb <= na;
+        for (int i = 0; eq && i < nb; i++) {
+            eq = !strcmp(w[i], b[i]) && !strcmp(a[i], b[i]);
+        }
+        for (int i = nb; eq && i < na; i++) {
+            eq = !sequel_word(a[i]);
+        }
+        if (eq) {
+            return 0.6f;
+        }
+    }
+    return 0;
+}
+
+/* game_score's for the second try: tr and fr the title and file name as they
+ * are, a and f norm's */
+static float game_score2(const XdGame *g, const char *tr, const char *a, const char *fr, const char *f,
+                         const char *raw, const char *nm)
+{
+    char bn[256];
+    Word b[NWORDS];
+    norm(nm, bn, sizeof(bn));
+    int nb = words_of(bn, b);
+    if (nb && !strcmp(b[nb - 1], "png")) {
+        nb--;
+    }
+    const float st = fits2(tr, a, b, nb), sf = fits2(fr, f, b, nb);
+    const float s = (st > sf ? st : sf) + 0.02f * sf;
+    return s < 0.6f ? -1 : bonus(g, raw, nm, s);
+}
+
+/* a game's title and file name, normalised (norm), the file's name as it
+ * is (its groups kept) and without its groups (name) */
+static void game_words(const XdGame *g, char *a, size_t an, char *f, size_t fn, char *raw, size_t rn, char *name,
+                       size_t nn)
 {
     norm(g->title, a, an);
-    char name[256];
-    xd_clean_name(g->path, name, sizeof(name));
+    xd_clean_name(g->path, name, nn);
     norm(name, f, fn);
     const char *base = g->path;
     for (const char *q = g->path; *q; q++) {
@@ -1315,15 +1538,18 @@ static void game_words(const XdGame *g, char *a, size_t an, char *f, size_t fn, 
 
 static const char *best_name(const XdGame *g)
 {
-    char a[256], f[256], raw[512];
-    game_words(g, a, sizeof(a), f, sizeof(f), raw, sizeof(raw));
+    char a[256], f[256], raw[512], name[256];
+    game_words(g, a, sizeof(a), f, sizeof(f), raw, sizeof(raw), name, sizeof(name));
     const char *best = NULL;
     float bs = 0;
-    for (int i = 0; i < g_nnames; i++) {
-        const float s = game_score(g, a, f, raw, g_names[i]);
-        if (s > bs) {
-            bs = s;
-            best = g_names[i];
+    for (int pass = 0; pass < 2 && !best; pass++) {     /* none fits: the second try */
+        for (int i = 0; i < g_nnames; i++) {
+            const float s = pass ? game_score2(g, g->title, a, name, f, raw, g_names[i])
+                                 : game_score(g, a, f, raw, g_names[i]);
+            if (s > bs) {
+                bs = s;
+                best = g_names[i];
+            }
         }
     }
     return best;
@@ -1344,6 +1570,37 @@ static void url_escape(const char *s, char *out, size_t n)
     out[o] = 0;
 }
 
+/* the cover asked for on a game's screen (lib_fetch_cover): how its search
+ * ended, for the screen to say (a game no name fits showed nothing, #385) */
+static struct {
+    LibGame *g;         /* L.mu */
+    int end;            /* LIB_COVER_*, 0 not yet */
+    uint64_t at;        /* when (SDL_GetTicks) */
+} g_asked;
+
+static void fetch_ended(LibGame *g, int end)
+{
+    SDL_LockMutex(L.mu);
+    if (g == g_asked.g && !g_asked.end) {
+        g_asked.end = end;
+        g_asked.at = SDL_GetTicks();
+    }
+    SDL_UnlockMutex(L.mu);
+}
+
+int lib_fetch_ended(const LibGame *g)
+{
+    int end = 0;
+    SDL_LockMutex(L.mu);
+    if (g == g_asked.g && g_asked.end) {
+        end = SDL_GetTicks() - g_asked.at < 5000 ? g_asked.end : 0;     /* (long ago: the screen left) */
+        g_asked.g = NULL;
+        g_asked.end = 0;
+    }
+    SDL_UnlockMutex(L.mu);
+    return end;
+}
+
 static int fetch_thread(void *arg)
 {
     for (;;) {
@@ -1360,6 +1617,7 @@ static int fetch_thread(void *arg)
         const bool have = names_load();
         SDL_UnlockMutex(L.names_mu);
         if (!have) {
+            fetch_ended(g, LIB_COVER_FAILED);
             break;
         }
         XdGame named = g->g;            /* matched by the disc's name, not the user's */
@@ -1368,6 +1626,7 @@ static int fetch_thread(void *arg)
         }
         const char *nm = best_name(&named);
         if (!nm) {
+            fetch_ended(g, LIB_COVER_NONE);
             continue;
         }
         char esc[600], url[800], to[1200];
@@ -1376,6 +1635,9 @@ static int fetch_thread(void *arg)
         cover_path(&g->g, to, sizeof(to));
         if (download(url, to)) {
             g->cover_tried = false;     /* the UI's thread loads it */
+            fetch_ended(g, LIB_COVER_GOT);
+        } else {
+            fetch_ended(g, LIB_COVER_FAILED);
         }
     }
     L.status[0] = 0;
@@ -1398,6 +1660,8 @@ static void fetch_start(void)
 void lib_fetch_cover(LibGame *g)
 {
     SDL_LockMutex(L.mu);
+    g_asked.g = g;
+    g_asked.end = 0;
     for (int i = 0; i < L.n; i++) {
         if (L.games[i] == g && L.nq < MAX_GAMES) {
             L.queue[L.nq++] = g;
@@ -1492,13 +1756,17 @@ int lib_cover_candidates(const LibGame *lg, const char *query, const char **out,
         if (lg->orig[0]) {
             snprintf(named.title, sizeof(named.title), "%s", lg->orig);
         }
-        char a[256], f[256], raw[512];
-        game_words(&named, a, sizeof(a), f, sizeof(f), raw, sizeof(raw));
+        char a[256], f[256], raw[512], name[256];
+        game_words(&named, a, sizeof(a), f, sizeof(f), raw, sizeof(raw), name, sizeof(name));
         float sc[KEEP];
         s_n = 0;
         for (int i = 0; i < g_nnames; i++) {
-            const float s = s_query[0] ? query_score(s_query, g_names[i])
-                                       : game_score(&named, a, f, raw, g_names[i]);
+            float s = s_query[0] ? query_score(s_query, g_names[i]) : game_score(&named, a, f, raw, g_names[i]);
+            if (s < 0 && !s_query[0]) {
+                /* the second try's, after the others */
+                const float s2 = game_score2(&named, named.title, a, name, f, raw, g_names[i]);
+                s = s2 < 0 ? -1 : s2 - 0.5f;
+            }
             if (s < 0) {
                 continue;
             }

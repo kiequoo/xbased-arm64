@@ -120,9 +120,7 @@ typedef struct HleFfStage {
     uint32_t colorop, colorarg0, colorarg1, colorarg2;
     uint32_t alphaop, alphaarg0, alphaarg1, alphaarg2;
     uint32_t resultarg;
-    uint8_t texture;                  /* a texture is bound to this stage; bit 1: one with its
-                                         own border (its reported size in pc.scr[stage],
-                                         cmd.h tex_border; programs only) */
+    uint8_t texture;                  /* a texture is bound to this stage */
     uint8_t tex_dim;                  /* 2 = 2D, 3 = cube, 4 = volume */
     uint8_t alpha_kill;               /* D3DTSS_ALPHAKILL: texel alpha 0 discards */
     uint8_t unset;                    /* no texture set (D3D's Textures[stage] NULL): an
@@ -142,19 +140,16 @@ typedef struct HleFfPsKey {
                                          samples at the point's coordinates */
     uint8_t out_bgra;                 /* 8-bit (B8) target: it stores blue */
     uint8_t wbuf;                     /* W-buffering: depth = vW (HLE_WBUF_*_GLSL) */
-    uint8_t sblend;                   /* the NV2A's signed blend equations, ONE / ONE (the
-                                         fixed-function blend is off): the output and
-                                         the target's pixel (uFb, set 2) as two's-
-                                         complement bytes, 1 dst + src (ADDSIGNED), 2
-                                         dst - src (REVSUBTRACTSIGNED), saturated; 3 and
-                                         4 the NV2A's, any factors: the
-                                         target's byte as it is, 0 to 255 (draw.c
-                                         signed_blend) */
+    uint8_t sblend;                   /* the NV2A's signed blend equations, any factors
+                                         (the fixed-function blend is off): the target's
+                                         pixel (uFb, set 2) as its byte is and the
+                                         output as a two's-complement one, 1 dst + src
+                                         (ADDSIGNED), 2 dst - src (REVSUBTRACTSIGNED),
+                                         from 0 to 255 (draw.c signed_blend) */
     uint8_t fbfetch;                  /* stages (bits) whose texture is the colour target:
                                          its pixel as the earlier draws left it (uFb),
                                          as the NV2A's texture unit reads the memory
                                          the draw renders */
-    uint8_t tex_affine;               /* texture coordinates without perspective (cmd.h) */
 } HleFfPsKey;
 
 /* Push constants (std430 layout, <= 256 bytes: 256 used); HLE_PUSH_GLSL
@@ -167,8 +162,8 @@ typedef struct HleFfPush {
     uint32_t bump3[2];                /* stage 3's BUMPENVMAT (as bump) */
     uint32_t tex[HLE_FF_STAGES];      /* image index | sampler index << 16 */
     uint32_t tfactor;                 /* TEXTUREFACTOR (D3DCOLOR) */
-    uint32_t bumpl[3];                /* stages 1..3: BUMPENVLSCALE, LOFFSET (signed
-                                         16-bit 4096ths, vk/draw.c fix12x2) */
+    uint32_t bumpl[3];                /* stages 1..3: BUMPENVLSCALE, LOFFSET (half
+                                         pair) */
     float alpha_ref;                  /* ALPHAREF / 255 */
     uint32_t flags;                   /* bit s: stage s samples a linear texture
                                          (texel coordinates); bit 8 + s: that
@@ -255,11 +250,6 @@ extern bool g_hle_glsl_zw;
  * instead, so the near and far planes don't clip them; depth across a
  * primitive that crosses them comes from its clamped corners. */
 extern bool g_hle_glsl_zclamp;
-/* fast precision (vk/precision.h): the pixel stage without the per-pixel
- * steps xbased added after 1.0.94 (psh.c fast_cut) */
-extern bool g_hle_psh_fast;
-extern bool g_hle_glsl_f64;        /* the device has doubles in shaders (psh.c: a line's shares) */
-extern bool g_hle_glsl_i64;        /* and 64-bit integers (psh.c nvzfast) */
 #define HLE_ZCLAMP_GLSL \
     "  if (gl_Position.w > 0.0) gl_Position.z = clamp(gl_Position.z, 0.0, gl_Position.w);\n"
 
@@ -296,152 +286,13 @@ static inline const char *hle_push_glsl(void)
 #define HLE_ZNORM_GLSL(z, out) \
     "  precise float " out " = " z " * pc.zscale + " z " * (pc.zscale == uintBitsToFloat(0x33800000u) ||\n" \
     "      pc.zscale == uintBitsToFloat(0x37800000u) ? pc.zscale * pc.zscale : 0.0);\n"
-/* the integer formats store w truncated (nxdk_pgraph_tests' W_buffering: a
- * step below ours where w's fraction was over a half) */
-#define HLE_WBUF_TRUNC_GLSL \
-    "  float wCull = wRaw;\n" \
-    "  if (pc.zscale == uintBitsToFloat(0x37800000u) || pc.zscale == uintBitsToFloat(0x33800000u))\n" \
-    "    wRaw = floor(wRaw);\n"
 /* first in main (derivatives before any discard), stored last */
 #define HLE_WBUF_CALC_GLSL \
     "  float wRaw = vW + uintBitsToFloat(pc.psc[18]) + uintBitsToFloat(pc.psc[19]) *\n" \
     "      max(abs(dFdx(vW)), abs(dFdy(vW)));\n" \
-    HLE_WBUF_TRUNC_GLSL \
     HLE_ZNORM_GLSL("wRaw", "wN") \
     "  float wDepth = clamp(wN, 0.0, 1.0);\n"
 #define HLE_WBUF_STORE_GLSL "  gl_FragDepth = wDepth;\n"
-/* The NV2A's slope term under W-buffering is one number for the polygon:
- * max |dw| at its first pixel in top-left order (xemu's notes; nxdk_pgraph_tests'
- * W_buffering prints the same ZSLOPESCALE * slope on every pixel of its floor,
- * 0x1B9F1 over w from 0xF5 to 0x3A). With the barycentrics (key wbuf 2) the
- * triangle's corners come back from their screen-space derivatives (the
- * inverse of the corners' matrix), 1/w is linear on the screen, and
- * |dw| = |d(1/w)| w^2 at that pixel; degenerate ones keep the pixel's own. */
-#define HLE_WBUF_BARY_EXT_GLSL "#extension GL_EXT_fragment_shader_barycentric : require\n"
-/* the corners' w as they are (their 1/w exact), the pixel's from the
- * perspective barycentrics */
-#define HLE_WBUF_IN_BARY_GLSL "layout(location = 9) pervertexEXT in float vWv[3];\n"
-#define HLE_WBUF_CALC_BARY_GLSL \
-    "  vec3 bWv = vec3(vWv[0], vWv[1], vWv[2]);\n" \
-    "#ifndef HLE_WBUF_VW\n#define HLE_WBUF_VW dot(gl_BaryCoordEXT, bWv)\n#endif\n" \
-    "#ifdef HLE_WBUF_VWD\n" \
-    "  double vWd = HLE_WBUF_VWD;\n" \
-    "  float vW = float(vWd);\n" \
-    "#else\n" \
-    "  float vW = HLE_WBUF_VW;\n" \
-    "#endif\n" \
-    "  float wSl = max(abs(dFdx(vW)), abs(dFdy(vW)));\n" \
-    "  {\n" \
-    "    vec3 bL = gl_BaryCoordNoPerspEXT, bX = dFdxFine(bL), bY = dFdyFine(bL);\n" \
-    "    vec2 bp = gl_FragCoord.xy;\n" \
-    "    mat3 bMi = mat3(bX, bY, bL - bX * bp.x - bY * bp.y);\n" \
-    "    float bdt = determinant(bMi);\n" \
-    "    vec3 rv = 1.0 / bWv;\n" \
-    "    if (abs(bdt) > 1.0e-30 && !isinf(bdt) && !isnan(bdt) && all(greaterThan(bWv, vec3(0.0)))) {\n" \
-    "      mat3 bM = inverse(bMi);\n" \
-    "      vec2 c0 = bM[0].xy, c1 = bM[1].xy, c2 = bM[2].xy;\n" \
-    /* (the corners themselves where the shader has them, psh.c nvcol: from the */ \
-    /* derivatives a polygon with corners far off the screen changed its term */ \
-    /* from quad to quad, FloorQuad's corners at x -1168 and 1808) */ \
-    "#ifdef HLE_WBUF_SCRV\n" \
-    "      c0 = vScrV[0].xy; c1 = vScrV[1].xy; c2 = vScrV[2].xy;\n" \
-    "#endif\n" \
-    /* 1/w by its differences from corner 0's, from the w's own (exact: a */ \
-    /* far quad's corners' 1/w are equal to float precision) */ \
-    "      vec2 dr = (bWv.x - bWv.yz) / (bWv.yz * bWv.x);\n" \
-    "      float ra = dot(bX.yz, dr), rb = dot(bY.yz, dr);\n" \
-    /* (the row pair: with the top corner on the screen, rows 2 and 3 of the first */ \
-    /* row's 4-row block, even outside the triangle (TriH: k = 0 .. 3 all at rows */ \
-    /* 2, 3); with it off the screen, the first row's 2-aligned pair (the floors, */ \
-    /* the roof)) */ \
-    "      vec2 tv = c0.y <= c1.y && c0.y <= c2.y ? c0 : (c1.y <= c2.y ? c1 : c2);\n" \
-    /* (the clip's origin, vk/draw.c: the first row the polygon shows in it, the top */ \
-    /* of its part right of the clip's left edge: RoofQuad's second triangle from */ \
-    /* row 366, where its edge meets x 150; ClipW's walls by the clip's column) */ \
-    "#ifdef HLE_WBUF_SCRV\n" \
-    "      vec2 cl = vec2(float(pc.tfactor & 0xFFFFu), float(pc.tfactor >> 16));\n" \
-    "#else\n" \
-    "      vec2 cl = vec2(0.0);\n" \
-    "#endif\n" \
-    "      bool ton = tv.y >= cl.y && tv.x >= cl.x && tv.x < 2.0 / abs(pc.vp.x);\n" \
-    "      float yt = 1.0e30;\n" \
-    "      if (c0.x >= cl.x) yt = min(yt, c0.y);\n" \
-    "      if (c1.x >= cl.x) yt = min(yt, c1.y);\n" \
-    "      if (c2.x >= cl.x) yt = min(yt, c2.y);\n" \
-    "      if ((c0.x - cl.x) * (c1.x - cl.x) < 0.0) yt = min(yt, c0.y + (cl.x - c0.x) * (c1.y - c0.y) / (c1.x - c0.x));\n" \
-    "      if ((c1.x - cl.x) * (c2.x - cl.x) < 0.0) yt = min(yt, c1.y + (cl.x - c1.x) * (c2.y - c1.y) / (c2.x - c1.x));\n" \
-    "      if ((c2.x - cl.x) * (c0.x - cl.x) < 0.0) yt = min(yt, c2.y + (cl.x - c2.x) * (c0.y - c2.y) / (c0.x - c2.x));\n" \
-    "      if (yt > 1.0e29 || ton) yt = min(c0.y, min(c1.y, c2.y));\n" \
-    "      float yf = ceil(max(floor(yt * 16.0 + 0.5) / 16.0, cl.y) - 0.5);\n" \
-    /* (and under a window clip's top edge, C over 0, with the top corner above it: */ \
-    /* rows 2 and 3 of the 4-row block too, C + 2 and C + 3, unless the triangle's */ \
-    /* top is an edge (two corners at the top: the 2-aligned pair, C and C + 1): */ \
-    /* ClipF at C 32, 128, 224, the floor's single-top triangle at C + 2 and its */ \
-    /* flat-top one at C, the depth words exact; at C 0 the screen's top is the */ \
-    /* floors' pair 0, 1 as before) */ \
-    "      float ym = min(c0.y, min(c1.y, c2.y));\n" \
-    "      bool fltop = int(c0.y == ym) + int(c1.y == ym) + int(c2.y == ym) >= 2;\n" \
-    "      bool tab = cl.y > 0.0 && tv.y < cl.y && !fltop;\n" \
-    "      float yr = ton || tab ? 4.0 * floor(yf * 0.25) + 2.5 : 2.0 * floor(yf * 0.5) + 0.5;\n" \
-    "      float xl = 1.0e30;\n" \
-    "      if ((c0.y - yr) * (c1.y - yr) <= 0.0 && c0.y != c1.y) xl = min(xl, c0.x + (yr - c0.y) * (c1.x - c0.x) / (c1.y - c0.y));\n" \
-    "      if ((c1.y - yr) * (c2.y - yr) <= 0.0 && c1.y != c2.y) xl = min(xl, c1.x + (yr - c1.y) * (c2.x - c1.x) / (c2.y - c1.y));\n" \
-    "      if ((c2.y - yr) * (c0.y - yr) <= 0.0 && c2.y != c0.y) xl = min(xl, c2.x + (yr - c2.y) * (c0.x - c2.x) / (c0.y - c2.y));\n" \
-    "      if (xl > 1.0e29) xl = min(c0.x, min(c1.x, c2.x));\n" \
-    "      float xc = ceil(max(floor(xl * 16.0 + 0.5) / 16.0, 0.0) - 0.5);\n" \
-    /* (with the top corner off the screen, the 2-aligned pair of its own column on */ \
-    /* the screen: WallQuad's top corners at x 637.3 and 150, pairs (636, 637) and */ \
-    /* (150, 151), whatever column the first row starts at) */ \
-    "      float xt = clamp(floor(floor(tv.x * 16.0 + 0.5) / 16.0), cl.x, 2.0 / abs(pc.vp.x) - 1.0);\n" \
-    "      float xr = ton ? 4.0 * floor(xc * 0.25) + 2.5 : 2.0 * floor(xt * 0.5) + 0.5;\n" \
-    "      float fx = ton ? 0.9 + 0.1 * min(bWv.x, min(bWv.y, bWv.z)) / max(bWv.x, max(bWv.y, bWv.z)) : 1.0;\n" \
-    "      float r0 = rv.x + dot((bMi * vec3(xr, yr, 1.0)).yz, dr);\n" \
-    /* (on the screen: the plane of 1/w from the corners on the rasterizer's 1/16, */ \
-    /* not from the derivatives, a few parts in a million off pixel to pixel) */ \
-    "#ifdef HLE_WBUF_SCRV\n" \
-    "      if (true) {\n" \
-    "#else\n" \
-    "      if (ton) {\n" \
-    "#endif\n" \
-    "        vec2 s0 = floor(c0 * 16.0 + 0.5) / 16.0, s1 = floor(c1 * 16.0 + 0.5) / 16.0, s2 = floor(c2 * 16.0 + 0.5) / 16.0;\n" \
-    "        float pd = (s1.x - s0.x) * (s2.y - s0.y) - (s2.x - s0.x) * (s1.y - s0.y);\n" \
-    "        if (pd != 0.0) {\n" \
-    "          ra = (dr.x * (s2.y - s0.y) - dr.y * (s1.y - s0.y)) / pd;\n" \
-    "          rb = ((s1.x - s0.x) * dr.y - (s2.x - s0.x) * dr.x) / pd;\n" \
-    "          r0 = rv.x + ra * (xr - s0.x) + rb * (yr - s0.y);\n" \
-    "        }\n" \
-    "      }\n" \
-    "      if (r0 > 0.0 && r0 + ra > 0.0 && r0 + rb > 0.0)\n" \
-    /* (the integer formats: the step's quotient exact and cut toward zero to a */ \
-    /* float, as the word's sum is (nvwc24): the GPU's division came out a last */ \
-    /* place over the console's, the term a word over: nxdk_pgraph_tests' */ \
-    /* W_buffering WallQuad 24D ZS1 exact so, TriH 396 -> 114 pixels; the x step */ \
-    /* under the on-screen factor fx stays as it was, TriV's fitted so) */ \
-    "#ifdef HLE_WBUF_VWD\n" \
-    "      { bool wfix = pc.zscale == uintBitsToFloat(0x37800000u) || pc.zscale == uintBitsToFloat(0x33800000u);\n" \
-    "        wSl = max(ton || !wfix ? fx * abs(ra) / (r0 * (r0 + ra)) :\n" \
-    "                        float(nvwc24(abs(double(ra)) / (double(r0) * (double(r0) + double(ra))))),\n" \
-    "                  !wfix ? abs(rb) / (r0 * (r0 + rb)) :\n" \
-    "                        float(nvwc24(abs(double(rb)) / (double(r0) * (double(r0) + double(rb)))))); }\n" \
-    "#else\n" \
-    "        wSl = max(fx * abs(ra) / (r0 * (r0 + ra)), abs(rb) / (r0 * (r0 + rb)));\n" \
-    "#endif\n" \
-    "    }\n" \
-    "  }\n" \
-    "  float wRaw = vW + uintBitsToFloat(pc.psc[18]) + uintBitsToFloat(pc.psc[19]) * wSl;\n" \
-    HLE_WBUF_TRUNC_GLSL \
-    /* (the integer formats' cut from the pixel's w in doubles: past 2^23 a float */ \
-    /* has no fraction left, and 16777046.5 rounded up a word; nxdk_pgraph_tests' */ \
-    /* W_buffering LargeZ, w from 16777046 to 16777047 down the screen, every word */ \
-    /* 16777046 on the console) */ \
-    "#ifdef HLE_WBUF_VWD\n" \
-    "  double wRawD = vWd + double(uintBitsToFloat(pc.psc[18])) + double(uintBitsToFloat(pc.psc[19])) * double(wSl);\n" \
-    "  if (pc.zscale == uintBitsToFloat(0x37800000u) || pc.zscale == uintBitsToFloat(0x33800000u)) {\n" \
-    "    wRawD = nvwc24(nvwc24(nvwq(vWd)) + double(uintBitsToFloat(pc.psc[18])) + nvwc24(double(uintBitsToFloat(pc.psc[19])) * nvwc24(double(wSl))));\n" \
-    "    wRaw = float(floor(wRawD)); }\n" \
-    "#endif\n" \
-    HLE_ZNORM_GLSL("wRaw", "wN") \
-    "  float wDepth = clamp(wN, 0.0, 1.0);\n"
 
 /* EQUAL depth passes that do not write (vk/draw.c eq_tol) test LESSEQUAL a
  * step toward the eye, which passes everything in front of the stored depth
@@ -466,17 +317,15 @@ static inline const char *hle_push_glsl(void)
  * largest float and 0 times it 0, so q = 0 projects (0, 0, 0) to 0, never
  * NaN. NGB writes oT0 = 0 to turn far shadow receivers' lookups off (lit);
  * 0/0 left NaN in the shadow filter weights and those receivers black.
- * The third coordinate keeps every float (an infinity as the largest): a
- * shadow stage compares it as a depth word, 24-bit fixed up to 16777215 (cut
- * at 1e7, every compare against a far depth failed in nxdk_pgraph_tests'
- * Texture_shadow_comparator 3F24/3P24) or a 24-bit float's (Texture_format's
- * DepthFmt_D_X8Y24_FLOAT against 0.5e30). */
+ * The third coordinate keeps a far wider range than the first two: a shadow
+ * stage compares it as a 24-bit depth word (up to 16777215; cut at 1e7, every
+ * compare against a far depth failed in nxdk_pgraph_tests'
+ * Texture_shadow_comparator 3F24/3P24). */
 #define HLE_NVPROJ_GLSL \
     "vec3 nvproj(vec4 t) {\n" \
     "  float iq = abs(t.w) > 1.0e-30 ? 1.0 / t.w : 3.0e38;\n" \
     "  vec3 p = t.xyz * iq;\n" \
-    "  float zm = uintBitsToFloat(0x7f7fffffu);\n" \
-    "  return vec3(clamp(p.xy, -1.0e7, 1.0e7), clamp(p.z, -zm, zm));\n" \
+    "  return vec3(clamp(p.xy, -1.0e7, 1.0e7), clamp(p.z, -1.0e30, 1.0e30));\n" \
     "}\n"
 
 /* Screen positions v (D3D screen pixels) to where the NV2A rasterizer puts
@@ -489,157 +338,9 @@ static inline const char *hle_push_glsl(void)
  * it (other vertices) tilted against each other by up to 1/16 of the depth
  * slope per pixel, at a grazing angle more than the decal stands off, and it
  * flickered out as the camera moved (Burnout 3's road stains and manhole
- * covers, Dead or Alive 2's eaves shadows). debug.xbased.snap=trunc: the
- * truncation (HLE_SNAP_TRUNC_FLAG), for A/B. */
-#define HLE_SNAP_TRUNC_FLAG 8192u
-/* pc.flags: a quad list's triangles: a bump stage's coordinate on a texel edge (within 1/4096)
- * takes the texel before it in a quad's first triangle (0, 1, 2), the one
- * after in its second (0, 2, 3), as the console's do (nxdk_pgraph_tests'
- * Bump_map rows, the first triangle the one above the quad's 0 - 2
- * diagonal; psh.c sampx). Other stages' ties as the flag above says: as
- * a rule for all, Blend_surface and Pixel_shader's lost theirs. */
-#define HLE_QUAD_TIE_FLAG 16384u
-/* (flags bit 15: the lines drawn are a polygon's sides: psh.c nvcol1) */
-#define HLE_OUTLINE_FLAG 32768u
-
-/* ---- the NV2A's one-pixel lines ----
- * Measured on the console's pictures (nxdk_pgraph_tests; pgraph/tools/
- * linerule2.py is these rules in Python, none of their pixels off):
- * W_buffering's 15 pointer lines a picture and its line strip, Line_width's
- * and Smoothing_control's 16-vertex loops, end points known in screen pixels.
- * The end points truncated to 1/16 pixel. SET_SMOOTHING_CONTROL's bit 0
- * picks the rule (pbkit and D3D leave it set):
- * - set: the line's points whose major coordinate lies within 1/4 pixel of
- *   the pixel's centre light it when their minor one lies within 1/2: more
- *   pixels than one a step, a step and half the minor axis' length; the
- *   line, taken unbounded, ends square across its own direction at its end
- *   points: the centre counts when it projects onto the line between them,
- *   as a smoothed line's points do. SET_LINE_WIDTH scales that box, 1/4 and
- *   1/2 of the width (pgraph/tools/linewidth2.py: Line_width's loop from
- *   1/8 to 32 pixels, a pixel or two of thousands off, where ends 1/4 width
- *   inside left 149 of 6891 off at 9 pixels). A centre on the band's edge
- *   counts where that edge is a right one, or a level top one, and not on a
- *   left or a bottom one (pgraph/tools/linetie.py: 2300 such centres at
- *   eight widths); a centre on an end counts at the far end alone, not for
- *   a y-major line running down (ZPass_pixel_count's lines, 288.5 to 352.5:
- *   289 to 352 lit at every width; W_buffering's line strips). Width 0
- *   draws nothing. (The one-pixel line was first drawn with ends 1/4 pixel
- *   inside along the longer axis, nvl_at without cap: the same pixels on
- *   every loop and strip, but which of two overlapping lines owns a corner
- *   came out wrong on outlines: Shade_model's 16 pictures, Line_width at
- *   one pixel.)
- * - clear: one pixel a step: the line's point at the centre's major
- *   coordinate, from half a pixel before the start to half a pixel before
- *   the end.
- * A geometry stage (vsh.c hle_nvline_gs_glsl) draws each line as a quad
- * around it and hands the pixel stage the end points in 1/16 pixel
- * (location 12, the width in 1/8 pixel at 13); the pixel stage keeps the rule's pixels (HLE_NVLINE_FS_GLSL
- * after a "const bool nvl_thin", exact: 64-bit products). The pipeline key's
- * topo_class bit and the pixel key's (psh.h HLE_PSH_NVLINE, _THIN) go
- * together. Resolution scale 1 only. */
-#define HLE_TOPO_NVLINE 0x1000u
-/* with it on a triangle class (SET_FRONT_POLYGON_MODE GL_LINE: each
- * triangle's three sides are such lines, in its vertices' order;
- * nxdk_pgraph_tests' Line_width, pgraph/tools/outline.py), bits 13-14: the
- * winding culled (0 none, 1 clockwise on the screen, 2 the other, 3 both) */
-#define HLE_TOPO_NVCULL_SHIFT 13
-/* bit 15: each triangle stands for its side 1 - 2 alone, drawn with vertex
- * 0's flat colours (a flat-shaded quad's or polygon's outline, pb/pbres.h) */
-#define HLE_TOPO_NVSIDE 0x8000u
-/* bit 25: a smoothed polygon (SET_POLY_SMOOTH_ENABLE): every
- * pixel the triangle touches reaches the pixel stage, which counts the points of
- * the pixel inside it (psh.c nvp_cov); bit 26: and half a pixel further out (an
- * antialiased surface's passes, vk/draw.c aarep: a texel is half a pixel wide) */
-#define HLE_TOPO_CONSERV 0x2000000u
-/* bit 27, with HLE_TOPO_NVLINE on a triangle class: the triangles are a list's or a
- * strip's (not a fan's). Their outline's sides are drawn 1 - 2, 2 - 0, 0 - 1, the
- * last on top where they overlap; a fan's triangles 0 - 1, 1 - 2, 2 - 0, which is
- * the same order on the triangle taken as i + 1, 0, i (nxdk_pgraph_tests' Line_width
- * at 3 pixels: the two triangles' corners show side 0 - 1 over the others and 2 - 0
- * over 1 - 2, 18 pixels, and the fan's 600 overlapping pixels its own; Front_face's
- * four line-mode pictures; quads and polygons: pb/pbres.h). */
-#define HLE_TOPO_NVTRIS 0x8000000u
-#define HLE_TOPO_CONSERV_EXTRA 0x4000000u
-#define HLE_NVLINE_FS_GLSL \
-    "layout(location = 12) flat in ivec4 vLine;\n" \
-    "layout(location = 13) flat in int vLineW;\n" \
-    "int nvl_cmp(int a, int b, int c, int d) {\n" \
-    "  int ah, al, ch, cl;\n" \
-    "  imulExtended(a, b, ah, al);\n" \
-    "  imulExtended(c, d, ch, cl);\n" \
-    "  if (ah != ch) return ah < ch ? -1 : 1;\n" \
-    "  return uint(al) < uint(cl) ? -1 : uint(al) > uint(cl) ? 1 : 0;\n" \
-    "}\n" \
-    "ivec2 nvl_sum(int a, int b, int c, int d) {\n" \
-    "  int ah, al, ch, cl;\n" \
-    "  imulExtended(a, b, ah, al);\n" \
-    "  imulExtended(c, d, ch, cl);\n" \
-    "  uint lo = uint(al) + uint(cl);\n" \
-    "  return ivec2(ah + ch + (lo < uint(al) ? 1 : 0), int(lo));\n" \
-    "}\n" \
-    "int nvl_cmp2(int a, int b, int c, int d, int e, int f, int g, int h) {\n" \
-    "  ivec2 p = nvl_sum(a, b, c, d), q = nvl_sum(e, f, g, h);\n" \
-    "  if (p.x != q.x) return p.x < q.x ? -1 : 1;\n" \
-    "  return uint(p.y) < uint(q.y) ? -1 : uint(p.y) > uint(q.y) ? 1 : 0;\n" \
-    "}\n" \
-    "bool nvl_at(ivec2 c, bool thin, bool cap, bool smp) {\n" \
-    "  ivec4 ln = vLine * 2;\n" \
-    "  ivec2 d = ln.zw - ln.xy;\n" \
-    "  int w = vLineW;\n" \
-    "  bool xm = abs(d.x) >= abs(d.y);\n" \
-    "  int sM = xm ? ln.x : ln.y, dM = xm ? d.x : d.y, cM = xm ? c.x : c.y;\n" \
-    "  int sN = xm ? ln.y : ln.x, dN = xm ? d.y : d.x, cN = xm ? c.y : c.x;\n" \
-    "  if (dM == 0) return false;\n" \
-    "  bool pos = dM > 0;\n" \
-    "  int len = abs(dM);\n" \
-    "  int lo, hi, ua, ub;\n" \
-    "  bool loc, hic, uac, ubc;\n" \
-    "  if (thin) {\n" \
-    "    lo = cM; hi = cM; loc = true; hic = true;\n" \
-    "    ua = -16; ub = -16; uac = xm ? !pos : pos; ubc = !uac;\n" \
-    "  } else {\n" \
-    "    lo = cM - w; hi = cM + w; loc = xm; hic = !xm;\n" \
-    "    ua = w; ub = xm && !pos ? 0 : -w; uac = xm && pos; ubc = xm || !pos;\n" \
-    "  }\n" \
-    "  int slo = pos ? sM + ua : sM - len - ub, shi = pos ? sM + len + ub : sM - ua;\n" \
-    "  bool sloc = pos ? uac : ubc, shic = pos ? ubc : uac;\n" \
-    "  if (!cap) {\n" \
-    "  if (slo > lo) { lo = slo; loc = sloc; } else if (slo == lo) loc = loc && sloc;\n" \
-    "  if (shi < hi) { hi = shi; hic = shic; } else if (shi == hi) hic = hic && shic;\n" \
-    "  }\n" \
-    "  if (lo > hi || (lo == hi && !(loc && hic))) return false;\n" \
-    "  bool inc = dN == 0 || ((dN > 0) == pos);\n" \
-    "  int m1 = inc ? lo : hi, m2 = inc ? hi : lo;\n" \
-    "  bool m1c = smp || dN == 0 || (inc ? loc : hic), m2c = smp || dN == 0 || (inc ? hic : loc);\n" \
-    "  int sg = pos ? 1 : -1;\n" \
-    "  int s1 = sg * nvl_cmp(m1 - sM, dN, cN + 2 * w - sN, dM);\n" \
-    "  int s2 = sg * nvl_cmp(m2 - sM, dN, cN - 2 * w - sN, dM);\n" \
-    "  bool t1 = m1c && xm, t2 = m2c && !xm;\n" \
-    "  if (cap && !smp) { t1 = xm && inc; t2 = !xm || !inc; }\n" \
-    "  if (!((s1 < 0 || (s1 == 0 && t1)) && (s2 > 0 || (s2 == 0 && t2)))) return false;\n" \
-    "  if (!cap) return true;\n" \
-    "  ivec2 e = c - ln.xy;\n" \
-    "  int u = nvl_cmp2(e.x, d.x, e.y, d.y, 0, 0, 0, 0), v = nvl_cmp2(e.x, d.x, e.y, d.y, d.x, d.x, d.y, d.y);\n" \
-    "  bool lf = d.x < 0 || (d.x == 0 && d.y < 0);\n" \
-    "  bool sc = smp && lf, ec = smp ? !lf : xm || !pos;\n" \
-    "  return (u > 0 || (u == 0 && sc)) && (v < 0 || (v == 0 && ec));\n" \
-    "}\n" \
-    "bool nvl_lit() {\n" \
-    "  ivec2 c = ivec2(floor(gl_FragCoord.xy * 32.0 + 0.5));\n" \
-    "  if (!nvl_thin && nvms()) c = ivec2(floor(gl_FragCoord.xy)) * 32 + nvsmp() * 2;\n" \
-    "  return nvl_at(c, nvl_thin, !nvl_thin, false);\n" \
-    "}\n" \
-    "int nvl_cov() {\n" \
-    "  ivec2 o = ivec2(floor(gl_FragCoord.xy)) * 32;\n" \
-    "  int k = 0;\n" \
-    "  for (int j = 0; j < 8; j++) if (nvl_at(o + ivec2(4 * j, 4 * ((3 * j) & 7)), false, true, true)) k++;\n" \
-    "  return k;\n" \
-    "}\n"
-/* (a position past 2^100, beyond any sixteenth: as it is, the product overflowing
- * to infinity lost the triangle of a corner at the transform unit's saturated
- * 3.4e38, nxdk_pgraph_tests' W_param rcc pictures, which the console fills) */
+ * covers, Dead or Alive 2's eaves shadows). */
 #define HLE_SUBPIXEL_GLSL(v) \
-    "  " v " = (pc.flags & 8192u) != 0u ? mix(trunc(" v " * 16.0) / 16.0, " v ", greaterThan(abs(" v "), vec2(1.0e30))) : " v " - 0.03125;\n"
+    "  " v " = " v " - 0.03125;\n"
 
 /* Screen positions v (D3D screen pixels, after HLE_SUBPIXEL_GLSL) at a
  * resolution scale s > 1 (HleFfPush.flags bits 16-23; bit 12: the NV2A's
@@ -653,45 +354,6 @@ static inline const char *hle_push_glsl(void)
  * blurred the blue its EMF vision had left there into a band along the
  * frame's left and top. Positions on a texel's centre move to its first
  * image pixel's: the texel is covered, or not, whole. */
-/* D3DTADDRESS_CLAMPTOEDGE (address mode 5, the NV2A's CLAMP_OGL: GL's CLAMP,
- * the XDK's texture addressing white paper): the border mode with the filter's
- * point held on the texture, [0, 1] for a bilinear filter (at the edge up to
- * half its weight from the border colour), [0, 1) for a point one (it never
- * reads the border: nxdk_pgraph_tests' Texture_border Clamp_OGL quads, point
- * magnified, show the edge texels as CLAMP's). The filter is the pixel's, by
- * the unclamped coordinate's steps (magnified: MAG's), and the texture is read
- * with those steps (the clamped ones would move its level). The stage's sampler
- * is a border one (vk/draw.c addr_mode); pc.tex bits 26-28: its axes u, v, w in
- * that mode; bit 25: MIN a point filter, bit 29: MAG one (vk/draw.c cte_bits).
- * Mode 5 was CLAMP's edge clamp: a bilinear stage's border-tinted half texel
- * at the texture's edge was missing. */
-#define HLE_CTE_GLSL \
-    "bool nvctept(uint t, vec2 sz, vec2 dx, vec2 dy) {\n" \
-    "  return max(length(dx * sz), length(dy * sz)) <= 1.0 ? (t & 0x20000000u) != 0u : (t & 0x02000000u) != 0u;\n" \
-    "}\n" \
-    "vec2 nvcte2(uint t, vec2 uv, vec2 sz, vec2 dx, vec2 dy) {\n" \
-    "  if ((t & 0x0C000000u) == 0u) return uv;\n" \
-    "  vec2 hi = nvctept(t, sz, dx, dy) ? 1.0 - 0.5 / sz : vec2(1.0);\n" \
-    "  return mix(uv, clamp(uv, vec2(0.0), hi), notEqual(uvec2(t >> 26, t >> 27) & 1u, uvec2(0u)));\n" \
-    "}\n" \
-    "vec3 nvcte3(uint t, vec3 uvw, vec3 sz, vec3 dx, vec3 dy) {\n" \
-    "  if ((t & 0x1C000000u) == 0u) return uvw;\n" \
-    "  bool pt = max(length(dx * sz), length(dy * sz)) <= 1.0 ? (t & 0x20000000u) != 0u : (t & 0x02000000u) != 0u;\n" \
-    "  vec3 hi = pt ? 1.0 - 0.5 / sz : vec3(1.0);\n" \
-    "  return mix(uvw, clamp(uvw, vec3(0.0), hi), notEqual(uvec3(t >> 26, t >> 27, t >> 28) & 1u, uvec3(0u)));\n" \
-    "}\n" \
-    /* (the texture's size asked only where the stage clamps: a size query is a \
-     * sampler message of its own on Intel's GPUs, as dear as a read, #309) */ \
-    "vec2 nvcte2i(uint t, vec2 uv, uint ti, vec2 dx, vec2 dy) {\n" \
-    "  if ((t & 0x0C000000u) == 0u) return uv;\n" \
-    "  return nvcte2(t, uv, vec2(textureSize(sampler2D(uTex2D[nonuniformEXT(ti)], uSmp[0]), 0)), dx, dy);\n" \
-    "}\n"
-#define HLE_CTE3I_GLSL \
-    "vec3 nvcte3i(uint t, vec3 uvw, uint ti, vec3 dx, vec3 dy) {\n" \
-    "  if ((t & 0x1C000000u) == 0u) return uvw;\n" \
-    "  return nvcte3(t, uvw, vec3(textureSize(sampler3D(uTex3D[nonuniformEXT(ti)], uSmp[0]), 0)), dx, dy);\n" \
-    "}\n"
-
 #define HLE_TEXEL_EDGE_FLAG 4096u
 #define HLE_TEXEL_EDGE_GLSL(v) \
     "  { uint rsc = (pc.flags >> 16) & 255u;\n" \

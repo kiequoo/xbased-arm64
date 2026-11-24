@@ -161,13 +161,35 @@ void nc_paging_flush(NcKernel *k)
     }
 }
 
+/* The kernel's page tables through their self-map: the PTEs at 0xC0000000,
+ * the directory at 0xC0300000. The core keeps no tables there, so a page of
+ * that window reads as one with nothing present. Xbox Music Mixer walks the
+ * tables of the memory it runs in ring 3 to mark them user-accessible (U/S
+ * in each present PTE, then INVLPG): it finds no entry to change, and the
+ * flat model lets ring 3 at that memory anyway. Before, its first read of
+ * the directory was a page fault it doesn't handle. */
+#define SELFMAP_VA  0xC0000000u
+#define SELFMAP_END 0xC0400000u
+
 bool nc_paging_fault(NcKernel *k, uint32_t va)
 {
-    if (g_pd_pa == UINT32_MAX) {
-        return false;
+    if (g_pd_pa != UINT32_MAX) {
+        sync_pde(k, va >> 22);
+        if (nc_vm_phys(k->vm, va) != UINT32_MAX) {
+            return true;
+        }
     }
-    sync_pde(k, va >> 22);
-    return nc_vm_phys(k->vm, va) != UINT32_MAX;
+    if (va >= SELFMAP_VA && va < SELFMAP_END) {
+        const uint32_t pa = nc_vm_alloc_phys(k->vm, NC_PAGE, 0, k->vm->ram_size);
+        if (pa != UINT32_MAX) {
+            memset(k->vm->ram + pa, 0, NC_PAGE);
+            nc_vm_map(k->vm, va & ~(NC_PAGE - 1), pa, NC_PAGE);
+            nc_log("xbased-native", "paging: the page tables' self-map read at %08x: a page with nothing present",
+                   va);
+            return nc_vm_phys(k->vm, va) != UINT32_MAX;
+        }
+    }
+    return false;
 }
 
 /* ---------------------------------------------------------- savestates */

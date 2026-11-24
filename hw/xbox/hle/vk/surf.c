@@ -79,15 +79,16 @@ static bool owner_kind(const HleSurfDesc *d)
  * memory, colour writes off: its depth buffer at 4x took the depth in its
  * first quarter, the shadow-map pass read Hitman a quarter of his size in a
  * corner of it, and the shadow on the floor was the map's square. */
-static uint32_t surf_scale(const HleSurfDesc *d)
+static uint32_t surf_scale(const HleSurfDesc *d, VkImageAspectFlags aspect)
 {
+    (void)aspect;
     /* (a mipmapped texture's image over its levels' targets too, pb/pbdraw.c
      * mips_of_targets: its levels are copies of those targets, at their scale.
      * Scaled, each of Fable's 128 x 128 ripple map's texels took a 4 x 4 block
      * of the image, its pond a grid of squares) */
     bool small = !d->role && !d->pitch && !d->parent && d->faces <= 1 &&
                  MAX(d->w, d->h) <= SURF_UNSCALED_MAX;
-    if (small) {
+    if (small || d->native) {
         return 1;
     }
     /* A linear colour target of half a frame or less (a glow or blur
@@ -103,7 +104,8 @@ static uint32_t surf_scale(const HleSurfDesc *d)
         const char *e = getenv("XBASED_HLE_HALFSCALE");
         half = !e || strcmp(e, "0");
     }
-    if (half && d->pitch && !d->role && !d->parent && d->w <= 360 && d->h <= 288) {
+    if (half && d->pitch && !d->role && !d->parent && d->w <= 360 &&
+        d->h <= 288) {
         return 1;
     }
     /* The largest whole scale the device's images take: at 7x and 8x a
@@ -270,7 +272,7 @@ HleVkSurf *hle_surf_define(const HleSurfDesc *d)
     HleVkSurf *s = hle_surf_get(d->id);
     if (s && s->d.xfmt == d->xfmt && s->d.w == d->w && s->d.h == d->h &&
         s->d.parent == d->parent && s->d.levels == d->levels && s->d.faces == d->faces &&
-        s->d.level == d->level && s->d.face == d->face) {
+        s->d.level == d->level && s->d.face == d->face && s->d.native == d->native) {
         /* Same image identity. pa/pitch are READBACK metadata (Swap's Data
          * rotation and header re-resolution change them every frame), and the
          * role set by DEVICE_CREATE survives an OBJ_CREATE with role 0. */
@@ -296,7 +298,7 @@ HleVkSurf *hle_surf_define(const HleSurfDesc *d)
             hle_idhint_made(&g_surf_hint);      /* remembered misses may now hit */
             s->d = *d;
             s->fmt = surf_format(d->xfmt, &s->aspect, &s->texel_bytes);
-            s->scale = surf_scale(d);
+            s->scale = surf_scale(d, s->aspect);
             s->w = d->w * s->scale;
             s->h = d->h * s->scale;
             s->layout = VK_IMAGE_LAYOUT_UNDEFINED;

@@ -1005,6 +1005,11 @@ UiTex *ui_layer_begin(UiTex *layer)
         U.targets[U.ntargets++] = SDL_GetRenderTarget(U.r);
     }
     SDL_SetRenderTarget(U.r, layer->t);
+    /* SDL keeps a clip rect a target's own: one a screen left set on this
+     * texture (its list left without list_end, Hide game's return) cut every
+     * screen drawn in it later (the main menu, its logo and hints gone but
+     * inside the game screen's list) */
+    SDL_SetRenderClipRect(U.r, NULL);
     SDL_SetRenderDrawColor(U.r, 0, 0, 0, 0);
     SDL_RenderClear(U.r);
     return layer;

@@ -14,7 +14,7 @@
 #include "hw/xbox/hle/hle.h"
 #include "hw/xbox/hle/core/probe.h"
 #include "hw/xbox/hle/vk/pipeasync.h"
-#include "hw/xbox/hle/vk/precision.h"
+#include "hw/xbox/hle/vk/drvcrash.h"
 #include "native/core/core.h"
 #include "hw/xbox/hle/mem/guestmem.h"
 #include "hw/xbox/hle/hitch.h"
@@ -38,13 +38,7 @@ static bool g_active;
 void nc_hle_set_pipeline_options(bool async, bool prebuild, bool hybrid)
 {
     hle_pipe_set_options(async, prebuild, hybrid);
-    nc_crash_hook = hle_precision_crashed;     /* a driver crash in a shader build: auto goes fast */
-}
-
-void nc_hle_set_precision(int mode)
-{
-    hle_precision_set_option(mode);
-    nc_crash_hook = hle_precision_crashed;     /* a driver crash in a shader build: auto goes fast */
+    nc_crash_hook = hle_drvcrash_crashed;      /* a driver crash in a pipeline build: kept out next run */
 }
 
 void nc_hle_pipeline_progress(uint32_t *done, uint32_t *total)
@@ -160,12 +154,14 @@ bool nc_hle_pb_active(void)
 #define SMP_SIGNAL SIGPROF
 #define SMP_OUTSIDE 0x07FFFFFFu /* a host PC outside this library (libc, the driver) */
 
-static pthread_t g_smp_thread;
 static bool g_smp_ready;
 static uintptr_t g_smp_base;
+static pthread_mutex_t g_smp_mu = PTHREAD_MUTEX_INITIALIZER;
+#ifndef _WIN32
+static pthread_t g_smp_thread;
 static volatile uint32_t g_smp_pc;
 static uint32_t g_smp_seq;
-static pthread_mutex_t g_smp_mu = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 #ifdef _WIN32
 /* Windows: the vCPU thread is suspended for the sample and its context read

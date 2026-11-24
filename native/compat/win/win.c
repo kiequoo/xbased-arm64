@@ -119,13 +119,42 @@ int nc_clock_gettime(clockid_t clk, struct timespec *ts)
 
 /* ------------------------------------------------------------- startup */
 
+/* Out of Windows' power throttling (EcoQoS), which it puts a laptop's
+ * background processes in: their threads on the efficiency cores at lower
+ * clocks, their timers coalesced and their timer resolution ignored. The
+ * run is a process without a window of its own (the frame's has it), its
+ * clock and its threads the ones that must keep time: throttled here by
+ * hand, Otogi's frames came 50 and 16 ms apart instead of 33 in one run of
+ * two. Windows 11 knows the timer flag, Windows 10 only the speed one. */
+#ifndef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
+#define PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION 0x4
+#endif
+static void no_power_throttling(void)
+{
+    typedef BOOL(WINAPI * SetInfo)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
+    SetInfo set = (SetInfo)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetProcessInformation");
+    if (!set) {
+        return;
+    }
+    PROCESS_POWER_THROTTLING_STATE st;
+    memset(&st, 0, sizeof(st));
+    st.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    st.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    st.StateMask = 0;   /* never throttled */
+    if (!set(GetCurrentProcess(), ProcessPowerThrottling, &st, sizeof(st))) {
+        st.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+        set(GetCurrentProcess(), ProcessPowerThrottling, &st, sizeof(st));
+    }
+}
+
 /* Before main: files are binary (the disc images, the savestates; no CRLF
  * translation), the timer resolution is 1 ms for the waits that still go
- * through the scheduler's, and Winsock is up. */
+ * through the scheduler's, no power throttling, and Winsock is up. */
 __attribute__((constructor)) static void nc_win_init(void)
 {
     _set_fmode(_O_BINARY);
     timeBeginPeriod(1);
+    no_power_throttling();
     clock_init();
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);

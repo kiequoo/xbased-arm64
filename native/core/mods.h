@@ -46,6 +46,14 @@ void nc_mods_poll(void);
  * allocated freed. */
 void nc_mods_after_load(struct NcKernel *k, const char *image_path);
 
+#ifdef XBASED_DEVCTL
+/* (dev builds: the dev control, app/win_devctl.c) called at each vblank on the
+ * guest CPU's thread; n bytes written at guest VA va as the cheats write them
+ * (the GPU's tracking told, code translated again), false where unmapped */
+extern void (*nc_mods_vblank_hook)(void);
+bool nc_mods_write(uint32_t va, const void *buf, unsigned n);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

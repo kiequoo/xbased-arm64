@@ -7,6 +7,7 @@
 
 #include <pthread.h>
 #include <stdlib.h>
+#include <unistd.h>      /* sysconf */
 #include <zlib.h>
 
 typedef struct NcRamState {
@@ -90,9 +91,11 @@ static void *ram_part(void *arg)
     return NULL;
 }
 
-/* The blocks are deflated a quarter on each of 4 threads while the guest
- * waits: on one, they were ~1.05 s of Halo 2's 1.2 s save (the Odin). */
-#define RAM_PARTS 4
+/* The blocks are deflated in parts, one a thread, while the guest waits:
+ * on one, they were ~1.05 s of Halo 2's 1.2 s save (the Odin). As many
+ * parts as the CPU has threads, 4 to 16 (#401: 4 before); the parts' runs
+ * one after another are the same bytes whatever their number. */
+#define RAM_PARTS 16
 
 bool nc_ram_state_save(NcBuf *b)
 {
@@ -100,12 +103,14 @@ bool nc_ram_state_save(NcBuf *b)
     const NcRamState st = {vm->ram_size, RAM_BLOCK};
     nc_rec_put(b, &nc_rec_NcRamState, &st);
     const uint32_t nblk = vm->ram_size / RAM_BLOCK;
+    const long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+    const unsigned np = ncpu < 4 ? 4 : ncpu > RAM_PARTS ? RAM_PARTS : (unsigned)ncpu;
     RamPart parts[RAM_PARTS];
     memset(parts, 0, sizeof(parts));
-    for (unsigned i = 0; i < RAM_PARTS; i++) {
+    for (unsigned i = 0; i < np; i++) {
         parts[i].ram = vm->phys;
-        parts[i].from = nblk * i / RAM_PARTS * RAM_BLOCK;
-        parts[i].to = nblk * (i + 1) / RAM_PARTS * RAM_BLOCK;
+        parts[i].from = nblk * i / np * RAM_BLOCK;
+        parts[i].to = nblk * (i + 1) / np * RAM_BLOCK;
         if (i) {
             parts[i].started = pthread_create(&parts[i].th, NULL, ram_part, &parts[i]) == 0;
         }
@@ -113,7 +118,7 @@ bool nc_ram_state_save(NcBuf *b)
     ram_part(&parts[0]);
     uint32_t zero = 0, deflated = 0;
     uint64_t bytes = 0;
-    for (unsigned i = 0; i < RAM_PARTS; i++) {
+    for (unsigned i = 0; i < np; i++) {
         if (i && parts[i].started) {
             pthread_join(parts[i].th, NULL);
         } else if (i) {

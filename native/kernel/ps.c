@@ -374,8 +374,23 @@ void nc_ps_slice_end(NcKernel *k, uint64_t now)
     k->slice_due_ns = now + quantum_ns(k);
 }
 
-void nc_ps_yield(NcKernel *k)
+bool nc_ps_yield(NcKernel *k)
 {
+    /* With no other thread ready, NT's NtYieldExecution switches to none and
+     * returns STATUS_NO_YIELD_PERFORMED, the thread's quantum and boost as
+     * they were (SwitchToThread's FALSE). */
+    bool other = false;
+    for (unsigned i = 0; k->current && i < k->threads_hi; i++) {
+        const NcThread *t = &k->threads[i];
+        if (t != k->current && t->state == NC_T_READY && !t->suspend && t != k->isr_thread && t != k->dpc_thread) {
+            other = true;
+            break;
+        }
+    }
+    if (k->current && !other) {
+        k->resched = true;      /* the timers, I/O and interrupts looked at all the same */
+        return false;
+    }
     if (k->current) {
         k->current->slice_expired = true;   /* behind the threads it gives way to */
         /* and a step of its wait boost, as NT's NtYieldExecution takes it
@@ -418,6 +433,7 @@ void nc_ps_yield(NcKernel *k)
         }
     }
     k->resched = true;
+    return true;
 }
 
 void nc_ps_schedule(NcKernel *k, NcFrame *f)

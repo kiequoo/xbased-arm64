@@ -151,6 +151,11 @@ static void init_req(void)
     pthread_condattr_destroy(&attr);
 }
 
+/* the state taken (capture), its file written after the game goes on
+ * (nc_state_save_finish) */
+static NcStateImage *g_img;
+static char g_img_path[512];
+
 static const char *capture(NcKernel *k, const NcFrame *f, bool idle)
 {
     const uint64_t t0 = mono_ns();
@@ -175,15 +180,13 @@ static const char *capture(NcKernel *k, const NcFrame *f, bool idle)
     snprintf(info.core_git, sizeof(info.core_git), "%s", NC_GIT);
     const uint64_t t1 = mono_ns();
     snprintf(g_path, sizeof(g_path), "%s", g_req.path);
-    err = nc_state_write(g_req.path, &info, k_sections, NSECTIONS);
-    if (!err) {
-        nc_cache_gc(g_req.path);            /* the copies only replaced states used */
-    }
-    struct stat st;
-    nc_log("xbased-native-state", "save %s: %s (devices and I/O %.0f ms, written in %.0f ms, %.1f MiB, %s)", g_req.path,
-           err ? err : "done", (t1 - t0) / 1e6, (mono_ns() - t1) / 1e6,
-           stat(g_req.path, &st) == 0 && !err ? st.st_size / 1048576.0 : 0.0,
-           idle ? "every thread waiting" : "at a kernel entry");
+    /* in memory now, the file after the game goes on (#401: its write and
+     * fsync held the game too) */
+    g_img = nc_state_build(&info, k_sections, NSECTIONS, &err);
+    snprintf(g_img_path, sizeof(g_img_path), "%s", g_req.path);
+    nc_log("xbased-native-state", "save %s: %s (devices and I/O %.0f ms, taken in %.0f ms, %.1f MiB, %s)", g_req.path,
+           err ? err : "taken", (t1 - t0) / 1e6, (mono_ns() - t1) / 1e6,
+           g_img ? nc_state_image_size(g_img) / 1048576.0 : 0.0, idle ? "every thread waiting" : "at a kernel entry");
     return err;
 }
 
@@ -208,8 +211,34 @@ void nc_state_cpu_work(NcKernel *k, const NcFrame *f, bool idle)
 
 const char *nc_state_save(const char *path)
 {
+    const char *err = nc_state_save_begin(path);
+    return err ? err : nc_state_save_finish();
+}
+
+const char *nc_state_save_finish(void)
+{
+    if (!g_img) {
+        return "no state taken";
+    }
+    const uint64_t t0 = mono_ns();
+    const size_t bytes = nc_state_image_size(g_img);
+    const char *err = nc_state_image_write(g_img, g_img_path);
+    g_img = NULL;
+    if (!err) {
+        nc_cache_gc(g_img_path);            /* the copies only replaced states used */
+    }
+    nc_log("xbased-native-state", "save %s: %s in %.0f ms (%.1f MiB), the game going on", g_img_path,
+           err ? err : "written", (mono_ns() - t0) / 1e6, bytes / 1048576.0);
+    return err;
+}
+
+const char *nc_state_save_begin(const char *path)
+{
     if (!g_core) {
         return "no game is running";
+    }
+    if (g_img) {
+        nc_state_save_finish();             /* (a begin without its finish: written first) */
     }
     if (!hle_pb_active()) {
         return "savestates need push-buffer mode";
@@ -222,9 +251,16 @@ const char *nc_state_save(const char *path)
     if (was_paused) {
         nc_pause_set(false);
     }
-    bool parked = hle_pb_park(true, 500000000ull);
+    /* the frame before the next flip, within 100 ms (a game at 10 fps or
+     * more); else where the decoder is. A title that flips in a trap's
+     * handler (IMMEDIATE presents) never waits for one: the whole wait,
+     * 500 ms then, it ran on unseen with its sound, the picture held, and
+     * came back further on (#401: Republic Commando's every save). */
+    const bool traps = hle_pb_flips_in_traps();
+    bool parked = !traps && hle_pb_park(true, 100000000ull);
     if (!parked) {
-        nc_log("xbased-native-state", "no flip within 500 ms: the decoder stops where it is");
+        nc_log("xbased-native-state", "%s: the decoder stops where it is",
+               traps ? "the title flips in a trap's handler (no flip to wait for)" : "no flip within 100 ms");
         parked = hle_pb_park(false, 1000000000ull);
     }
     const char *result = NULL;

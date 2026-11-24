@@ -110,8 +110,13 @@ typedef struct NcCpuConfig {
     /* Hooked guest addresses, asked at translation time (optional). Answers
      * must stay put for translated code (nc_cpu_invalidate when they change). */
     bool (*hook_query)(void *opaque, uint32_t eip);
+    /* A guest page that got its first translated block (optional): the core
+     * may watch it for stores, and invalidate it when one comes (core.c). */
+    void (*code_page)(void *opaque, uint32_t page_va);
     uint32_t idt_base; /* what SIDT reports */
     uint16_t idt_limit;
+    uint32_t gdt_base; /* what SGDT reports */
+    uint16_t gdt_limit;
 } NcCpuConfig;
 
 /* Creates the JIT and its one host thread state: flat segments, FS at
@@ -131,6 +136,9 @@ void nc_cpu_run(NcCpu *cpu, const NcCpuContext *c);
 
 /* Drops translations of guest code in [va, va+len) (it was replaced). */
 void nc_cpu_invalidate(NcCpu *cpu, uint32_t va, uint32_t len);
+/* Whether the caller is the guest CPU's own host thread (the one that may
+ * invalidate its translations from a fault). */
+bool nc_cpu_on_own_thread(NcCpu *cpu);
 
 /* At the end of a system op: the first time the running thread's x87 control
  * word selects single precision, FEX's reduced x87 starts rounding to it

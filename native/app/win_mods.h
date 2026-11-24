@@ -17,5 +17,9 @@ void nc_win_mods_cleanup(const char *exe_dir);
  * database's (exe_dir\mods\<title id>, mods\patches.txt) only on a North
  * American executable whose code it fits (mod_fit.h). why: if not. */
 bool nc_win_mods_ips_fits(const char *exe_dir, int disc_fd, const char *dir, const char *id, char *why, size_t wn);
+/* A .jmp patch (path) for the disc's executable (mod_jmp.h: why not, and
+ * its header's notes and author into info) */
+struct JmpInfo;
+bool nc_win_mods_jmp_fits(int disc_fd, const char *path, struct JmpInfo *info, char *why, size_t wn);
 
 #endif

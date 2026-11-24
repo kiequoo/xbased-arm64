@@ -54,11 +54,6 @@ uint32_t hle_tex_sign_xor(uint32_t xfmt, unsigned signs, unsigned *eff)
     case 0x27: case 0x37:                           /* R6G5B5: as the A8R8G8B8 it is expanded
                                                      * to (hle_tex_expand_r6g5b5), no alpha */
         byte[0] = -1; byte[1] = 2; byte[2] = 1; byte[3] = 0; break;
-    case 0x02: case 0x10: case 0x04: case 0x1D:     /* A1R5G5B5, A4R4G4B4: as the A8R8G8B8 they
-                                                     * are expanded to (hle_tex_expand16) */
-        byte[0] = 3; byte[1] = 2; byte[2] = 1; byte[3] = 0; break;
-    case 0x03: case 0x1C: case 0x05: case 0x11:     /* X1R5G5B5, R5G6B5: the same, no alpha */
-        byte[0] = -1; byte[1] = 2; byte[2] = 1; byte[3] = 0; break;
     default:
         *eff = 0;
         return 0;
@@ -79,42 +74,16 @@ uint32_t hle_tex_sign_xor(uint32_t xfmt, unsigned signs, unsigned *eff)
     return x;
 }
 
-/* A field of `bits` bits widened to a byte by repeating its top bits; a
- * signed one (flip) is that byte read as two's complement, flipped so it is
- * centred on 0x80 (nxdk_pgraph_tests' Bump_env_lum, the 16-bit formats and
- * R6G5B5 with signed channels: a field from half its range up is negative) */
+/* A field of `bits` bits: widened to a byte, or (flip) as a signed one centred on 0x80 */
 static uint32_t r655_byte(uint32_t v, unsigned bits, bool flip)
 {
-    const uint32_t w = bits == 1 ? (v ? 0xFFu : 0u) : (v << (8 - bits) | v >> (2 * bits > 8 ? 2 * bits - 8 : 0)) & 0xFF;
-    return flip ? w ^ 0x80u : w;
-}
-
-void hle_tex_expand16(uint32_t xfmt, const uint16_t *s, size_t n, uint32_t sign_xor, uint32_t *out)
-{
-    const bool fa = sign_xor & 0x80000000u, fr = sign_xor & 0x00800000u, fg = sign_xor & 0x00008000u,
-               fb = sign_xor & 0x00000080u;
-    for (size_t i = 0; i < n; i++) {
-        const uint32_t c = s[i];
-        uint32_t a, r, g, b;
-        switch (xfmt) {
-        case 0x02: case 0x10:
-            a = c & 0x8000 ? 0xFF : 0; r = r655_byte((c >> 10) & 31, 5, fr);
-            g = r655_byte((c >> 5) & 31, 5, fg); b = r655_byte(c & 31, 5, fb);
-            if (fa) a ^= 0x80;
-            break;
-        case 0x03: case 0x1C:
-            a = 0xFF; r = r655_byte((c >> 10) & 31, 5, fr); g = r655_byte((c >> 5) & 31, 5, fg); b = r655_byte(c & 31, 5, fb);
-            break;
-        case 0x04: case 0x1D:
-            a = r655_byte(c >> 12, 4, fa); r = r655_byte((c >> 8) & 15, 4, fr);
-            g = r655_byte((c >> 4) & 15, 4, fg); b = r655_byte(c & 15, 4, fb);
-            break;
-        default:        /* R5G6B5 */
-            a = 0xFF; r = r655_byte(c >> 11, 5, fr); g = r655_byte((c >> 5) & 63, 6, fg); b = r655_byte(c & 31, 5, fb);
-            break;
-        }
-        out[i] = a << 24 | r << 16 | g << 8 | b;
+    if (!flip) {
+        return (v << (8 - bits) | v >> (2 * bits - 8)) & 0xFF;
     }
+    const int max = (1 << (bits - 1)) - 1;
+    const int sv = (int)v >= max + 1 ? (int)v - (1 << bits) : (int)v;     /* two's complement */
+    const int b = 128 + (sv * 127 * 2 + (sv < 0 ? -max : max)) / (2 * max);   /* rounded */
+    return (uint32_t)(b < 0 ? 0 : b > 255 ? 255 : b);
 }
 
 void hle_tex_expand_r6g5b5(const uint16_t *s, size_t n, uint32_t sign_xor, uint32_t *out)
@@ -272,14 +241,7 @@ bool hle_res_info(const HleResDesc *d, HleResInfo *o)
         }
         uint32_t min = lin_min_pitch(fi, d->w);
         uint32_t pitch = d->pitch ? d->pitch : min;
-        if (d->pitch_exact && d->pitch) {
-            /* (the register's: a row's bytes at least; nxdk_pgraph_tests'
-             * Texture_border_color reads 8 x 8 linear textures by 8- to
-             * 32-byte rows) */
-            if (pitch < d->w * fi->bpp / 8 || pitch > 0xFFFFu) {
-                return false;
-            }
-        } else if (pitch % LIN_PITCH_ALIGN || pitch < min || pitch > LIN_PITCH_MAX) {
+        if (pitch % LIN_PITCH_ALIGN || pitch < min || pitch > LIN_PITCH_MAX) {
             return false;
         }
         o->levels = 1;
@@ -288,7 +250,7 @@ bool hle_res_info(const HleResDesc *d, HleResInfo *o)
         o->format = base | (2u << HLE_FMT_DIM_SHIFT) |
                     (d->fmt << HLE_FMT_FORMAT_SHIFT) | (1u << HLE_FMT_MIPMAP_SHIFT);
         o->size = (d->w - 1) | ((d->h - 1) << HLE_SIZE_HEIGHT_SHIFT) |
-                  ((max_u32(pitch, LIN_PITCH_ALIGN) / LIN_PITCH_ALIGN - 1) << HLE_SIZE_PITCH_SHIFT);
+                  ((pitch / LIN_PITCH_ALIGN - 1) << HLE_SIZE_PITCH_SHIFT);
         return true;
     }
     int lw = log2_exact(d->w), lh = log2_exact(d->h), ld = log2_exact(depth);
@@ -409,28 +371,4 @@ bool hle_res_from_header(uint32_t common, uint32_t format, uint32_t size,
     out->border = !(format & HLE_FMT_BORDER_COLOR) && fi->flags == HLE_FI_SWZ &&
                   (out->kind == HLE_RK_TEXTURE || out->kind == HLE_RK_CUBE);
     return true;
-}
-
-/* A DXT1 texel as the NV2A gives it: dithered to 5-6-5, each channel snapped to the
- * nearest value whose low bits (three, two for green) are the pattern at the texel's
- * place in its block, ties down; the lowest and highest codes' values go to 0 and 255
- * (red and blue up to 10 and from 251, green up to 4 and from 253). nxdk_pgraph_tests'
- * Texture_DXT DXT1: the console's picture of the same colour blocks as its DXT3 one,
- * every texel off it by up to half a 5-6-5 step, its low bits that pattern; all DXT1
- * pictures of Texture_DXT, Texture_format and Texture_render_target exact so. A bump
- * stage reads the same texels (Bump_map DXT1) */
-uint32_t hle_tex_dxt1_dither(uint32_t c, unsigned x, unsigned y)
-{
-    static const uint8_t pb[4][4] = { { 2, 6, 1, 5 }, { 0, 4, 7, 3 }, { 5, 1, 6, 2 }, { 3, 7, 4, 0 } };
-    static const uint8_t pg[4][4] = { { 0, 2, 3, 1 }, { 3, 1, 2, 0 }, { 2, 0, 1, 3 }, { 1, 3, 0, 2 } };
-    const unsigned p[3] = { pb[y & 3][x & 3], pg[y & 3][x & 3], pb[3 - (y & 3)][x & 3] };  /* b, g, r */
-    uint32_t o = c & 0xFF000000u;
-    for (unsigned k = 0; k < 3; k++) {
-        const int v = (int)(c >> (8 * k) & 0xFF), step = k == 1 ? 4 : 8;
-        const int t = v - (int)p[k] + step / 2 - 1;
-        int r = (int)p[k] + step * (t >= 0 ? t / step : -((step - 1 - t) / step));
-        r = r <= step + step / 2 - 2 ? 0 : r >= 255 - step / 2 ? 255 : r;
-        o |= (uint32_t)r << (8 * k);
-    }
-    return o;
 }

@@ -273,7 +273,8 @@ typedef struct FpSrc {
     uint64_t taken;                     /* the newest picture taken (presented, or let go) */
     int64_t lead_ns;                    /* pacing (fp_pace): the lead kept, */
     int64_t slow[FP_SLOW], slow_at;     /* ... the slowest picture of each of the last spans (the newest's number) */
-    int64_t paced_due;                  /* ... the picture before's time */
+    int64_t paced_due;                  /* ... the picture before's time, */
+    uint64_t paced_v;                   /* ... and its number (the run's v) */
     int64_t step_ns;                    /* ... the time between pictures, smoothed (fp_lead_max) */
 } FpSrc;
 
@@ -296,7 +297,9 @@ static struct {
     FpSrc s[2];
     int present_bad;
     UINT sync_count;                    /* fp_sync: the last statistics' refresh count, its vsync, */
-    int64_t sync_t, sync_period;        /* ... and the period between vsyncs (ns) */
+    int64_t sync_t, sync_period;        /* ... and the period between vsyncs (ns), */
+    int64_t sync_other;                 /* ... a period samples kept giving apart from it, */
+    unsigned sync_others;               /* ... how many in a row */
 } P;
 
 /* the frame can't present the pictures: the runs draw in their own
@@ -577,13 +580,26 @@ static int64_t fp_now_ns(void)
 #define FP_LEAD_SPARE   5000000
 #define FP_LEAD_TOP    40000000
 
+/* Pictures more often than 60 a second: three quarters of the time between
+ * them at the most. The presenter shows them one after the other, each a
+ * lead after its vblank; with a lead longer than the time between them it
+ * held each newest one up as long, and showed fewer: Crash Bandicoot at
+ * Unlocked on a 280 Hz display, 253 fps, 113 of them a second on screen
+ * (V-Sync) or 191 (none); Up to 120 on 60 Hz, every other picture a refresh
+ * late to the presenter and the lead at its most, 20 ms to the screen. */
+#define FP_FAST_STEP   16000000
+
 static int64_t fp_lead_max(const FpSrc *s)
 {
+    if (s->step_ns && s->step_ns < FP_FAST_STEP) {
+        const int64_t q = s->step_ns * 3 / 4;
+        return q < FP_LEAD_MIN ? FP_LEAD_MIN : q;
+    }
     const int64_t m = s->step_ns - FP_LEAD_SPARE;
     return m < FP_LEAD_MAX ? FP_LEAD_MAX : m > FP_LEAD_TOP ? FP_LEAD_TOP : m;
 }
 
-static void fp_pace(int k, int64_t due)
+static void fp_pace(int k, int64_t due, uint64_t v)
 {
     FpSrc *s = &P.s[k];
     HleShareSrc *src = &g_sh->src[k];
@@ -615,12 +631,16 @@ static void fp_pace(int k, int64_t due)
     /* (by the time between pictures, 4 to 100 ms: a 30 fps game's lead
      * settles as fast as a 60 fps one's) */
     const int64_t step = due - s->paced_due;
-    if (step > 8000000 && step < 60000000) {
-        s->step_ns = s->step_ns ? s->step_ns + (step - s->step_ns) / 16 : step;
+    /* the time between the run's pictures, those let go between included
+     * (the presenter takes the newest) */
+    const int64_t per = s->paced_v && v > s->paced_v && v - s->paced_v < 64 ? step / (int64_t)(v - s->paced_v) : 0;
+    if (per > 2000000 && per < 60000000) {
+        s->step_ns = s->step_ns ? s->step_ns + (per - s->step_ns) / 16 : per;
     }
     int64_t dt_ms = step / 1000000;
     dt_ms = dt_ms < 4 ? 4 : dt_ms > 100 ? 100 : dt_ms;
     s->paced_due = due;
+    s->paced_v = v;
     int64_t want = peak + FP_LEAD_MARGIN;
     want = want < FP_LEAD_MIN ? FP_LEAD_MIN : want > lead_max ? lead_max : want;
     const int64_t at = due + s->lead_ns;
@@ -672,8 +692,27 @@ static void fp_sync(int k)
     if (P.sync_count && st.SyncRefreshCount > P.sync_count && t > P.sync_t) {
         const UINT n = st.SyncRefreshCount - P.sync_count;
         const int64_t one = (t - P.sync_t) / n;
+        /* A sample more than 1 % off the period is none: the statistics'
+         * refresh count now and then misses one (60 Hz: 119 counted in 2 s
+         * of 120), and taken in, the period read 3 % long: the vblank
+         * placed by it fell 3 ms off its place, then no longer kept to the
+         * display (Otogi at 60 Hz: its presents 5 ms before a vsync, not
+         * 8.3, one picture a refresh late, then queued). The same period
+         * again and again is the display's new one (a mode changed). */
+        const bool on_it = !P.sync_period || llabs(one - P.sync_period) <= P.sync_period / 100;
         if (n <= 16 && one > 2000000 && one < 50000000) {
-            P.sync_period = P.sync_period ? P.sync_period + (one - P.sync_period) / 16 : one;
+            if (on_it) {
+                P.sync_period = P.sync_period ? P.sync_period + (one - P.sync_period) / 16 : one;
+                P.sync_others = 0;
+            } else if (P.sync_others && llabs(one - P.sync_other) <= P.sync_other / 100) {
+                if (++P.sync_others >= 8) {
+                    P.sync_period = one;
+                    P.sync_others = 0;
+                }
+            } else {
+                P.sync_other = one;
+                P.sync_others = 1;
+            }
         }
     }
     P.sync_count = st.SyncRefreshCount;
@@ -683,6 +722,60 @@ static void fp_sync(int k)
     src->sync_ns = t;
     src->sync_seq++;
 }
+
+#ifdef XBASED_DEVCTL
+/* The dev tools' display record (XBASED_DEV_DISPLAY=<file>): "q <counter's frequency>" first, then
+ * "p <present count> <counter before the call> <after> <sync interval> <its vblank's instant, ns> <when it
+ * was ready to present, ns> <the lead, us>" a present (the last three 0 for a picture not flipped at a
+ * vblank) and "d <present count>
+ * <its refresh> <the last vsync's refresh> <its counter>" a picture that reached the screen (the swap
+ * chain's statistics, read before and after each present and at each of the thread's wakes) */
+static FILE *g_dd;
+static UINT g_dd_shown;
+
+static void fp_dev_shown(void)
+{
+    static bool init;
+    if (!init) {
+        init = true;
+        const char *p = getenv("XBASED_DEV_DISPLAY");
+        char dp[1024];
+        snprintf(dp, sizeof(dp), "%s.%lu", p ? p : "", (unsigned long)GetCurrentProcessId());
+        g_dd = p && *p ? fopen(dp, "w") : NULL;      /* a file a process (a state's load starts one again) */
+        if (g_dd) {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            fprintf(g_dd, "q %lld\n", (long long)f.QuadPart);
+        }
+    }
+    DXGI_FRAME_STATISTICS st;
+    static HRESULT last_hr;
+    const HRESULT hr = g_dd && P.sc ? IDXGISwapChain3_GetFrameStatistics(P.sc, &st) : S_OK;
+    if (g_dd && hr != last_hr) {
+        last_hr = hr;
+        fprintf(g_dd, "e %08lx\n", (unsigned long)hr);
+    }
+    if (g_dd && P.sc && SUCCEEDED(hr) && st.SyncQPCTime.QuadPart &&
+        st.PresentCount != g_dd_shown) {
+        g_dd_shown = st.PresentCount;
+        fprintf(g_dd, "d %u %u %u %lld\n", st.PresentCount, st.PresentRefreshCount, st.SyncRefreshCount,
+                (long long)st.SyncQPCTime.QuadPart);
+        fflush(g_dd);
+    }
+}
+
+static void fp_dev_present(LONGLONG before, UINT interval, int64_t due, int64_t ready, int64_t lead)
+{
+    UINT n = 0;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (g_dd && SUCCEEDED(IDXGISwapChain3_GetLastPresentCount(P.sc, &n))) {
+        fprintf(g_dd, "p %u %lld %lld %u %lld %lld %lld\n", n, (long long)before, (long long)now.QuadPart,
+                interval, (long long)due, (long long)ready, (long long)(lead / 1000));
+    }
+    fp_dev_shown();
+}
+#endif
 
 /* the run's drawing of picture v done (its fence, waited on the CPU: the
  * frame's queue never waits on another process's) */
@@ -790,10 +883,29 @@ static int fp_present(int k, uint64_t v, unsigned i)
          * again, then presented at its time */
         fp_wait(P.used[b]);
         fp_freed(k, v);
-        fp_pace(k, due);
+#ifdef XBASED_DEVCTL
+        const int64_t dd_ready = fp_now_ns();
+#endif
+        fp_pace(k, due, v);
+#ifdef XBASED_DEVCTL
+        fp_dev_shown();
+        LARGE_INTEGER dd0;
+        QueryPerformanceCounter(&dd0);
+#endif
         hr = IDXGISwapChain3_Present(P.sc, vsync && !newest ? 1 : 0, !vsync && P.tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+#ifdef XBASED_DEVCTL
+        fp_dev_present(dd0.QuadPart, vsync && !newest ? 1 : 0, due, dd_ready, s->lead_ns);
+#endif
     } else {
+#ifdef XBASED_DEVCTL
+        fp_dev_shown();
+        LARGE_INTEGER dd0;
+        QueryPerformanceCounter(&dd0);
+#endif
         hr = IDXGISwapChain3_Present(P.sc, vsync ? 1 : 0, !vsync && P.tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+#ifdef XBASED_DEVCTL
+        fp_dev_present(dd0.QuadPart, vsync ? 1 : 0, 0, 0, 0);
+#endif
         fp_wait(P.used[b]);     /* the copy done (a moment): the run's image free again */
         fp_freed(k, v);
     }
@@ -817,6 +929,9 @@ static DWORD WINAPI fp_thread(void *arg)
     for (;;) {
         WaitForSingleObject(g_ev, pending ? 1 : 50);
         pending = false;
+#ifdef XBASED_DEVCTL
+        fp_dev_shown();
+#endif
         /* the runs' asks: their images made (D3D12 itself at the first) */
         for (int k = 0; k < 2; k++) {
             HleShareSrc *src = &g_sh->src[k];
@@ -1011,8 +1126,52 @@ static HCURSOR arrow(void)
     return c;
 }
 
+/* The mouse held for the run (#255: a game's stick moved by it): asked for
+ * (g_sh->grab) while the frame is the window in front. Held, the pointer
+ * is hidden and kept in the window (ClipCursor) and the mouse's raw moves
+ * (WM_INPUT, unaffected by the pointer's speed or the window's edges) go
+ * to the run; let go at once whenever the frame stops being in front, the
+ * run lets go, or the window goes, never left clipped. */
+static bool g_grabbed;
+
+static void grab_clip(void)
+{
+    RECT rc;
+    GetClientRect(g_fw, &rc);
+    POINT a = {rc.left, rc.top}, b = {rc.right, rc.bottom};
+    ClientToScreen(g_fw, &a);
+    ClientToScreen(g_fw, &b);
+    const RECT sr = {a.x, a.y, b.x, b.y};
+    ClipCursor(&sr);
+}
+
+static void grab_set(bool on)
+{
+    if (on == g_grabbed) {
+        return;
+    }
+    RAWINPUTDEVICE rd = {0x01, 0x02, on ? 0 : RIDEV_REMOVE, on ? g_fw : NULL};   /* the mouse */
+    RegisterRawInputDevices(&rd, 1, sizeof(rd));
+    g_grabbed = on;
+    if (on) {
+        grab_clip();
+        SetCursor(NULL);
+    } else {
+        ClipCursor(NULL);
+    }
+    g_cursor_set = -1;          /* asked again (cursor_sync) */
+}
+
+static void grab_sync(void)
+{
+    grab_set(g_sh && g_sh->grab && g_presenting && GetForegroundWindow() == g_fw && !IsIconic(g_fw));
+}
+
 static int cursor_want(void)
 {
+    if (g_grabbed) {
+        return 0;
+    }
     return !g_presenting || (g_sh && g_sh->cursor);
 }
 
@@ -1056,6 +1215,9 @@ static LRESULT CALLBACK frame_proc(HWND h, UINT m, WPARAM w, LPARAM l)
             g_sh->cw = LOWORD(l);   /* the runs draw at this size from their next picture */
             g_sh->ch = HIWORD(l);
         }
+        if (g_grabbed) {
+            grab_clip();
+        }
         return 0;
     case WM_SETCURSOR:
         if (LOWORD(l) == HTCLIENT) {
@@ -1066,8 +1228,31 @@ static LRESULT CALLBACK frame_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         g_cursor_set = -1;      /* over the frame's edges */
         break;
     case WM_MOUSEMOVE:
-        frame_mouse(1, l, 0, 0);
+        if (!g_grabbed) {
+            frame_mouse(1, l, 0, 0);    /* held: its raw moves instead (WM_INPUT) */
+        }
         return 0;
+    case WM_INPUT: {
+        RAWINPUT ri;
+        UINT n = sizeof(ri);
+        if (g_grabbed && GetRawInputData((HRAWINPUT)l, RID_INPUT, &ri, &n, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
+            ri.header.dwType == RIM_TYPEMOUSE && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) &&
+            (ri.data.mouse.lLastX || ri.data.mouse.lLastY) && g_sh) {
+            const int64_t at = g_sh->mouse_head;
+            HleShareMouse *mm = &g_sh->mouse[at % HLE_SHARE_MICE];
+            mm->type = 5;
+            mm->x = ri.data.mouse.lLastX;
+            mm->y = ri.data.mouse.lLastY;
+            mm->button = mm->wheel = 0;
+            InterlockedExchange64((volatile LONG64 *)&g_sh->mouse_head, at + 1);
+        }
+        break;      /* DefWindowProc cleans up */
+    }
+    case WM_MOVE:
+        if (g_grabbed) {
+            grab_clip();
+        }
+        break;
     case WM_LBUTTONDOWN:
     case WM_RBUTTONDOWN:
     case WM_MBUTTONDOWN:
@@ -1078,6 +1263,11 @@ static LRESULT CALLBACK frame_proc(HWND h, UINT m, WPARAM w, LPARAM l)
     case WM_MBUTTONUP:
         frame_mouse(3, l, m == WM_LBUTTONUP ? 1 : m == WM_MBUTTONUP ? 2 : 3, 0);
         return 0;
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+        /* the side buttons, SDL's X1 and X2 (4, 5) */
+        frame_mouse(m == WM_XBUTTONDOWN ? 2 : 3, l, GET_XBUTTON_WPARAM(w) == XBUTTON1 ? 4 : 5, 0);
+        return TRUE;
     case WM_MOUSEWHEEL:
         frame_mouse(4, l, 0, GET_WHEEL_DELTA_WPARAM(w) / WHEEL_DELTA);
         return 0;
@@ -1090,6 +1280,9 @@ static LRESULT CALLBACK frame_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         }
         break;
     case WM_ACTIVATE:
+        if (LOWORD(w) == WA_INACTIVE) {
+            grab_set(false);            /* another window in front: the mouse is the system's */
+        }
         if (LOWORD(w) != WA_INACTIVE && top_child()) {
             SetFocus(top_child());     /* the keyboard to the run's window */
             return 0;
@@ -1131,6 +1324,7 @@ static LRESULT CALLBACK frame_proc(HWND h, UINT m, WPARAM w, LPARAM l)
          * never (the next one is in before this one goes), so none for a
          * while is the session's end */
         const ULONGLONG now = GetTickCount64();
+        grab_sync();
         cursor_sync();
         if (top_child()) {
             g_had_child = true;
@@ -1150,6 +1344,7 @@ static LRESULT CALLBACK frame_proc(HWND h, UINT m, WPARAM w, LPARAM l)
         return 0;
     }
     case WM_DESTROY:
+        grab_set(false);
         place_save();
         mode_restore();
         PostQuitMessage(0);

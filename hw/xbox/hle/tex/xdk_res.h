@@ -23,33 +23,21 @@ typedef struct HleFmtInfo {
 const HleFmtInfo *hle_fmt_info(uint32_t code);
 
 /* A texture whose channels the texture unit gives signed (SET_TEXTURE_FILTER
- * 31:28, signs: bit 0 A, 1 R, 2 G, 3 B), in a format of 8-bit channels or
- * one of 16-bit texels widened to them (hle_tex_expand16, R6G5B5): the
+ * 31:28, signs: bit 0 A, 1 R, 2 G, 3 B), in a format of 8-bit channels: the
  * texel's bytes to flip (XOR, 0x80 in each such byte), so a sampler filters
  * and mipmaps them as the signed bytes they are (centred on 0x80). *eff: the
  * channels a read of it then gives centred on 0x80 (same bits). 0, *eff 0:
  * another format, kept as it is. */
 uint32_t hle_tex_sign_xor(uint32_t xfmt, unsigned signs, unsigned *eff);
 
-/* A decoded DXT1 texel (A8R8G8B8 word) at (x, y) in its 4x4 block as the NV2A gives it,
- * dithered to 5-6-5 (xdk_res.c) */
-uint32_t hle_tex_dxt1_dither(uint32_t argb, unsigned x, unsigned y);
-
-/* A1R5G5B5, X1R5G5B5, A4R4G4B4, R5G6B5 texels with a channel the texture unit
- * gives signed (sign_xor, hle_tex_sign_xor's) as A8R8G8B8 words: each channel
- * widened by repeating its top bits, a signed one's byte then read as two's
- * complement, flipped (nxdk_pgraph_tests' Bump_env_lum: a field from half its
- * range up is negative; these formats were read unsigned before) */
-void hle_tex_expand16(uint32_t xfmt, const uint16_t *s, size_t n, uint32_t sign_xor, uint32_t *out);
-
 /* R6G5B5 texels (D3D's L6V5U5: 6 bits from bit 10, 5 from bit 5, 5 from bit
  * 0) as A8R8G8B8 words, alpha 0xFF: no host format holds them. A channel is
  * widened to its byte by repeating its top bits (0x3F and 0x1F to 0xFF), as
  * the NV2A shows the format (xemu's test on a console). sign_xor: the
  * format's hle_tex_sign_xor, the channels the texture unit gives signed (a
- * bump map's V and U); those are their widened bytes read as two's
- * complement, flipped (centred on 0x80), as hle_tex_expand16's (Bump_env_lum
- * R6G5B5: scaling the field over its positive range instead was off). */
+ * bump map's V and U); those are two's-complement fields, -1..1 over their
+ * positive range (the 5-bit ones over 15, the 6-bit one over 31), and go in
+ * as the flipped byte the word says (centred on 0x80). */
 void hle_tex_expand_r6g5b5(const uint16_t *s, size_t n, uint32_t sign_xor, uint32_t *out);
 
 enum HleResKind {
@@ -70,9 +58,6 @@ typedef struct HleResDesc {
     bool border;            /* texels stored with the NV2A's texture border
                                (Format BORDER_SOURCE_TEXTURE, bit 3 clear):
                                swizzled 2D and cube textures, hle_res_level */
-    bool pitch_exact;       /* linear: pitch as the chip's register holds it
-                               (SET_TEXTURE_CONTROL1), any count of bytes from
-                               a row's up, not a header's multiple of 64 */
 } HleResDesc;
 
 typedef struct HleResInfo {

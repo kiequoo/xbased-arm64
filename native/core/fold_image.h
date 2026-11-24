@@ -32,6 +32,14 @@ bool nc_fold_read(int fd, void *buf, size_t len, uint64_t off);
  * true. Anything else (a disc image) false, out untouched. */
 bool nc_fold_xbe_path(const char *path, char *out, size_t cap);
 
+/* A folder as a modded Xbox keeps its disc images (#367): the game's image
+ * with an ISO attacher's default.xbe beside it, a small XBE with the
+ * game's name and title ID that mounts the image as the DVD drive and
+ * starts it. path: the folder or its default.xbe. The folder's one image
+ * (.iso .xiso .chd, over 1 MiB) in out, true; none, or more than one (a
+ * split image's parts), false, out untouched. */
+bool nc_fold_attached_image(const char *path, char *out, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

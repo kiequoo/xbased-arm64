@@ -21,11 +21,6 @@ void hle_back_urgent(void);
 uint64_t hle_tl_completed(void);
 uint64_t hle_tl_submitted(void);
 void hle_tl_wait(uint64_t value);
-/* The device has geometry shaders (vk/draw.c: the NV2A lines, flat-shaded quads). */
-bool hle_back_caps_gs(void);
-/* Smooth strips and fans are drawn as they are with the NV2A's corner order
- * (caps.pv_last: their triangles need not be lists for it, pb/pbdraw.c draw) */
-bool hle_back_caps_pv_last(void);
 /* The device lost (hle_vk_lose): every value counts as reached, so no
  * thread waits on the GPU any more. */
 void hle_tl_lose(void);
@@ -61,14 +56,6 @@ bool hle_tl_land_swz(uint64_t value, uint32_t off, uint32_t pa, uint32_t w, uint
 bool hle_tl_land_copy(uint64_t value, uint32_t spa, uint32_t spitch, uint32_t dpa, uint32_t dpitch,
                       uint32_t row, uint32_t rows, HleLandDone done, uint32_t token);
 bool hle_tl_land_note(uint64_t value, HleLandDone done, uint32_t token);
-/* A depth target's image (HLE_RB_DEPTH, copied to the landing buffer at off)
- * into guest memory at pa as the NV2A's words: gbpp 2 Z16, 4 Z24S8; rows of
- * pitch bytes, or swizzled (pitch 0). Dropped unless the back end recorded
- * its copy (hle_tl_land_depth_copied: what the depth aspect copied as,
- * tex/zpack.h, and where the stencil's bytes are, + 1; 0 none). */
-bool hle_tl_land_depth(uint64_t value, uint32_t off, uint32_t pa, uint32_t w, uint32_t h,
-                       uint32_t pitch, uint32_t gbpp, float zf);
-void hle_tl_land_depth_copied(uint32_t off, int zsrc, uint32_t stencil_off1);
 /* Guest memory [pa, pa + len) was freed (any thread): the landings queued
  * into it are dropped (their done hears "not landed"). */
 void hle_tl_land_freed(uint32_t pa, uint32_t len);

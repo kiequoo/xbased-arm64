@@ -47,6 +47,29 @@ record's bytes against the disc, for one that should refuse the wrong disc.
 Text files are UTF-8. A line whose first non-blank character is `#` is a
 comment. Numbers are hexadecimal with `0x`, else decimal.
 
+## JMP patches (Jay's Magic Patcher)
+
+Collections such as Xbox Magic Patches share patches as `.JMP` files, text
+made for Jay's Magic Patcher. Copy one into `mods/` (it names its game in
+its `version=` line, so it can sit in `mods/` itself) or into the game's
+folder, and it appears in that game's Mods & patches under its file name.
+xbased applies its records as the patcher writes them, in order: the bytes
+a record finds (the first place they are) replaced, or bytes written at a
+file offset. It is offered only on an executable it fits:
+
+- the game its `version=` line names, and one of the builds whose CRC-32s
+  it lists in braces (`{302E6C4F}`), when it lists any;
+- every record's bytes found in this `default.xbe`; a patch made for
+  another build that fits in part isn't applied at all;
+- offset records, written blind, only on a release of the region the patch
+  names (its `region=` line or its file name's `(NTSC)`, `(PAL)`), and only
+  where they don't cut into an instruction;
+- no `APPEND` records (an executable "exploded" for room: not supported).
+
+A record whose comment has `[-]` in it is left out, as the patcher leaves it
+off. Why a patch isn't offered is in `xbased.log`. Many shared patches were
+never tested; one that breaks a game is turned off in Mods & patches.
+
 ## Mods (`mod.txt`, `files/`)
 
 ```

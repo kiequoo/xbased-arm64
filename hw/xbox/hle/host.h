@@ -101,11 +101,25 @@ int64_t hle_host_vblank_period_ns(void);
 /* The time the last vblank was due (CLOCK_MONOTONIC, ns): the timer's own
  * instant, a period after the one before, not when its interrupt was taken. */
 uint64_t hle_host_vblank_ns(void);
+/* A flip's vblank, for when its frame is due on screen: the last one's, or
+ * the next one's for a flip in the last quarter of a frame. */
+uint64_t hle_host_flip_vblank_ns(void);
 /* Frame latency (pb/pbmode.c): the guest thread that pushed a finished
  * frame waits, from its next instruction, until the next flip (the guest's
  * vCPU thread, in its DMA_PUT); and a flip came (any thread). */
 void hle_host_frame_wait(void);
 void hle_host_frame_flipped(void);
+/* the holds so far that ended at their longest, no flip come */
+uint32_t hle_host_frame_holds_timed_out(void);
+/* The least time between two flips a trap's handler does (D3D's IMMEDIATE
+ * presents: the guest waits for no vblank), as the options have it: the
+ * console's vblank at the original frame rate, the limit when it is lifted,
+ * 0 for none. Any thread. */
+int64_t hle_host_flip_min_ns(void);
+/* A flip a trap's handler does, its slot `want` on the display's vsyncs
+ * when `every` is whole refreshes of them: the vsync's place nearest it;
+ * else `want` (native/dev/nv2a.c). */
+int64_t hle_host_flip_slot(int64_t want, int64_t every);
 /* The display's vsyncs as the window's presenter has them from the driver
  * (the last one's instant, CLOCK_MONOTONIC ns, and the refresh period), and
  * the lead its presents keep after a frame's vblank (0: they are not timed).
@@ -122,15 +136,6 @@ bool hle_host_vblank_timed(void);
  * GPU makes one (the value only). Any thread. */
 uint32_t hle_host_gpu_reg(uint32_t off);
 void hle_host_gpu_reg_set(uint32_t off, uint32_t v);
-/* PTIMER's time now, both words as the guest reads them: a finished
- * visibility test's time stamp (the XDK's GetVisibilityTestResult: the GPU's
- * nanosecond count at completion, for timing the work between two tests;
- * xemu's constant 0x0011223344556677 read as no time passing). Any thread. */
-uint64_t hle_host_ptimer(void);
-/* The word of a plain register (not PTIMER's time), to be read atomically
- * where a call per read costs (the decoder's per-method test); NULL with no
- * registers. */
-const uint32_t *hle_host_gpu_reg_ptr(uint32_t off);
 /* The bits of mask set to bits', atomically (fields the guest's writes
  * change too: PGRAPH_SURFACE's flip counters). */
 void hle_host_gpu_reg_mask(uint32_t off, uint32_t mask, uint32_t bits);

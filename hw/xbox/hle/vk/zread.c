@@ -67,12 +67,7 @@ static const char k_fs_zw[] =
     "void main() {\n"
     "  uvec4 b = uvec4(clamp(texelFetch(ct, ivec2(gl_FragCoord.xy), 0), 0.0, 1.0) * 255.0 + 0.5);\n"
     "  uint d = b.a << 16 | b.r << 8 | b.g;\n"
-    /* (the word over 2^24 - 1 as shader/ff.h HLE_ZNORM_GLSL makes it, so the
-     * D24 image holds the word itself: a plain division came back a word over
-     * on about half of them, nxdk_pgraph_tests' Color_zeta_overlap Swap, its
-     * clear colour 0xFE242424 through the depth target as 0xFE242524) */
-    "  precise float f = float(d) * (1.0 / 16777216.0) + float(d) * (1.0 / 281474976710656.0);\n"
-    "  gl_FragDepth = f;\n"
+    "  gl_FragDepth = float(d) / 16777215.0;\n"
     "}\n";
 
 static const char k_fs_zws[] =

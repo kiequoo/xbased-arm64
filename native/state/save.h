@@ -22,6 +22,12 @@ void nc_state_set_core_version(const char *name);
 /* Saves the running game to path (not on the guest CPU's thread): NULL, or
  * why it couldn't. Takes about a frame and the write. */
 const char *nc_state_save(const char *path);
+/* nc_state_save in two steps (#401): begin holds the game while its state
+ * is taken into memory (NULL: taken, or why not), finish writes the file
+ * with the game going on (NULL: written, or why not). One begin, then its
+ * finish, on the same thread. */
+const char *nc_state_save_begin(const char *path);
+const char *nc_state_save_finish(void);
 
 /* After nc_core_boot booted the state's XBE (the header's xbe_path): the
  * state replaces it. NULL, or why not (then the core must stop: what the

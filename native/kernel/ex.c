@@ -986,6 +986,14 @@ static uint64_t AvSetDisplayMode(NcKernel *k, NcFrame *f, const uint32_t *a)
         nc_dev_nv2a_av_mode_set(a[2]);
         nc_dev_nv2a_display_mode(a[4], a[3], a[2] & 0x40000000u ? 50 : 60, a[5]);
         nc_kernel_av_title_scan(k, f);
+    } else if (a[5] && !nc_dev_nv2a_av_title()) {
+        /* No mode (the one the dashboard set stays): Dead or Alive 3's D3D
+         * passes 0 at every call, its parameters on the frames above it all
+         * the same (flags 0x50: 16:9). Unscanned, its shape was the console's
+         * setting from its disc, and a state made so (no shape in it) came
+         * back 4:3: the load's RAM scan (kstate.c) took another structure
+         * of that shape first. */
+        nc_kernel_av_title_scan(k, f);
     }
     return 0;
 }
@@ -1342,6 +1350,30 @@ void nc_kernel_set_hd_key(NcKernel *k)
     const uint32_t vm = data_va(k, "HalBootSMCVideoMode");
     if (vm) {
         nc_vm_wr32(k->vm, vm, av_pack_smc());
+    }
+    /* The hard disk's model and serial number (STRINGs, as its IDENTIFY
+     * data has them: 40 and 20 characters, blank-padded), the serial made
+     * from the console's so it stays the same on every run. Left empty,
+     * their buffer was 0: Xbox Music Mixer copies the serial's 20 bytes as
+     * it starts and faulted at address 0. */
+    static const struct { const char *name; unsigned len; } k_disk[2] = {
+        {"HalDiskModelNumber", 40}, {"HalDiskSerialNumber", 20}};
+    for (unsigned i = 0; i < 2; i++) {
+        const uint32_t s = data_va(k, k_disk[i].name);
+        if (!s) {
+            continue;
+        }
+        char text[48];
+        if (i == 0) {
+            snprintf(text, sizeof(text), "%-40s", "XBASED HDD");
+        } else {
+            snprintf(text, sizeof(text), "XB%.12s      ", (const char *)eeprom(k) + 0x34);
+        }
+        uint8_t *p = nc_vm_host(k->vm, s);
+        nc_wr16(p, (uint16_t)k_disk[i].len);
+        nc_wr16(p + 2, (uint16_t)k_disk[i].len);
+        nc_wr32(p + 4, s + 8);
+        memcpy(p + 8, text, k_disk[i].len);
     }
 }
 

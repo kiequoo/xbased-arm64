@@ -27,7 +27,6 @@
  */
 #include "native/cpu/cpu.h"
 #include "native/cpu/x64asm.h"
-#include "native/cpu/rsqrt_p3.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -37,7 +36,6 @@
 #endif
 
 #include <Zydis/Zydis.h>
-#include <xmmintrin.h>
 
 #include <algorithm>
 #include <string>
@@ -552,51 +550,6 @@ static bool guest_readable(uint32_t va, uint32_t n)
     return true;
 }
 
-/* RSQRTSS / RSQRTPS as the Pentium III gives them (rsqrt_p3.h): on a host
- * whose own approximation differs (an AMD one), the translator puts the
- * model in their place; an Intel host's are the console's and stay. */
-static bool g_rsqrt_model;
-
-enum { RQ_7FF, RQ_FF, RQ_380, RQ_ABS, RQ_MINNORM, RQ_INF, RQ_INDEF, RQ_QUIET, RQ_SIGN, RQ_COUNT };
-alignas(16) static const uint32_t k_rsqrt_const[RQ_COUNT][4] = {
-    {0x7FF, 0x7FF, 0x7FF, 0x7FF}, {0xFF, 0xFF, 0xFF, 0xFF}, {380, 380, 380, 380},
-    {0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF}, {0x00800000, 0x00800000, 0x00800000, 0x00800000},
-    {0x7F800000, 0x7F800000, 0x7F800000, 0x7F800000}, {0xFFC00000, 0xFFC00000, 0xFFC00000, 0xFFC00000},
-    {0x00400000, 0x00400000, 0x00400000, 0x00400000}, {0x80000000, 0x80000000, 0x80000000, 0x80000000},
-};
-
-/* The host's RSQRTSS against the model: every table index with both
- * exponent parities, the low mantissa bits varied, and the special values. */
-static bool rsqrt_host_is_model()
-{
-    static const uint32_t special[] = {0, 0x80000000u, 1, 0x807FFFFFu, 0x7F800000u, 0xFF800000u,
-                                       0x7FC00000u, 0xFFC00000u, 0x7F800001u, 0xBF800000u, 0x7F7FFFFFu};
-    for (uint32_t x : special) {
-        float f, r;
-        memcpy(&f, &x, 4);
-        r = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(f)));
-        uint32_t h;
-        memcpy(&h, &r, 4);
-        if (h != nc_rsqrt_model(x)) {
-            return false;
-        }
-    }
-    for (uint32_t i = 0; i < 4096; i++) {
-        for (uint32_t e = 2; e < 254; e += 50) {
-            const uint32_t x = ((e & ~1u) | (i >> 11)) << 23 | (i & 2047u) << 12 | ((i * 2654435761u) & 0xFFFu);
-            float f, r;
-            memcpy(&f, &x, 4);
-            r = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(f)));
-            uint32_t h;
-            memcpy(&h, &r, 4);
-            if (h != nc_rsqrt_model(x)) {
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
 struct Translator {
     NcCpu *cpu;
     Asm a;
@@ -993,91 +946,6 @@ struct Translator {
         return true;
     }
 
-    /* RSQRTSS / RSQRTPS by the model (rsqrt_p3.h), in XMM8-15 (the guest has
-     * XMM0-7), R8, R13 and R14: no flags touched. The source to XMM8 first
-     * (an FS operand goes through r13); the table's entries by PEXTRW /
-     * PINSRW, SSE2's (no gather on the hosts it has to run on). */
-    bool rsqrt(const ZydisDecodedInstruction &in, const ZydisDecodedOperand *ops)
-    {
-        const bool ps = in.mnemonic == ZYDIS_MNEMONIC_RSQRTPS;
-        const ZydisDecodedOperand &d = ops[0], &s = ops[1];
-        if (in.encoding != ZYDIS_INSTRUCTION_ENCODING_LEGACY || d.type != ZYDIS_OPERAND_TYPE_REGISTER) {
-            return false;
-        }
-        const ZydisRegister X8 = ZYDIS_REGISTER_XMM8, X9 = ZYDIS_REGISTER_XMM9, X10 = ZYDIS_REGISTER_XMM10,
-                            X11 = ZYDIS_REGISTER_XMM11, X12 = ZYDIS_REGISTER_XMM12, X13 = ZYDIS_REGISTER_XMM13,
-                            X14 = ZYDIS_REGISTER_XMM14, X15 = ZYDIS_REGISTER_XMM15;
-        if (s.type == ZYDIS_OPERAND_TYPE_REGISTER) {
-            a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X8), R(s.reg.value)});
-        } else {
-            ZydisEncoderOperand m;
-            if (s.type != ZYDIS_OPERAND_TYPE_MEMORY || !mem_operand(s, m)) {
-                return false;
-            }
-            /* (MOVAPS: RSQRTPS's alignment fault where it would have one) */
-            m.mem.size = ps ? 16 : 4;
-            if (!a.op(ps ? ZYDIS_MNEMONIC_MOVAPS : ZYDIS_MNEMONIC_MOVSS, {R(X8), m}, true)) {
-                return false;
-            }
-        }
-        const ZydisRegister K = ZYDIS_REGISTER_R13, T = ZYDIS_REGISTER_R14;
-        auto C = [&](int i) { return M(K, i * 16, 16); };
-        a.op(ZYDIS_MNEMONIC_MOV, {R(K), I((int64_t)(uintptr_t)k_rsqrt_const)});
-        a.op(ZYDIS_MNEMONIC_MOV, {R(T), I((int64_t)(uintptr_t)k_rsqrt_tab)});
-        /* the mantissa: table[(x >> 13) & 2047] << 11 */
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X9), R(X8)});
-        a.op(ZYDIS_MNEMONIC_PSRLD, {R(X9), I(13)});
-        a.op(ZYDIS_MNEMONIC_PAND, {R(X9), C(RQ_7FF)});
-        a.op(ZYDIS_MNEMONIC_PXOR, {R(X10), R(X10)});
-        for (int i = 0; i < (ps ? 4 : 1); i++) {
-            a.op(ZYDIS_MNEMONIC_PEXTRW, {R(ZYDIS_REGISTER_R8D), R(X9), I(2 * i)});
-            a.op(ZYDIS_MNEMONIC_MOVZX, {R(ZYDIS_REGISTER_R8D), M(T, 0, 2, ZYDIS_REGISTER_R8, 2)});
-            a.op(ZYDIS_MNEMONIC_PINSRW, {R(X10), R(ZYDIS_REGISTER_R8D), I(2 * i)});
-        }
-        a.op(ZYDIS_MNEMONIC_PSLLD, {R(X10), I(11)});
-        /* the exponent: (380 - e) / 2 */
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X11), R(X8)});
-        a.op(ZYDIS_MNEMONIC_PSRLD, {R(X11), I(23)});
-        a.op(ZYDIS_MNEMONIC_PAND, {R(X11), C(RQ_FF)});
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X12), C(RQ_380)});
-        a.op(ZYDIS_MNEMONIC_PSUBD, {R(X12), R(X11)});
-        a.op(ZYDIS_MNEMONIC_PSRLD, {R(X12), I(1)});
-        a.op(ZYDIS_MNEMONIC_PSLLD, {R(X12), I(23)});
-        a.op(ZYDIS_MNEMONIC_POR, {R(X12), R(X10)});
-        /* the masks: zero / denormal (X14), NaN (X15), negative (X11), +inf (X9) */
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X13), R(X8)});
-        a.op(ZYDIS_MNEMONIC_PAND, {R(X13), C(RQ_ABS)});
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X14), C(RQ_MINNORM)});
-        a.op(ZYDIS_MNEMONIC_PCMPGTD, {R(X14), R(X13)});
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X15), R(X13)});
-        a.op(ZYDIS_MNEMONIC_PCMPGTD, {R(X15), C(RQ_INF)});
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X11), R(X8)});
-        a.op(ZYDIS_MNEMONIC_PSRAD, {R(X11), I(31)});
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X9), R(X8)});
-        a.op(ZYDIS_MNEMONIC_PCMPEQD, {R(X9), C(RQ_INF)});
-        /* the result, the stronger case last: +inf 0, a negative the default
-         * NaN, a NaN quieted, zero or a denormal an infinity of its sign */
-        a.op(ZYDIS_MNEMONIC_PANDN, {R(X9), R(X12)});
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X10), R(X11)});
-        a.op(ZYDIS_MNEMONIC_PANDN, {R(X10), R(X9)});
-        a.op(ZYDIS_MNEMONIC_PAND, {R(X11), C(RQ_INDEF)});
-        a.op(ZYDIS_MNEMONIC_POR, {R(X10), R(X11)});
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X9), R(X15)});
-        a.op(ZYDIS_MNEMONIC_PANDN, {R(X9), R(X10)});
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X11), R(X8)});
-        a.op(ZYDIS_MNEMONIC_POR, {R(X11), C(RQ_QUIET)});
-        a.op(ZYDIS_MNEMONIC_PAND, {R(X11), R(X15)});
-        a.op(ZYDIS_MNEMONIC_POR, {R(X9), R(X11)});
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X10), R(X14)});
-        a.op(ZYDIS_MNEMONIC_PANDN, {R(X10), R(X9)});
-        a.op(ZYDIS_MNEMONIC_MOVAPS, {R(X11), R(X8)});
-        a.op(ZYDIS_MNEMONIC_PAND, {R(X11), C(RQ_SIGN)});
-        a.op(ZYDIS_MNEMONIC_POR, {R(X11), C(RQ_INF)});
-        a.op(ZYDIS_MNEMONIC_PAND, {R(X11), R(X14)});
-        a.op(ZYDIS_MNEMONIC_POR, {R(X10), R(X11)});
-        return a.op(ps ? ZYDIS_MNEMONIC_MOVAPS : ZYDIS_MNEMONIC_MOVSS, {R(d.reg.value), R(X10)});
-    }
-
     /* Stores a 16-bit then a 32-bit value at a memory operand (SIDT/SGDT). */
     bool store_table_reg(const ZydisDecodedOperand &o, uint16_t limit, uint32_t base)
     {
@@ -1437,7 +1305,7 @@ struct Translator {
         case ZYDIS_MNEMONIC_SIDT:
             return store_table_reg(o0, cpu->cfg.idt_limit, cpu->cfg.idt_base) ? CONTINUE : FAIL;
         case ZYDIS_MNEMONIC_SGDT:
-            return store_table_reg(o0, 0xFF, 0) ? CONTINUE : FAIL;
+            return store_table_reg(o0, cpu->cfg.gdt_limit, cpu->cfg.gdt_base) ? CONTINUE : FAIL;
         case ZYDIS_MNEMONIC_SMSW:
             if (o0.type == ZYDIS_OPERAND_TYPE_REGISTER) {
                 a.op(ZYDIS_MNEMONIC_MOV, {R(ZydisRegisterGetLargestEnclosing(ZYDIS_MACHINE_MODE_LONG_64, remap(o0.reg.value)) ==
@@ -1511,22 +1379,6 @@ struct Translator {
             }
             return generic(in, ops) ? CONTINUE : FAIL;
         }
-        case ZYDIS_MNEMONIC_FXSAVE: {
-            /* MXCSR_MASK as a Pentium III leaves it: 0, the default mask (no
-             * DAZ). The host's own (0x2FFFF on a Ryzen) told the title that
-             * DAZ works (nxdk_low_level_cpu_tests' SSE MXCSR test) */
-            ZydisEncoderOperand m;
-            if (!generic(in, ops) || o0.type != ZYDIS_OPERAND_TYPE_MEMORY || !mem_operand(o0, m, 28)) {
-                return FAIL;
-            }
-            m.mem.size = 4;
-            return a.op(ZYDIS_MNEMONIC_MOV, {m, I(0)}, true) ? CONTINUE : FAIL;
-        }
-        case ZYDIS_MNEMONIC_RSQRTSS: case ZYDIS_MNEMONIC_RSQRTPS:
-            if (g_rsqrt_model) {
-                return rsqrt(in, ops) ? CONTINUE : FAIL;
-            }
-            return generic(in, ops) ? CONTINUE : FAIL;
         default:
             return generic(in, ops) ? CONTINUE : FAIL;
         }
@@ -1752,8 +1604,12 @@ static Block *translate(NcCpu *cpu, uint32_t eip, bool bypass)
         b->dead = true; /* made again each time it is reached, until the page is there */
     } else {
         for (uint64_t p = eip >> 12; p <= ((dep_end - 1) >> 12) && p <= 0xFFFFFu; p++) {
+            const bool fresh = !(cpu->page_bits[p >> 6] & (1ull << (p & 63)));
             cpu->pages[(uint32_t)p].push_back(b);
             cpu->page_bits[p >> 6] |= 1ull << (p & 63);
+            if (fresh && cpu->cfg.code_page) {
+                cpu->cfg.code_page(cpu->cfg.opaque, (uint32_t)p << 12);
+            }
         }
     }
     if (bypass && !probe) {
@@ -2198,11 +2054,7 @@ extern "C" void nc_frame_load(NcFrame *f, const NcCpuContext *c)
 static void fx_reset(uint8_t *fx)
 {
     memset(fx, 0, 512);
-    /* the Xbox kernel's for a new thread (ps.c's NPX area): double precision,
-     * every exception masked. FNINIT's 0x037F (extended) rounded a double
-     * twice, 64 bits then 53 at the store: nxdk_low_level_cpu_tests'
-     * TestFloat F64 (add, sub, mul, div, sqrt) failed on it */
-    const uint16_t fcw = 0x027F;
+    const uint16_t fcw = 0x037F; /* FNINIT's */
     const uint32_t mxcsr = 0x1F80;
     memcpy(fx + FX_FCW, &fcw, 2);
     memcpy(fx + FX_MXCSR, &mxcsr, 4);
@@ -2299,13 +2151,6 @@ extern "C" NcCpu *nc_cpu_create(const NcCpuConfig *cfg, uint32_t fs_base)
     cpu->cfg = *cfg;
     cpu->fs_base = fs_base;
     ZydisDecoderInit(&cpu->dec, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32);
-    static bool rsqrt_probed;
-    if (!rsqrt_probed) {
-        rsqrt_probed = true;
-        g_rsqrt_model = !rsqrt_host_is_model();
-        nc_log("xbased-native", "cpu: RSQRTSS/RSQRTPS %s", g_rsqrt_model ? "by the Pentium III's table (the host's differ)"
-                                                                         : "native (the host's are the Pentium III's)");
-    }
 
     cpu->region = (uint8_t *)VirtualAlloc(nullptr, REGION_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
     if (!cpu->region) {
@@ -2747,6 +2592,11 @@ extern "C" void nc_cpu_fault_note_write(int write)
 extern "C" bool nc_cpu_fault_is_write(const void *ucontext)
 {
     return t_fault_write != 0;
+}
+
+extern "C" bool nc_cpu_on_own_thread(NcCpu *cpu)
+{
+    return cpu && GetCurrentThreadId() == cpu->thread_id;
 }
 
 extern "C" NcFrame *nc_cpu_fault_frame(NcCpu *cpu, void *ucontext)

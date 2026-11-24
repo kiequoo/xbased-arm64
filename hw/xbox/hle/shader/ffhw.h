@@ -16,21 +16,11 @@
 #ifndef HW_XBOX_HLE_SHADER_FFHW_H
 #define HW_XBOX_HLE_SHADER_FFHW_H
 
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "hw/xbox/hle/shader/vsh.h"
 
-/* A spot's falloff, (s + L) / (M s + N) with s up to 1, where M s + N is 0
- * (SET_LIGHT_SPOT_FALLOFF 0, 0, 0): the console's light then goes past every
- * colour, inside the inner cone too (nxdk_pgraph_tests' Lighting_spotlight
- * FoFixed_0_0_0, its channels at their lit maximum): a factor no lit colour
- * stays under. The falloffs D3D makes are 1 at s = 1 and not 0 there. */
-#define HLE_SPOT_DIV0 "1.0e30"
-
 #define HLE_FFHW_MAGIC 0x31574846u      /* "FHW1": never a program's first word (0) */
-#define HLE_FFHW_LT_MAGIC 0x314C4846u   /* "FHL1": the key after a program's final slot, the
-                                           program drawn under SET_LIGHTING_ENABLE */
 
 /* texture coordinate generation (SET_TEXGEN_S/T/R/Q) */
 enum { HLE_FFHW_TG_OFF, HLE_FFHW_TG_EYE, HLE_FFHW_TG_OBJECT, HLE_FFHW_TG_SPHERE,
@@ -39,8 +29,7 @@ enum { HLE_FFHW_TG_OFF, HLE_FFHW_TG_EYE, HLE_FFHW_TG_OBJECT, HLE_FFHW_TG_SPHERE,
 typedef struct HleFfhwKey {
     uint32_t magic;
     uint8_t skin;                       /* SET_SKIN_MODE: 0 off, 1 2G .. 6 4 */
-    uint8_t lighting;                   /* SET_LIGHTING_ENABLE; 2: by the lighting unit's own
-                                           arithmetic (ltlib.h) */
+    uint8_t lighting;                   /* SET_LIGHTING_ENABLE */
     uint8_t normalize;                  /* SET_NORMALIZATION_ENABLE */
     uint8_t local_eye;                  /* SET_LIGHT_CONTROL: LOCALEYE */
     uint8_t separate_spec;              /* ... SEPARATE_SPECULAR */
@@ -55,10 +44,7 @@ typedef struct HleFfhwKey {
     uint8_t texgen[4][4];               /* stage, S T R Q: HLE_FFHW_TG_* */
     uint8_t texmat;                     /* SET_TEXTURE_MATRIX_ENABLE, a bit per stage */
     uint8_t points;                     /* SET_POINT_PARAMS_ENABLE */
-    uint8_t texgen_inf;                 /* SET_TEXGEN_VIEW_MODEL: the infinite viewer (where a
-                                           stage makes a sphere or a reflection map) */
-    uint8_t two_side;                   /* SET_LIGHT_TWO_SIDE_ENABLE: the back colours lit */
-    uint8_t bsrc[4];                    /* SET_COLOR_MATERIAL's back sources (bits 8..15), as src */
+    uint8_t pad[6];
 } HleFfhwKey;                           /* 48 bytes: three program slots */
 
 #define HLE_FFHW_SLOTS (sizeof(HleFfhwKey) / 16)
@@ -76,18 +62,10 @@ enum {
     HLE_FFHW_C_EYE = 70,                /* SET_EYE_POSITION */
     HLE_FFHW_C_AMBIENT = 71,            /* SET_SCENE_AMBIENT_COLOR, SET_MATERIAL_ALPHA */
     HLE_FFHW_C_EMISSION = 72,           /* SET_MATERIAL_EMISSION */
-    HLE_FFHW_C_PARAMS = 73,             /* z: the point size */
+    HLE_FFHW_C_PARAMS = 73,             /* specular power (front, back), point size */
     HLE_FFHW_C_POINT = 74,              /* SET_POINT_PARAMS (8) */
     HLE_FFHW_C_LIGHTS = 76,             /* per light HLE_FFHW_LIGHT_VEC4: */
-    HLE_FFHW_C_SPEC = 156,              /* SET_SPECULAR_PARAMS' first three (L, M, N) */
-    HLE_FFHW_C_BACK_AMBIENT = 157,      /* SET_BACK_SCENE_AMBIENT_COLOR (0x17A0), BACK_MATERIAL_ALPHA */
-    HLE_FFHW_C_BACK_EMISSION = 158,     /* the back material emission (0x17B0) */
-    HLE_FFHW_C_BACK_SPEC = 159,         /* SET_BACK_SPECULAR_PARAMS' first three (0x1E28) */
-    HLE_FFHW_C_BACK_LIGHTS = 160,       /* per light its back ambient, diffuse, specular (0x0C00) */
-    HLE_FFHW_C_SPEC2 = 184,             /* SET_SPECULAR_PARAMS' last three: the local viewer's */
-    HLE_FFHW_C_BACK_SPEC2 = 185,        /* SET_BACK_SPECULAR_PARAMS' last three */
-    HLE_FFHW_C_EYEDIR = 186,            /* SET_EYE_DIRECTION (0x17E0): the viewer at infinity */
-    HLE_FFHW_COUNT = 187,
+    HLE_FFHW_COUNT = 156,
 };
 enum {
     HLE_FFHW_L_AMBIENT, HLE_FFHW_L_DIFFUSE, HLE_FFHW_L_SPECULAR,
@@ -106,20 +84,14 @@ enum {
 size_t hle_ffhw_glsl(const uint32_t *tokens, unsigned nslots, const HleVshKey *vk, char *buf,
                      size_t cap);
 
-/* A program drawn under SET_LIGHTING_ENABLE takes its colours from the lighting
- * unit, not from its own oD0 / oD1 (nxdk_pgraph_tests' Specular and Specular_back
- * ControlFlags_VS: the colours of the _FF pictures): GLSL that sets oD0, oD1, oB0,
- * oB1 from v0, v1, v2, v3, v4 with the fixed-function constants as cf[] (the
- * program's constant block after vcur[]), from the key slots that follow the
- * program's final one (HLE_FFHW_LT_MAGIC). xf: the transform unit's part (the
- * normal, the eye-space point, the viewer's direction) by its arithmetic, else
- * in plain floats. 0 when they don't or it does not fit. */
-size_t hle_ffhw_lt_glsl(const uint32_t *tokens, bool xf, bool loop, char *buf, size_t cap);
-
 /* Is a program's tokens an HleFfhwKey? */
 static inline int hle_ffhw_is(const uint32_t *tokens, unsigned nslots)
 {
     return tokens && nslots >= HLE_FFHW_SLOTS && tokens[0] == HLE_FFHW_MAGIC;
 }
+
+/* The specular exponent SET_SPECULAR_PARAMS's six coefficients stand for
+ * (D3D derives them from the material's power). */
+float hle_ffhw_specular_power(const float p[6]);
 
 #endif

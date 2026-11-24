@@ -9,7 +9,6 @@
 #include "hw/xbox/hle/mem/barrier.h"
 #include "hw/xbox/hle/mem/guestmem.h"
 #include "hw/xbox/hle/tex/xg_swizzle.h"
-#include "hw/xbox/hle/tex/zpack.h"
 #include "hw/xbox/hle/vk/back_int.h"
 #include "hw/xbox/hle/mem/pageuse.h"
 #include "hw/xbox/hle/vk/guest_ram.h"
@@ -42,7 +41,7 @@ static struct {
  * copy: the image held nothing newer, guest memory stays), a target's
  * texels swizzled into its memory (hle_tl_land_swz), a copy between guest
  * memory (hle_tl_land_copy, a 2D blit's), or a note (hle_tl_land_note) */
-enum { LAND_ROWS, LAND_SWZ, LAND_COPY, LAND_NOTE, LAND_DEPTH };
+enum { LAND_ROWS, LAND_SWZ, LAND_COPY, LAND_NOTE };
 #define LAND_MAX 256
 typedef struct LandEnt {
     uint64_t value;
@@ -53,9 +52,6 @@ typedef struct LandEnt {
     uint32_t pitch, row, rows;          /* ROWS: as the GPU wrote them; COPY: the source's pitch */
     uint32_t w, h, bpp;                 /* SWZ */
     uint32_t dpitch;                    /* COPY */
-    uint32_t soff1;                     /* DEPTH: the stencil's bytes in the landing buffer + 1 */
-    uint8_t zsrc;                       /* DEPTH: what the depth aspect copied as (tex/zpack.h) */
-    float zf;                           /* DEPTH: a float buffer's scale (hle_zpack), 0 fixed */
     HleLandDone done;
     uint32_t token;
 } LandEnt;
@@ -123,29 +119,6 @@ bool hle_tl_land_copy(uint64_t value, uint32_t spa, uint32_t spitch, uint32_t dp
     const LandEnt e = { .value = value, .kind = LAND_COPY, .off = spa, .pa = dpa, .pitch = spitch,
                         .dpitch = dpitch, .row = row, .rows = rows, .done = done, .token = token };
     return land_add(&e);
-}
-
-bool hle_tl_land_depth(uint64_t value, uint32_t off, uint32_t pa, uint32_t w, uint32_t h,
-                       uint32_t pitch, uint32_t gbpp, float zf)
-{
-    const LandEnt e = { .value = value, .kind = LAND_DEPTH, .off = off, .pa = pa,
-                        .len = pitch ? pitch * (h - 1) + w * gbpp : w * h * gbpp,
-                        .w = w, .h = h, .bpp = gbpp, .pitch = pitch, .zf = zf };
-    return w && h && land_add(&e);
-}
-
-void hle_tl_land_depth_copied(uint32_t off, int zsrc, uint32_t stencil_off1)
-{
-    hle_mutex_lock(&g_land.lock);
-    for (unsigned i = 0; i < g_land.n; i++) {
-        LandEnt *e = &g_land.q[i];
-        if (e->kind == LAND_DEPTH && e->off == off && !e->copied) {
-            e->zsrc = (uint8_t)zsrc;
-            e->soff1 = stencil_off1;
-            e->copied = true;
-        }
-    }
-    hle_mutex_unlock(&g_land.lock);
 }
 
 bool hle_tl_land_note(uint64_t value, HleLandDone done, uint32_t token)
@@ -238,32 +211,6 @@ static void land_one(const LandEnt *e)
             hle_mem_mark_landed(e->pa, e->len);
         }
         landed = dst != NULL;
-    } else if (e->kind == LAND_DEPTH) {
-        const uint32_t zb = hle_zsrc_bytes(e->zsrc), n = e->w * e->h;
-        uint8_t *dst = e->copied && zb ? hle_pa_ptr(e->pa, e->len) : NULL;
-        if (dst) {
-            const uint8_t *d = land_src(e->off, n * zb);
-            const uint8_t *s = e->soff1 ? land_src(e->soff1 - 1, n) : NULL;
-            if (e->pitch) {
-                for (uint32_t y = 0; y < e->h; y++) {
-                    hle_zpack(d + (size_t)y * e->w * zb, s ? s + (size_t)y * e->w : NULL, e->zsrc,
-                              e->w, e->bpp, dst + (size_t)y * e->pitch, e->zf);
-                }
-                landed = true;
-            } else {
-                uint8_t *rows = malloc((size_t)n * e->bpp);
-                if (rows) {
-                    const HleXgRect r = { 0, 0, e->w, e->h };
-                    hle_zpack(d, s, e->zsrc, n, e->bpp, rows, e->zf);
-                    hle_xg_swizzle_rect(rows, e->w * e->bpp, &r, dst, e->w, e->h, 0, 0, e->bpp);
-                    free(rows);
-                    landed = true;
-                }
-            }
-            if (landed) {
-                hle_mem_mark_landed(e->pa, e->len);
-            }
-        }
     } else if (e->kind == LAND_COPY) {
         for (uint32_t y = 0; y < e->rows; y++) {
             const uint8_t *s = hle_pa_ptr(e->off + y * e->pitch, e->row);

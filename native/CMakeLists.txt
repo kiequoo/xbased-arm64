@@ -14,6 +14,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # off, fex.cmake): the decoder and the renderer ~2% lighter (the RP5, DOA2).
 # The cache keeps relinking after a change to the files changed.
 option(XBASED_LTO "ThinLTO in Release builds (FEX excepted)" ON)
+# The dev tools' control of a run (app/win_devctl.c, hw/xbox/hle/vk/devcap.h;
+# a local tool drives it): off, and never in a release.
+option(XBASED_DEVCTL "the dev tools' control of a run (not for releases)" OFF)
+if(XBASED_DEVCTL)
+  add_compile_definitions(XBASED_DEVCTL=1)
+endif()
 if(XBASED_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
   include(CheckIPOSupported)
   check_ipo_supported(RESULT nc_ipo LANGUAGES C CXX)
@@ -126,6 +132,7 @@ add_library(xbased_native STATIC
   dev/usb.c
   dev/usb_hub.c
   dev/xid.c
+  dev/communicator.c
   dev/ohci.c
   dev/aci.c
   dev/nvnet.c

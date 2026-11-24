@@ -88,6 +88,7 @@ static const ApuField k_core_fields[] = {
     DATA(dsp_core_t, disasm_cur_inst),
     DATA(dsp_core_t, disasm_cur_inst_len),
     DATA(dsp_core_t, disasm_registers_save),
+    OPT_DATA(dsp_core_t, sr_ext),
     END,
 };
 static const ApuDesc k_core = {"mcpx-apu/dsp-state/core", k_core_fields};

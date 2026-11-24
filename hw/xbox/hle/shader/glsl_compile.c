@@ -175,7 +175,6 @@ uint32_t *hle_glsl_compile(HleShaderStage stage, const char *src,
 {
     glslang_stage_t st = stage == HLE_SHADER_VERTEX ? GLSLANG_STAGE_VERTEX :
                          stage == HLE_SHADER_FRAGMENT ? GLSLANG_STAGE_FRAGMENT :
-                         stage == HLE_SHADER_GEOMETRY ? GLSLANG_STAGE_GEOMETRY :
                          GLSLANG_STAGE_COMPUTE;
     const glslang_input_t input = {
         .language = GLSLANG_SOURCE_GLSL,

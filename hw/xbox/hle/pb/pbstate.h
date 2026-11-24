@@ -74,6 +74,9 @@ void hle_kelvin_state_set(const HleKvState *s);
  * wherever it is. Parked, the render targets the GPU wrote are in guest
  * memory and the GPU is idle. hle_pb_unpark lets it go on. */
 bool hle_pb_park(bool at_flip, uint64_t timeout_ns);
+/* The title flipped in a trap's handler within the last second (D3D's
+ * IMMEDIATE presents): its decoder never waits at a flip (#401). */
+bool hle_pb_flips_in_traps(void);
 void hle_pb_unpark(void);
 /* pbdraw.c, on the decode thread as it parks: everything gathered goes to
  * the GPU, the colour targets it wrote back to guest memory, and the GPU

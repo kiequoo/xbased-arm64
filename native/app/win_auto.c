@@ -33,6 +33,8 @@ static struct {
     float amount[32];       /* a stick's push, 0..1 ("LUP=0.3"): 1 unless given */
     void (*save)(int), (*load)(int);
     bool menu;              /* the in-game menu asked for */
+    bool sticks_set;        /* "STICKS lx ly rx ry": the sticks held there till the next (up positive) */
+    int16_t sticks[4];
 } g_auto;
 
 static double now_s(void)
@@ -93,6 +95,20 @@ static void act(const char *a, const char *label)
         g_auto.menu = true;
         return;
     }
+    if (!_strnicmp(a, "sticks ", 7)) {
+        /* "STICKS lx ly rx ry" (-32768..32767, up positive): both sticks held
+         * there until the next STICKS (all 0 lets them go); a direction's
+         * own press (LUP...) still goes over its axis. A stick turned
+         * slowly round (Splinter Cell's lock picks) needs both axes at once. */
+        int v[4] = {0};
+        sscanf(a + 7, "%d %d %d %d", &v[0], &v[1], &v[2], &v[3]);
+        g_auto.sticks_set = false;
+        for (int i = 0; i < 4; i++) {
+            g_auto.sticks[i] = (int16_t)(v[i] > 32767 ? 32767 : v[i] < -32768 ? -32768 : v[i]);
+            g_auto.sticks_set |= v[i] != 0;
+        }
+        return;
+    }
     if (!_strnicmp(a, "vpad ", 5)) {
         /* "VPAD <button> <1|0>": a virtual gamepad, plugged in the first time,
          * its button pressed or let go; a gamepad as SDL gives the app one
@@ -103,6 +119,17 @@ static void act(const char *a, const char *label)
             {"Y", SDL_GAMEPAD_BUTTON_NORTH}, {"START", SDL_GAMEPAD_BUTTON_START}, {"BACK", SDL_GAMEPAD_BUTTON_BACK},
             {"UP", SDL_GAMEPAD_BUTTON_DPAD_UP}, {"DOWN", SDL_GAMEPAD_BUTTON_DPAD_DOWN},
             {"LEFT", SDL_GAMEPAD_BUTTON_DPAD_LEFT}, {"RIGHT", SDL_GAMEPAD_BUTTON_DPAD_RIGHT}};
+        if (!_stricmp(a + 5, "off")) {
+            /* "VPAD off": the virtual gamepad unplugged (a controller gone) */
+            if (vj) {
+                const SDL_JoystickID id = SDL_GetJoystickID(vj);
+                SDL_CloseJoystick(vj);
+                SDL_DetachVirtualJoystick(id);
+                vj = NULL;
+                nc_log("xbased-auto", "%.1f s: virtual gamepad unplugged", now_s() - g_auto.t0);
+            }
+            return;
+        }
         if (!vj) {
             SDL_VirtualJoystickDesc d;
             SDL_INIT_INTERFACE(&d);
@@ -154,6 +181,19 @@ static void act(const char *a, const char *label)
     nc_log("xbased-auto", "unknown action \"%s\"", a);
 }
 
+#ifdef XBASED_DEVCTL
+/* (dev control, win_devctl.c) one action now, as a command line's: the
+ * scripted inputs on from then */
+void nc_auto_act(const char *a)
+{
+    if (!g_auto.on) {
+        g_auto.on = true;
+        g_auto.t0 = now_s();
+    }
+    act(a, "dev");
+}
+#endif
+
 static int by_time(const void *x, const void *y)
 {
     const double a = ((const AutoEvent *)x)->at, b = ((const AutoEvent *)y)->at;
@@ -164,12 +204,21 @@ void nc_auto_init(const char *exe_dir, void (*save)(int slot), void (*load)(int 
 {
     const char *script = getenv("XBASED_AUTO");
     const char *cmd = getenv("XBASED_AUTO_CMD");
+#ifdef XBASED_DEVCTL
+    g_auto.save = save;             /* (the dev control's actions too: win_devctl.c) */
+    g_auto.load = load;
+    if (!script && !cmd) {
+        snprintf(g_auto.dir, sizeof(g_auto.dir), "%sshots", exe_dir);
+        return;
+    }
+#else
     if (!script && !cmd) {
         return;
     }
-    g_auto.on = true;
     g_auto.save = save;
     g_auto.load = load;
+#endif
+    g_auto.on = true;
     const char *t0 = getenv("XBASED_AUTO_T0");
     g_auto.t0 = t0 ? atof(t0) : now_s();
     if (!t0) {
@@ -263,12 +312,20 @@ void nc_auto_pad(NcPadState *s)
         return;
     }
     const double now = now_s();
+    if (g_auto.sticks_set) {
+        s->lx = g_auto.sticks[0];
+        s->ly = g_auto.sticks[1];
+        s->rx = g_auto.sticks[2];
+        s->ry = g_auto.sticks[3];
+    }
     for (unsigned i = 0; i < NCTL; i++) {
         if (g_auto.until[i] <= now) {
             continue;
         }
         if (k_ctl[i].analog >= 0) {
-            s->analog[k_ctl[i].analog] = 0xFF;
+            /* "A=0.4": a pressure-sensitive button pressed that hard */
+            const uint8_t v = (uint8_t)(g_auto.amount[i] * 255.0f + 0.5f);
+            s->analog[k_ctl[i].analog] = v > s->analog[k_ctl[i].analog] ? v : s->analog[k_ctl[i].analog];
         } else if (k_ctl[i].stick) {
             int16_t *axis[4] = {&s->lx, &s->ly, &s->rx, &s->ry};
             *axis[k_ctl[i].stick - 1] = (int16_t)(k_ctl[i].dir * g_auto.amount[i] * 32767);

@@ -4,7 +4,6 @@
 #
 #   tools/native/host-tests.sh [the app's build folder]
 #
-# - tools/native/check-layers.sh: nothing but the title fixes asks which title runs
 # - tests/hle: the pure modules of the GPU layer and the core (CMake)
 # - tests/native: the kernel's crypto, the upcase table, the GLib subset; and
 #   under the address sanitizer the disc reader's directory walk, the
@@ -24,7 +23,7 @@ case "$(uname -s)" in
   *) PLAT=linux; EXE= ;;
 esac
 APP=${1:-$REPO/../build/$PLAT}
-OUT=$REPO/../build/tests
+OUT=${HOST_TESTS_OUT:-$REPO/../build/tests}
 DEPS=${NC_DEPS:-$REPO/../deps}
 mkdir -p "$OUT/native" "$OUT/tmp"
 if command -v cygpath >/dev/null 2>&1; then
@@ -51,9 +50,6 @@ check() { # name, command...
     failed=$((failed + 1))
   fi
 }
-
-# the GPU layer's structure: only hw/xbox/hle/fixes/ asks which title runs (docs/hle-gpu-layers.md)
-check "hle layers" bash "$REPO/tools/native/check-layers.sh"
 
 # tests/hle
 if cmake -S "$REPO/tests/hle" -B "$OUT/hle" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang \
@@ -94,9 +90,9 @@ else
 fi
 # the USB stack: a host driver's enumeration of the hubs and a gamepad, a report and rumble
 if [ "$PLAT" = win ]; then
-  build usb_test -g -fsanitize=address -D_GNU_SOURCE -DWIN32_LEAN_AND_MEAN -DNOMINMAX -D_WIN32_WINNT=0x0A00     -I. -Inative/compat/win/include -include nc_win_posix.h tests/native/usb/usb_test.c native/dev/usb.c     native/dev/usb_hub.c native/dev/xid.c native/state/state.c native/compat/win/win.c -lz -lws2_32 -liphlpapi     -lwinmm -lbcrypt -lsynchronization -lpthread
+  build usb_test -g -fsanitize=address -D_GNU_SOURCE -DWIN32_LEAN_AND_MEAN -DNOMINMAX -D_WIN32_WINNT=0x0A00     -I. -Inative/compat/win/include -include nc_win_posix.h tests/native/usb/usb_test.c native/dev/usb.c     native/dev/usb_hub.c native/dev/xid.c native/dev/communicator.c native/state/state.c native/compat/win/win.c -lz -lws2_32 -liphlpapi     -lwinmm -lbcrypt -lsynchronization -lpthread
 else
-  build usb_test -g -fsanitize=address -D_GNU_SOURCE -I. -Inative/compat/linux/include tests/native/usb/usb_test.c     native/dev/usb.c native/dev/usb_hub.c native/dev/xid.c native/state/state.c -lz -lpthread
+  build usb_test -g -fsanitize=address -D_GNU_SOURCE -I. -Inative/compat/linux/include tests/native/usb/usb_test.c     native/dev/usb.c native/dev/usb_hub.c native/dev/xid.c native/dev/communicator.c native/state/state.c -lz -lpthread
 fi
 # the kernel's dispatch of processor exceptions to a title's handlers
 if [ "$PLAT" = win ]; then

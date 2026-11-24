@@ -24,9 +24,11 @@ typedef struct In {
     SDL_Keycode key;        /* the key pressed (remapping), 0 none */
     SDL_Keymod mod;         /* the modifiers held with it */
     int pad_button;         /* the gamepad button pressed, -1 none */
+    int mouse_button;       /* the mouse button pressed (SDL_BUTTON_*), 0 none (remapping) */
     int pad_axis;           /* an axis pushed past half: 1 + axis, negated for negative; 0 none */
     const char *text;       /* text typed (text fields) */
     bool repeat;            /* up/down/left/right came from a held key or stick repeating */
+    bool menu;              /* in a game: the menu's own shortcut (Guide, F1), which closes it (#404) */
 } In;
 
 enum Screen {
@@ -55,6 +57,9 @@ typedef struct Dash {
     char ask_buf[256];
     char toast[1024];
     double toast_until;
+    /* a setting's warning (dash_toast_row): the row it is about, the
+     * screen and tab it is on */
+    struct { bool on; int top, sp, tab, sel; const char *key; } toast_row;
     char exe[1024];
     bool quit;
     /* remapping: the input being bound */
@@ -75,6 +80,15 @@ void dash_push(enum Screen s);
 void dash_pop(void);
 enum Screen dash_top(void);
 void dash_toast(const char *msg);
+/* A setting's warning, as it is changed (key, its setting's): gone as soon
+ * as its row is left, the tab or the screen changes or the setting is
+ * changed again (#400: it stayed over the next rows and tabs until its
+ * time ran out). */
+void dash_toast_row(const char *msg, const char *key);
+/* key's setting changed again: its warning, if showing, goes */
+void dash_toast_row_done(const char *key);
+/* whether a toast is showing (one about a row left goes here) */
+bool dash_toast_on(void);
 /* An hour and minute as the user reads clocks (Interface, 12-hour clock). */
 const char *dash_hm(int hour, int minute);
 void dash_ask(const char *question, void (*on_yes)(Dash *));

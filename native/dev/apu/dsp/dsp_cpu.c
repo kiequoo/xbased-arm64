@@ -65,7 +65,7 @@ static uint16_t dsp_asr56(uint32_t *dest, int n);
 static uint16_t dsp_add56(uint32_t *source, uint32_t *dest);
 static uint16_t dsp_sub56(uint32_t *source, uint32_t *dest);
 static void dsp_mul56(uint32_t source1, uint32_t source2, uint32_t *dest, uint8_t signe);
-static void dsp_rnd56(dsp_core_t* dsp, uint32_t *dest);
+static uint16_t dsp_rnd56(dsp_core_t* dsp, uint32_t *dest);
 static uint32_t dsp_signextend(int bits, uint32_t v);
 
 static const dsp_interrupt_t dsp_interrupt[12] = {
@@ -140,6 +140,10 @@ typedef struct OpcodeEntry {
     match_func_t match_func;
 } OpcodeEntry;
 
+/* the manual's ea tables: A-16 (match_MMMRRR: register modes, absolute
+ * address 110000, immediate 110100), A-18 (match_A18: no immediate), A-19
+ * (match_A19: register modes only, so MMM=110 is another instruction's,
+ * move X/Y:(Rn+xxxx) for jclr/jset/jsclr/jsset) */
 static bool match_MMMRRR(uint32_t op)
 {
     uint32_t RRR = (op >> 8) & BITMASK(3);
@@ -150,6 +154,18 @@ static bool match_MMMRRR(uint32_t op)
     return true;
 }
 
+static bool match_A18(uint32_t op)
+{
+    uint32_t RRR = (op >> 8) & BITMASK(3);
+    uint32_t MMM = (op >> 11) & BITMASK(3);
+    return MMM != 0x6 || RRR == 0x0;
+}
+
+static bool match_A19(uint32_t op)
+{
+    return ((op >> 11) & BITMASK(3)) != 0x6;
+}
+
 static const OpcodeEntry nonparallel_opcodes[] = {
     { "0000000101iiiiii1000d000", "add #xx, D", dis_add_imm, emu_add_imm },
     { "00000001010000001100d000", "add #xxxx, D", dis_add_long, emu_add_long },
@@ -157,63 +173,63 @@ static const OpcodeEntry nonparallel_opcodes[] = {
     { "00000001010000001100d110", "and #xxxx, D", dis_and_long, emu_and_long },
     { "00000000iiiiiiii101110EE", "andi #xx, D", dis_andi, emu_andi },
     { "0000110000011101SiiiiiiD", "asl #ii, S2, D", dis_asl_imm, emu_asl_imm },
-    { "0000110000011110010SsssD", "asl S1, S2, D", NULL, NULL },
+    { "0000110000011110010SsssD", "asl S1, S2, D", NULL, emu_asl_reg },
     { "0000110000011100SiiiiiiD", "asr #ii, S2, D", dis_asr_imm, emu_asr_imm },
-    { "0000110000011110011SsssD", "asr S1, S2, D", NULL, NULL },
+    { "0000110000011110011SsssD", "asr S1, S2, D", NULL, emu_asr_reg },
     { "00001101000100000100CCCC", "bcc xxxx", dis_bcc_long, emu_bcc_long }, //??
     { "00000101CCCC01aaaa0aaaaa", "bcc xxx", dis_bcc_imm, emu_bcc_imm },
-    { "0000110100011RRR0100CCCC", "bcc Rn", NULL, NULL },
-    { "0000101101MMMRRR0S00bbbb", "bchg #n, [X or Y]:ea", dis_bchg_ea, emu_bchg_ea, match_MMMRRR },
-    { "0000101100aaaaaa0S00bbbb", "bchg #n, [X or Y]:aa", dis_bchg_aa, emu_bchg_aa },
-    { "0000101110pppppp0S00bbbb", "bchg #n, [X or Y]:pp", dis_bchg_pp, emu_bchg_pp },
-    { "0000000101qqqqqq0S0bbbbb", "bchg #n, [X or Y]:qq", NULL, NULL },
+    { "0000110100011RRR0100CCCC", "bcc Rn", NULL, emu_bcc_rn },
+    { "0000101101MMMRRR0S0bbbbb", "bchg #n, [X or Y]:ea", dis_bchg_ea, emu_bchg_ea, match_MMMRRR },
+    { "0000101100aaaaaa0S0bbbbb", "bchg #n, [X or Y]:aa", dis_bchg_aa, emu_bchg_aa },
+    { "0000101110pppppp0S0bbbbb", "bchg #n, [X or Y]:pp", dis_bchg_pp, emu_bchg_pp },
+    { "0000000101qqqqqq0S0bbbbb", "bchg #n, [X or Y]:qq", NULL, emu_bchg_qq },
     { "0000101111DDDDDD010bbbbb", "bchg, #n, D", dis_bchg_reg, emu_bchg_reg },
-    { "0000101001MMMRRR0S00bbbb", "bclr #n, [X or Y]:ea", dis_bclr_ea, emu_bclr_ea, match_MMMRRR },
-    { "0000101000aaaaaa0S00bbbb", "bclr #n, [X or Y]:aa", dis_bclr_aa, emu_bclr_aa },
-    { "0000101010pppppp0S00bbbb", "bclr #n, [X or Y]:pp", dis_bclr_pp, emu_bclr_pp },
-    { "0000000100qqqqqq0S00bbbb", "bclr #n, [X or Y]:qq", NULL, NULL },
+    { "0000101001MMMRRR0S0bbbbb", "bclr #n, [X or Y]:ea", dis_bclr_ea, emu_bclr_ea, match_MMMRRR },
+    { "0000101000aaaaaa0S0bbbbb", "bclr #n, [X or Y]:aa", dis_bclr_aa, emu_bclr_aa },
+    { "0000101010pppppp0S0bbbbb", "bclr #n, [X or Y]:pp", dis_bclr_pp, emu_bclr_pp },
+    { "0000000100qqqqqq0S0bbbbb", "bclr #n, [X or Y]:qq", NULL, emu_bclr_qq },
     { "0000101011DDDDDD010bbbbb", "bclr #n, D", dis_bclr_reg, emu_bclr_reg },
     { "000011010001000011000000", "bra xxxx", dis_bra_long, emu_bra_long },
     { "00000101000011aaaa0aaaaa", "bra xxx", dis_bra_imm, emu_bra_imm },
-    { "0000110100011RRR11000000", "bra Rn", NULL, NULL },
-    { "0000110010MMMRRR0S0bbbbb", "brclr #n, [X or Y]:ea, xxxx", NULL, NULL, match_MMMRRR },
-    { "0000110010aaaaaa1S0bbbbb", "brclr #n, [X or Y]:aa, xxxx", NULL, NULL },
+    { "0000110100011RRR11000000", "bra Rn", NULL, emu_bra_rn },
+    { "0000110010MMMRRR0S0bbbbb", "brclr #n, [X or Y]:ea, xxxx", NULL, emu_brclr_ea, match_A19 },
+    { "0000110010aaaaaa1S0bbbbb", "brclr #n, [X or Y]:aa, xxxx", NULL, emu_brclr_aa },
     { "0000110011pppppp0S0bbbbb", "brclr #n, [X or Y]:pp, xxxx", dis_brclr_pp, emu_brclr_pp },
-    { "0000010010qqqqqq0S0bbbbb", "brclr #n, [X or Y]:qq, xxxx", NULL, NULL },
+    { "0000010010qqqqqq0S0bbbbb", "brclr #n, [X or Y]:qq, xxxx", NULL, emu_brclr_qq },
     { "0000110011DDDDDD100bbbbb", "brclr #n, S, xxxx", dis_brclr_reg, emu_brclr_reg },
-    { "00000000000000100001CCCC", "brkcc", NULL, NULL },
-    { "0000110010MMMRRR0S1bbbbb", "brset #n, [X or Y]:ea, xxxx", NULL, NULL, match_MMMRRR },
-    { "0000110010aaaaaa1S1bbbbb", "brset #n, [X or Y]:aa, xxxx", NULL, NULL },
+    { "00000000000000100001CCCC", "brkcc", NULL, emu_brkcc },
+    { "0000110010MMMRRR0S1bbbbb", "brset #n, [X or Y]:ea, xxxx", NULL, emu_brset_ea, match_A19 },
+    { "0000110010aaaaaa1S1bbbbb", "brset #n, [X or Y]:aa, xxxx", NULL, emu_brset_aa },
     { "0000110011pppppp0S1bbbbb", "brset #n, [X or Y]:pp, xxxx", dis_brset_pp, emu_brset_pp },
-    { "0000010010qqqqqq0S1bbbbb", "brset #n, [X or Y]:qq, xxxx", NULL, NULL },
+    { "0000010010qqqqqq0S1bbbbb", "brset #n, [X or Y]:qq, xxxx", NULL, emu_brset_qq },
     { "0000110011DDDDDD101bbbbb", "brset #n, S, xxxx", dis_brset_reg, emu_brset_reg },
-    { "00001101000100000000CCCC", "bscc xxxx", NULL, NULL },
-    { "00000101CCCC00aaaa0aaaaa", "bscc xxx", NULL, NULL },
-    { "0000110100011RRR0000CCCC", "bscc Rn", NULL, NULL },
-    { "0000110110MMMRRR0S0bbbbb", "bsclr #n, [X or Y]:ea, xxxx", NULL, NULL, match_MMMRRR },
-    { "0000110110aaaaaa1S0bbbbb", "bsclr #n, [X or Y]:aa, xxxx", NULL, NULL },
-    { "0000010010qqqqqq1S0bbbbb", "bsclr #n, [X or Y]:qq, xxxx", NULL, NULL },
-    { "0000110111pppppp0S0bbbbb", "bsclr #n, [X or Y]:pp, xxxx", NULL, NULL },
-    { "0000110111DDDDDD100bbbbb", "bsclr, #n, S, xxxx", NULL, NULL },
+    { "00001101000100000000CCCC", "bscc xxxx", NULL, emu_bscc_long },
+    { "00000101CCCC00aaaa0aaaaa", "bscc xxx", NULL, emu_bscc_imm },
+    { "0000110100011RRR0000CCCC", "bscc Rn", NULL, emu_bscc_rn },
+    { "0000110110MMMRRR0S0bbbbb", "bsclr #n, [X or Y]:ea, xxxx", NULL, emu_bsclr_ea, match_A19 },
+    { "0000110110aaaaaa1S0bbbbb", "bsclr #n, [X or Y]:aa, xxxx", NULL, emu_bsclr_aa },
+    { "0000010010qqqqqq1S0bbbbb", "bsclr #n, [X or Y]:qq, xxxx", NULL, emu_bsclr_qq },
+    { "0000110111pppppp0S0bbbbb", "bsclr #n, [X or Y]:pp, xxxx", NULL, emu_bsclr_pp },
+    { "0000110111DDDDDD100bbbbb", "bsclr, #n, S, xxxx", NULL, emu_bsclr_reg },
     { "0000101001MMMRRR0S1bbbbb", "bset #n, [X or Y]:ea", dis_bset_ea, emu_bset_ea, match_MMMRRR },
     { "0000101000aaaaaa0S1bbbbb", "bset #n, [X or Y]:aa", dis_bset_aa, emu_bset_aa },
     { "0000101010pppppp0S1bbbbb", "bset #n, [X or Y]:pp", dis_bset_pp, emu_bset_pp },
-    { "0000000100qqqqqq0S1bbbbb", "bset #n, [X or Y]:qq", NULL, NULL },
+    { "0000000100qqqqqq0S1bbbbb", "bset #n, [X or Y]:qq", NULL, emu_bset_qq },
     { "0000101011DDDDDD011bbbbb", "bset, #n, D", dis_bset_reg, emu_bset_reg },
     { "000011010001000010000000", "bsr xxxx", dis_bsr_long, emu_bsr_long },
     { "00000101000010aaaa0aaaaa", "bsr xxx", dis_bsr_imm, emu_bsr_imm },
-    { "0000110100011RRR10000000", "bsr Rn", NULL, NULL },
-    { "0000110110MMMRRR0S1bbbbb", "bsset #n, [X or Y]:ea, xxxx", NULL, NULL, match_MMMRRR },
-    { "0000110110aaaaaa1S1bbbbb", "bsset #n, [X or Y]:aa, xxxx", NULL, NULL },
-    { "0000110111pppppp0S1bbbbb", "bsset #n, [X or Y]:pp, xxxx", NULL, NULL },
-    { "0000010010qqqqqq1S1bbbbb", "bsset #n, [X or Y]:qq, xxxx", NULL, NULL },
-    { "0000110111DDDDDD101bbbbb", "bsset #n, S, xxxx", NULL, NULL },
-    { "0000101101MMMRRR0S10bbbb", "btst #n, [X or Y]:ea", dis_btst_ea, emu_btst_ea, match_MMMRRR },
-    { "0000101100aaaaaa0S10bbbb", "btst #n, [X or Y]:aa", dis_btst_aa, emu_btst_aa },
-    { "0000101110pppppp0S10bbbb", "btst #n, [X or Y]:pp", dis_btst_pp, emu_btst_pp },
-    { "0000000101qqqqqq0S10bbbb", "btst #n, [X or Y]:qq", NULL, NULL },
-    { "0000101111DDDDDD0110bbbb", "btst #n, D", dis_btst_reg, emu_btst_reg },
-    { "0000110000011110000000SD", "clb S, D", NULL, NULL },
+    { "0000110100011RRR10000000", "bsr Rn", NULL, emu_bsr_rn },
+    { "0000110110MMMRRR0S1bbbbb", "bsset #n, [X or Y]:ea, xxxx", NULL, emu_bsset_ea, match_A19 },
+    { "0000110110aaaaaa1S1bbbbb", "bsset #n, [X or Y]:aa, xxxx", NULL, emu_bsset_aa },
+    { "0000110111pppppp0S1bbbbb", "bsset #n, [X or Y]:pp, xxxx", NULL, emu_bsset_pp },
+    { "0000010010qqqqqq1S1bbbbb", "bsset #n, [X or Y]:qq, xxxx", NULL, emu_bsset_qq },
+    { "0000110111DDDDDD101bbbbb", "bsset #n, S, xxxx", NULL, emu_bsset_reg },
+    { "0000101101MMMRRR0S1bbbbb", "btst #n, [X or Y]:ea", dis_btst_ea, emu_btst_ea, match_A18 },
+    { "0000101100aaaaaa0S1bbbbb", "btst #n, [X or Y]:aa", dis_btst_aa, emu_btst_aa },
+    { "0000101110pppppp0S1bbbbb", "btst #n, [X or Y]:pp", dis_btst_pp, emu_btst_pp },
+    { "0000000101qqqqqq0S1bbbbb", "btst #n, [X or Y]:qq", NULL, emu_btst_qq },
+    { "0000101111DDDDDD011bbbbb", "btst #n, D", dis_btst_reg, emu_btst_reg },
+    { "0000110000011110000000SD", "clb S, D", NULL, emu_clb },
     { "0000000101iiiiii1000d101", "cmp #xx, S2", dis_cmp_imm, emu_cmp_imm },
     { "00000001010000001100d101", "cmp #xxxx, S2", dis_cmp_long, emu_cmp_long },
     { "00001100000111111111gggd", "cmpu S1, S2", dis_cmpu, emu_cmpu },
@@ -221,107 +237,107 @@ static const OpcodeEntry nonparallel_opcodes[] = {
     { "00000000000000110000CCCC", "debugcc", NULL, NULL },
     { "00000000000000000000101d", "dec D", NULL /*dis_dec*/, emu_dec },
     { "000000011000000001JJd000", "div S, D", dis_div, emu_div },
-    { "000000010010010s1sdkQQQQ", "dmac S1, S2, D", NULL, NULL },
-    { "0000011001MMMRRR0S000000", "do [X or Y]:ea, expr", dis_do_ea, emu_do_ea, match_MMMRRR },
+    { "000000010010010s1sdkQQQQ", "dmac S1, S2, D", NULL, emu_dmac },
+    { "0000011001MMMRRR0S000000", "do [X or Y]:ea, expr", dis_do_ea, emu_do_ea, match_A19 },
     { "0000011000aaaaaa0S000000", "do [X or Y]:aa, expr", dis_do_aa, emu_do_aa },
     { "00000110iiiiiiii1000hhhh", "do #xxx, expr", dis_do_imm, emu_do_imm },
     { "0000011011DDDDDD00000000", "do S, expr", dis_do_reg, emu_do_reg },
     { "000000000000001000000011", "do_f", NULL, NULL },
-    { "0000011001MMMRRR0S010000", "dor [X or Y]:ea, label", NULL, NULL, match_MMMRRR },
-    { "0000011000aaaaaa0S010000", "dor [X or Y]:aa, label", NULL, NULL },
+    { "0000011001MMMRRR0S010000", "dor [X or Y]:ea, label", NULL, emu_dor_ea, match_A19 },
+    { "0000011000aaaaaa0S010000", "dor [X or Y]:aa, label", NULL, emu_dor_aa },
     { "00000110iiiiiiii1001hhhh", "dor #xxx, label", dis_dor_imm, emu_dor_imm },
     { "0000011011DDDDDD00010000", "dor S, label", dis_dor_reg, emu_dor_reg },
     { "000000000000001000000010", "dor_f", NULL, NULL },
     { "000000000000000010001100", "enddo", NULL, emu_enddo },
-    { "0000000101iiiiii1000d011", "eor #xx, D", NULL, NULL },
-    { "00000001010000001100d011", "eor #xxxx, D", NULL, NULL },
-    { "0000110000011010000sSSSD", "extract S1, S2, D", NULL, NULL },
-    { "0000110000011000000s000D", "extract #CO, S2, D", NULL, NULL },
-    { "0000110000011010100sSSSD", "extractu S1, S2, D", NULL, NULL },
-    { "0000110000011000100s000D", "extractu #CO, S2, D", NULL, NULL },
+    { "0000000101iiiiii1000d011", "eor #xx, D", NULL, emu_eor_imm },
+    { "00000001010000001100d011", "eor #xxxx, D", NULL, emu_eor_long },
+    { "0000110000011010000sSSSD", "extract S1, S2, D", NULL, emu_extract_reg },
+    { "0000110000011000000s000D", "extract #CO, S2, D", NULL, emu_extract_imm },
+    { "0000110000011010100sSSSD", "extractu S1, S2, D", NULL, emu_extractu_reg },
+    { "0000110000011000100s000D", "extractu #CO, S2, D", NULL, emu_extractu_imm },
     { "000000000000000000000101", "ill", NULL, emu_illegal },
     { "00000000000000000000100d", "inc D", NULL, emu_inc },
-    { "00001100000110110qqqSSSD", "insert S1, S2, D", NULL, NULL },
-    { "00001100000110010qqq000D", "insert #CO, S2, D", NULL, NULL },
+    { "00001100000110110qqqSSSD", "insert S1, S2, D", NULL, emu_insert_reg },
+    { "00001100000110010qqq000D", "insert #CO, S2, D", NULL, emu_insert_imm },
     { "00001110CCCCaaaaaaaaaaaa", "jcc xxx", dis_jcc_imm, emu_jcc_imm },
-    { "0000101011MMMRRR1010CCCC", "jcc ea", dis_jcc_ea, emu_jcc_ea, match_MMMRRR },
-    { "0000101001MMMRRR1S00bbbb", "jclr #n, [X or Y]:ea, xxxx", dis_jclr_ea, emu_jclr_ea, match_MMMRRR },
-    { "0000101000aaaaaa1S00bbbb", "jclr #n, [X or Y]:aa, xxxx", dis_jclr_aa, emu_jclr_aa },
-    { "0000101010pppppp1S00bbbb", "jclr #n, [X or Y]:pp, xxxx", dis_jclr_pp, emu_jclr_pp },
-    { "0000000110qqqqqq1S00bbbb", "jclr #n, [X or Y]:qq, xxxx", NULL, NULL },
-    { "0000101011DDDDDD0000bbbb", "jclr #n, S, xxxx", dis_jclr_reg, emu_jclr_reg },
-    { "0000101011MMMRRR10000000", "jmp ea", dis_jmp_ea, emu_jmp_ea, match_MMMRRR },
+    { "0000101011MMMRRR1010CCCC", "jcc ea", dis_jcc_ea, emu_jcc_ea, match_A18 },
+    { "0000101001MMMRRR1S0bbbbb", "jclr #n, [X or Y]:ea, xxxx", dis_jclr_ea, emu_jclr_ea, match_A19 },
+    { "0000101000aaaaaa1S0bbbbb", "jclr #n, [X or Y]:aa, xxxx", dis_jclr_aa, emu_jclr_aa },
+    { "0000101010pppppp1S0bbbbb", "jclr #n, [X or Y]:pp, xxxx", dis_jclr_pp, emu_jclr_pp },
+    { "0000000110qqqqqq1S0bbbbb", "jclr #n, [X or Y]:qq, xxxx", NULL, emu_jclr_qq },
+    { "0000101011DDDDDD000bbbbb", "jclr #n, S, xxxx", dis_jclr_reg, emu_jclr_reg },
+    { "0000101011MMMRRR10000000", "jmp ea", dis_jmp_ea, emu_jmp_ea, match_A18 },
     { "000011000000aaaaaaaaaaaa", "jmp xxx", dis_jmp_imm, emu_jmp_imm },
     { "00001111CCCCaaaaaaaaaaaa", "jscc xxx", dis_jscc_imm, emu_jscc_imm },
-    { "0000101111MMMRRR1010CCCC", "jscc ea", dis_jscc_ea, emu_jscc_ea, match_MMMRRR },
-    { "0000101101MMMRRR1S00bbbb", "jsclr #n, [X or Y]:ea, xxxx", dis_jsclr_ea, emu_jsclr_ea, match_MMMRRR },
-    { "0000101100MMMRRR1S00bbbb", "jsclr #n, [X or Y]:aa, xxxx", dis_jsclr_aa, emu_jsclr_aa, match_MMMRRR },
+    { "0000101111MMMRRR1010CCCC", "jscc ea", dis_jscc_ea, emu_jscc_ea, match_A18 },
+    { "0000101101MMMRRR1S0bbbbb", "jsclr #n, [X or Y]:ea, xxxx", dis_jsclr_ea, emu_jsclr_ea, match_A19 },
+    { "0000101100aaaaaa1S0bbbbb", "jsclr #n, [X or Y]:aa, xxxx", dis_jsclr_aa, emu_jsclr_aa },
     { "0000101110pppppp1S0bbbbb", "jsclr #n, [X or Y]:pp, xxxx", dis_jsclr_pp, emu_jsclr_pp },
-    { "0000000111qqqqqq1S0bbbbb", "jsclr #n, [X or Y]:qq, xxxx", NULL, NULL },
+    { "0000000111qqqqqq1S0bbbbb", "jsclr #n, [X or Y]:qq, xxxx", NULL, emu_jsclr_qq },
     { "0000101111DDDDDD000bbbbb", "jsclr #n, S, xxxx", dis_jsclr_reg, emu_jsclr_reg },
-    { "0000101001MMMRRR1S10bbbb", "jset #n, [X or Y]:ea, xxxx", dis_jset_ea, emu_jset_ea, match_MMMRRR },
-    { "0000101000MMMRRR1S10bbbb", "jset #n, [X or Y]:aa, xxxx", dis_jset_aa, emu_jset_aa, match_MMMRRR },
-    { "0000101010pppppp1S10bbbb", "jset #n, [X or Y]:pp, xxxx", dis_jset_pp, emu_jset_pp },
-    { "0000000110qqqqqq1S10bbbb", "jset #n, [X or Y]:qq, xxxx", NULL, NULL },
-    { "0000101011DDDDDD0010bbbb", "jset #n, S, xxxx", dis_jset_reg, emu_jset_reg },
-    { "0000101111MMMRRR10000000", "jsr ea", dis_jsr_ea, emu_jsr_ea, match_MMMRRR },
+    { "0000101001MMMRRR1S1bbbbb", "jset #n, [X or Y]:ea, xxxx", dis_jset_ea, emu_jset_ea, match_A19 },
+    { "0000101000aaaaaa1S1bbbbb", "jset #n, [X or Y]:aa, xxxx", dis_jset_aa, emu_jset_aa },
+    { "0000101010pppppp1S1bbbbb", "jset #n, [X or Y]:pp, xxxx", dis_jset_pp, emu_jset_pp },
+    { "0000000110qqqqqq1S1bbbbb", "jset #n, [X or Y]:qq, xxxx", NULL, emu_jset_qq },
+    { "0000101011DDDDDD001bbbbb", "jset #n, S, xxxx", dis_jset_reg, emu_jset_reg },
+    { "0000101111MMMRRR10000000", "jsr ea", dis_jsr_ea, emu_jsr_ea, match_A18 },
     { "000011010000aaaaaaaaaaaa", "jsr xxx", dis_jsr_imm, emu_jsr_imm },
-    { "0000101101MMMRRR1S10bbbb", "jsset #n, [X or Y]:ea, xxxx", dis_jsset_ea, emu_jsset_ea, match_MMMRRR },
-    { "0000101100aaaaaa1S10bbbb", "jsset #n, [X or Y]:aa, xxxx", dis_jsset_aa, emu_jsset_aa },
+    { "0000101101MMMRRR1S1bbbbb", "jsset #n, [X or Y]:ea, xxxx", dis_jsset_ea, emu_jsset_ea, match_A19 },
+    { "0000101100aaaaaa1S1bbbbb", "jsset #n, [X or Y]:aa, xxxx", dis_jsset_aa, emu_jsset_aa },
     { "0000101110pppppp1S1bbbbb", "jsset #n, [X or Y]:pp, xxxx", dis_jsset_pp, emu_jsset_pp },
-    { "0000000111qqqqqq1S1bbbbb", "jsset #n, [X or Y]:qq, xxxx", NULL, NULL },
+    { "0000000111qqqqqq1S1bbbbb", "jsset #n, [X or Y]:qq, xxxx", NULL, emu_jsset_qq },
     { "0000101111DDDDDD001bbbbb", "jsset #n, S, xxxx", dis_jsset_reg, emu_jsset_reg },
-    { "0000010011000RRR000ddddd", "lra Rn, D", NULL, NULL },
-    { "0000010001000000010ddddd", "lra xxxx, D", NULL, NULL },
+    { "0000010011000RRR000ddddd", "lra Rn, D", NULL, emu_lra_rn },
+    { "0000010001000000010ddddd", "lra xxxx, D", NULL, emu_lra_long },
     { "000011000001111010iiiiiD", "lsl #ii, D", dis_lsl_imm, emu_lsl_imm },
-    { "00001100000111100001sssD", "lsl S, D", NULL, NULL },
-    { "000011000001111011iiiiiD", "lsr #ii, D", NULL, NULL },
-    { "00001100000111100011sssD", "lsr S, D", NULL, NULL },
+    { "00001100000111100001sssD", "lsl S, D", NULL, emu_lsl_reg },
+    { "000011000001111011iiiiiD", "lsr #ii, D", NULL, emu_lsr_imm },
+    { "00001100000111100011sssD", "lsr S, D", NULL, emu_lsr_reg },
     { "00000100010MMRRR000ddddd", "lua ea, D", dis_lua, emu_lua },
     { "0000010000aaaRRRaaaadddd", "lua (Rn + aa), D", dis_lua_rel, emu_lua_rel },
-    { "00000001000sssss11QQdk10", "mac S, #n, D", NULL, NULL },
-    { "000000010100000111qqdk10", "maci #xxxx, S, D", NULL, NULL },
-    { "00000001001001101sdkQQQQ", "mac_s_u S1, S2, D", NULL, NULL },
-    { "00000001000sssss11QQdk11", "macr S1, S2, D", NULL, NULL },
-    { "000000010100000111qqdk11", "macri #xxxx, S, D", NULL, NULL },
-    { "00001100000110111000sssD", "merge S, D", NULL, NULL },
+    { "00000001000sssss11QQdk10", "mac S, #n, D", NULL, emu_mul_n },
+    { "000000010100000111qqdk10", "maci #xxxx, S, D", NULL, emu_mul_imm },
+    { "00000001001001101sdkQQQQ", "mac_s_u S1, S2, D", NULL, emu_mac_su },
+    { "00000001000sssss11QQdk11", "macr S, #n, D", NULL, emu_mul_n },
+    { "000000010100000111qqdk11", "macri #xxxx, S, D", NULL, emu_mul_imm },
+    { "00001100000110111000sssD", "merge S, D", NULL, emu_merge },
     { "0000101001110RRR1WDDDDDD", "move X:(Rn + xxxx) <-> R", dis_move_x_long, emu_move_x_long },
-    { "0000101101110RRR1WDDDDDD", "move Y:(Rn + xxxx) <-> R", NULL, NULL },
+    { "0000101101110RRR1WDDDDDD", "move Y:(Rn + xxxx) <-> R", NULL, emu_move_y_long },
     { "0000001aaaaaaRRR1a0WDDDD", "move X:(Rn + xxx) <-> R", dis_move_x_imm, emu_move_x_imm },
     { "0000001aaaaaaRRR1a1WDDDD", "move Y:(Rn + xxx) <-> R", dis_move_y_imm, emu_move_y_imm },
     { "00000101W1MMMRRR0s1ddddd", "movec [X or Y]:ea <-> R", dis_movec_ea, emu_movec_ea, match_MMMRRR },
-    { "00000101W0aaaaaa0s1ddddd", "movec [X or Y]:aa <-> R", dis_movec_aa, emu_movec_aa, match_MMMRRR },
+    { "00000101W0aaaaaa0s1ddddd", "movec [X or Y]:aa <-> R", dis_movec_aa, emu_movec_aa },
     { "00000100W1eeeeee101ddddd", "movec R1, R2", dis_movec_reg, emu_movec_reg },
     { "00000101iiiiiiii101ddddd", "movec #xx, D1", dis_movec_imm, emu_movec_imm },
-    { "00000111W1MMMRRR10dddddd", "movem P:ea <-> R", dis_movem_ea, emu_movem_ea, match_MMMRRR },
-    { "00000111W0aaaaaa00dddddd", "movem P:ea <-> R", dis_movem_aa, emu_movem_aa, match_MMMRRR },
+    { "00000111W1MMMRRR10dddddd", "movem P:ea <-> R", dis_movem_ea, emu_movem_ea, match_A18 },
+    { "00000111W0aaaaaa00dddddd", "movem P:aa <-> R", dis_movem_aa, emu_movem_aa },
     { "0000100sW1MMMRRR1Spppppp", "movep [X or Y]:ea <-> [X or Y]:pp", dis_movep_23, emu_movep_23, match_MMMRRR },
     { "00000111W1MMMRRR0Sqqqqqq", "movep [X or Y]:ea <-> X:qq", dis_movep_x_qq, emu_movep_x_qq, match_MMMRRR },
-    { "00000111W0MMMRRR1Sqqqqqq", "movep [X or Y]:ea <-> Y:qq", NULL, NULL, match_MMMRRR },
+    { "00000111W0MMMRRR1Sqqqqqq", "movep [X or Y]:ea <-> Y:qq", NULL, emu_movep_y_qq, match_MMMRRR },
     { "0000100sW1MMMRRR01pppppp", "movep [X or Y]:pp <-> P:ea", dis_movep_1, emu_movep_1, match_MMMRRR },
-    { "000000001WMMMRRR0sqqqqqq", "movep [X or Y]:qq <-> P:ea", NULL, NULL, match_MMMRRR },
+    { "000000001WMMMRRR0sqqqqqq", "movep [X or Y]:qq <-> P:ea", NULL, emu_movep_qq_p, match_MMMRRR },
     { "0000100sW1dddddd00pppppp", "movep [X or Y]:pp <-> R", dis_movep_0, emu_movep_0 },
-    { "00000100W1dddddd1q0qqqqq", "movep X:qq <-> R", NULL, NULL },
-    { "00000100W1dddddd0q1qqqqq", "movep Y:qq <-> R", NULL, NULL },
-    { "00000001000sssss11QQdk00", "mpy S, #n, D", NULL, NULL },
-    { "00000001001001111sdkQQQQ", "mpy_s_u S1, S2, D", NULL, NULL },
+    { "00000100W1dddddd1q0qqqqq", "movep X:qq <-> R", NULL, emu_movep_qq_reg },
+    { "00000100W1dddddd0q1qqqqq", "movep Y:qq <-> R", NULL, emu_movep_qq_reg },
+    { "00000001000sssss11QQdk00", "mpy S, #n, D", NULL, emu_mul_n },
+    { "00000001001001111sdkQQQQ", "mpy_s_u S1, S2, D", NULL, emu_mpy_su },
     { "000000010100000111qqdk00", "mpyi #xxxx, S, D", dis_mpyi, emu_mpyi },
-    { "00000001000sssss11QQdk01", "mpyr S, #n, D", NULL, NULL },
-    { "000000010100000111qqdk01", "mpyri #xxxx, S, D", NULL, NULL },
+    { "00000001000sssss11QQdk01", "mpyr S, #n, D", NULL, emu_mul_n },
+    { "000000010100000111qqdk01", "mpyri #xxxx, S, D", NULL, emu_mul_imm },
     { "000000000000000000000000", "nop", NULL, emu_nop},
     { "0000000111011RRR0001d101", "norm Rn, D", dis_norm, emu_norm },
-    { "00001100000111100010sssD", "normf S, D", NULL, NULL },
-    { "0000000101iiiiii1000d010", "or #xx, D", NULL, NULL },
+    { "00001100000111100010sssD", "normf S, D", NULL, emu_normf },
+    { "0000000101iiiiii1000d010", "or #xx, D", NULL, emu_or_imm },
     { "00000001010000001100d010", "or #xxxx, D", dis_or_long, emu_or_long },
     { "00000000iiiiiiii111110EE", "ori #xx, D", dis_ori, emu_ori },
-    { "000000000000000000000011", "pflush", NULL, NULL },
-    { "000000000000000000000001", "pflushun", NULL, NULL },
-    { "000000000000000000000010", "pfree", NULL, NULL },
-    { "0000101111MMMRRR10000001", "plock ea", NULL, NULL, match_MMMRRR },
-    { "000000000000000000001111", "plockr xxxx", NULL, NULL },
-    { "0000101011MMMRRR10000001", "punlock ea", NULL, NULL, match_MMMRRR },
-    { "000000000000000000001110", "punlockr xxxx", NULL, NULL },
-    { "0000011001MMMRRR0S100000", "rep [X or Y]:ea", dis_rep_ea, emu_rep_ea, match_MMMRRR },
+    { "000000000000000000000011", "pflush", NULL, emu_nop },
+    { "000000000000000000000001", "pflushun", NULL, emu_nop },
+    { "000000000000000000000010", "pfree", NULL, emu_nop },
+    { "0000101111MMMRRR10000001", "plock ea", NULL, emu_pcache_ea, match_A18 },
+    { "000000000000000000001111", "plockr xxxx", NULL, emu_pcache_rel },
+    { "0000101011MMMRRR10000001", "punlock ea", NULL, emu_pcache_ea, match_A18 },
+    { "000000000000000000001110", "punlockr xxxx", NULL, emu_pcache_rel },
+    { "0000011001MMMRRR0S100000", "rep [X or Y]:ea", dis_rep_ea, emu_rep_ea, match_A19 },
     { "0000011000aaaaaa0S100000", "rep [X or Y]:aa", dis_rep_aa, emu_rep_aa },
     { "00000110iiiiiiii1010hhhh", "rep #xxx", dis_rep_imm, emu_rep_imm },
     { "0000011011dddddd00100000", "rep S", dis_rep_reg, emu_rep_reg },
@@ -375,6 +391,7 @@ void dsp56k_reset_cpu(dsp_core_t* dsp)
     memset(dsp->periph, 0, sizeof(dsp->periph));
     memset(dsp->stack, 0, sizeof(dsp->stack));
     memset(dsp->registers, 0, sizeof(dsp->registers));
+    dsp->sr_ext = 0;
 
     /* Registers */
     dsp->pc = 0x0000;
@@ -739,7 +756,8 @@ static void dsp_postexecute_update_pc(dsp_core_t* dsp)
                 uint32_t saved_pc, saved_sr;
 
                 dsp_stack_pop(dsp, &saved_pc, &saved_sr);
-                dsp->registers[DSP_REG_SR] &= 0x7f;
+                /* xbased: LF alone comes back (the manual's end of loop) */
+                dsp->registers[DSP_REG_SR] &= ~(1u<<DSP_SR_LF);
                 dsp->registers[DSP_REG_SR] |= saved_sr & (1<<DSP_SR_LF);
                 dsp_stack_pop(dsp, &dsp->registers[DSP_REG_LA], &dsp->registers[DSP_REG_LC]);
             } else {
@@ -1008,6 +1026,7 @@ static void write_memory_raw(dsp_core_t* dsp, int space, uint32_t address, uint3
         if (APU_CHECK(address < DSP_PRAM_SIZE)) {
             apu_wr32(&dsp->pram[address], value);
             dsp->pram_opcache[address] = NULL;
+            dsp->pram_gen++;
         }
     } else {
         assert(false);
@@ -1068,7 +1087,11 @@ static void dsp_write_reg(dsp_core_t* dsp, uint32_t numreg, uint32_t value)
             dsp->registers[DSP_REG_OMR] = value & 0xc7;
             break;
         case DSP_REG_SR:
-            dsp->registers[DSP_REG_SR] = value & 0xaf7f;
+            /* xbased: S (bit 7) kept, the DSP56300's sticky scaling flag
+             * (0xaf7f dropped it, a 56000 reserved bit); bits 16-23 are
+             * sr_ext, set by the writes before their 16-bit mask
+             * (emu_sr_note) */
+            dsp->registers[DSP_REG_SR] = value & 0xafff;
             break;
         case DSP_REG_SP:
             stack_error = dsp->registers[DSP_REG_SP] & (3<<DSP_SP_SE);
@@ -1217,17 +1240,24 @@ static uint16_t dsp_asl56(uint32_t *dest, int n)
 
     uint64_t dest_v = dest[2] | ((uint64_t)dest[1] << 24) | ((uint64_t)dest[0] << 48);
 
-    uint32_t carry = (dest_v >> (56-n)) & 1;
+    /* xbased: the manual's ASL: C the last bit out (0 for no shift), V
+     * set if bit 55 changes at any time of the shift (bits 55..55-n not
+     * all the same), L as V (it set L for any bit out, a negative's too) */
+    uint32_t carry = n > 0 && n <= 56 ? (uint32_t)((dest_v >> (56-n)) & 1) : 0;
 
-    uint64_t dest_s = dest_v << n;
+    uint64_t dest_s = n < 64 ? dest_v << n : 0;
     dest[2] = dest_s & BITMASK(24);
     dest[1] = (dest_s >> 24) & BITMASK(24);
     dest[0] = (dest_s >> 48) & BITMASK(8);
 
-    uint32_t overflow = (dest_v >> (56-n)) != 0;
-    uint32_t v = ((dest_v >> 55) & 1) != ((dest_s >> 55) & 1);
+    uint32_t v = 0;
+    if (n > 0) {
+        const int top = n >= 55 ? 0 : 55 - n;
+        const uint64_t field = (dest_v >> top) & ((1ULL << (56 - top)) - 1);
+        v = field != 0 && field != ((1ULL << (56 - top)) - 1);
+    }
 
-    return (overflow<<DSP_SR_L)|(v<<DSP_SR_V)|(carry<<DSP_SR_C);
+    return (v<<DSP_SR_L)|(v<<DSP_SR_V)|(carry<<DSP_SR_C);
 }
 
 static uint16_t dsp_asr56(uint32_t *dest, int n)
@@ -1236,9 +1266,12 @@ static uint16_t dsp_asr56(uint32_t *dest, int n)
 
     uint64_t dest_v = dest[2] | ((uint64_t)dest[1] << 24) | ((uint64_t)dest[0] << 48);
 
-    uint16_t carry = (dest_v >> (n-1)) & 1;
+    /* xbased: arithmetic, bit 55 kept (the DSP56300's ASR; it shifted the
+     * 56 bits in as unsigned: a negative value came out large positive) */
+    const int64_t sv = (int64_t)(dest_v << 8) >> 8;
+    uint16_t carry = n > 0 ? (uint16_t)((sv >> (n - 1)) & 1) : 0;
 
-    dest_v >>= n;
+    dest_v = (uint64_t)(sv >> n);
     dest[2] = dest_v & BITMASK(24);
     dest[1] = (dest_v >> 24) & BITMASK(24);
     dest[0] = (dest_v >> 48) & BITMASK(8);
@@ -1361,9 +1394,11 @@ static void dsp_mul56(uint32_t source1, uint32_t source2, uint32_t *dest, uint8_
     }
 }
 
-static void dsp_rnd56(dsp_core_t* dsp, uint32_t *dest)
+/* xbased: returns the rounding add's L V C (V for RND, MACR, MPYR) */
+static uint16_t dsp_rnd56(dsp_core_t* dsp, uint32_t *dest)
 {
     uint32_t rnd_const[3];
+    uint16_t newsr;
 
     rnd_const[0] = 0;
 
@@ -1371,7 +1406,7 @@ static void dsp_rnd56(dsp_core_t* dsp, uint32_t *dest)
     if (dsp->registers[DSP_REG_SR] & (1<<DSP_SR_S0)) {
         rnd_const[1] = 1;
         rnd_const[2] = 0;
-        dsp_add56(rnd_const, dest);
+        newsr = dsp_add56(rnd_const, dest);
 
         if ((dest[2]==0) && ((dest[1] & 1) == 0)) {
             dest[1] &= (0xffffff - 0x3);
@@ -1383,7 +1418,7 @@ static void dsp_rnd56(dsp_core_t* dsp, uint32_t *dest)
     else if (dsp->registers[DSP_REG_SR] & (1<<DSP_SR_S1)) {
         rnd_const[1] = 0;
         rnd_const[2] = (1<<22);
-        dsp_add56(rnd_const, dest);
+        newsr = dsp_add56(rnd_const, dest);
 
         if ((dest[2] & 0x7fffff) == 0){
             dest[2] = 0;
@@ -1394,17 +1429,133 @@ static void dsp_rnd56(dsp_core_t* dsp, uint32_t *dest)
     else {
         rnd_const[1] = 0;
         rnd_const[2] = (1<<23);
-        dsp_add56(rnd_const, dest);
+        newsr = dsp_add56(rnd_const, dest);
 
         if (dest[2] == 0) {
             dest[1] &= 0xfffffe;
         }
         dest[2]=0;
     }
+    return newsr;
 }
 
 static uint32_t dsp_signextend(int bits, uint32_t v) {
     const int shift = sizeof(int)*8 - bits;
     assert(shift > 0);
     return (uint32_t)(((int32_t)v << shift) >> shift);
+}
+
+/**********************************
+ *  For the recompiler (dsp_rec.cpp): the interpreter's own pieces, so what
+ *  it compiles does what the interpreter does
+ **********************************/
+
+#include "dsp_rec.h"
+
+void dsp56k_rec_alu_sm(dsp_core_t *dsp, int op)
+{
+    emu_alu_sm(dsp, op);
+}
+
+void *dsp56k_rec_alu_fn(int op)
+{
+    return (void *)opcodes_alu[op & BITMASK(8)];
+}
+
+int dsp56k_rec_opcode_count(void)
+{
+    return ARRAY_SIZE(nonparallel_opcodes);
+}
+
+const char *dsp56k_rec_opcode_template(int i)
+{
+    return nonparallel_opcodes[i].template;
+}
+
+const char *dsp56k_rec_opcode_name(int i)
+{
+    return nonparallel_opcodes[i].name;
+}
+
+/* any entry for the word (with an emu_func or not), -1 for none */
+int dsp56k_rec_opcode_any(uint32_t op)
+{
+    const OpcodeEntry *e = lookup_opcode(op);
+    return e == &undefined_opcode ? -1 : (int)(e - nonparallel_opcodes);
+}
+
+/* the word's entry in nonparallel_opcodes, -1 for none (or no emu_func) */
+int dsp56k_rec_opcode_index(uint32_t op)
+{
+    const OpcodeEntry *e = lookup_opcode(op);
+    if (e == &undefined_opcode || !e->emu_func) {
+        return -1;
+    }
+    return (int)(e - nonparallel_opcodes);
+}
+
+void dsp56k_rec_update_rn(dsp_core_t *dsp, uint32_t numreg, uint32_t modifier)
+{
+    emu_update_rn(dsp, numreg, (int16_t)modifier);
+}
+
+int dsp56k_rec_read_accu24(dsp_core_t *dsp, int numreg, uint32_t *dest)
+{
+    return emu_pm_read_accu24(dsp, numreg, dest);
+}
+
+void dsp56k_rec_stack_push(dsp_core_t *dsp, uint32_t curpc, uint32_t cursr)
+{
+    dsp_stack_push(dsp, curpc, cursr, 0);
+}
+
+uint32_t dsp56k_rec_stack_pop_pc(dsp_core_t *dsp)
+{
+    uint32_t newpc, newsr;
+    dsp_stack_pop(dsp, &newpc, &newsr);
+    return newpc;
+}
+
+void dsp56k_rec_post_interrupts(dsp_core_t *dsp)
+{
+    dsp_postexecute_interrupts(dsp);
+}
+
+/* dsp_postexecute_update_pc's DO test, the pc already moved on */
+void dsp56k_rec_loop_check(dsp_core_t *dsp)
+{
+    if (dsp->registers[DSP_REG_SR] & (1<<DSP_SR_LF)) {
+        if (dsp->pc == dsp->registers[DSP_REG_LA] + 1) {
+            --dsp->registers[DSP_REG_LC];
+            dsp->registers[DSP_REG_LC] &= BITMASK(16);
+            if (dsp->registers[DSP_REG_LC] == 0) {
+                dsp56k_rec_loop_end(dsp);
+            } else {
+                dsp->pc = dsp->registers[DSP_REG_SSH];
+            }
+        }
+    }
+}
+
+/* the end of a DO loop (LC down to 0) */
+void dsp56k_rec_loop_end(dsp_core_t *dsp)
+{
+    uint32_t saved_pc, saved_sr;
+
+    dsp_stack_pop(dsp, &saved_pc, &saved_sr);
+    /* xbased: LF alone comes back (the manual's end of loop); &= 0x7f
+     * also cleared the scaling, interrupt mask and trace bits */
+    dsp->registers[DSP_REG_SR] &= ~(1u<<DSP_SR_LF);
+    dsp->registers[DSP_REG_SR] |= saved_sr & (1<<DSP_SR_LF);
+    dsp_stack_pop(dsp, &dsp->registers[DSP_REG_LA], &dsp->registers[DSP_REG_LC]);
+}
+
+void dsp56k_rec_write_reg(dsp_core_t *dsp, uint32_t numreg, uint32_t value)
+{
+    dsp_write_reg(dsp, numreg, value);
+}
+
+int dsp56k_rec_register_mask(int numreg)
+{
+    return registers_mask[numreg & 63];
 }

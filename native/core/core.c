@@ -43,6 +43,7 @@ void nc_core_set_loadstate(const char *path)
     snprintf(g_loadstate, sizeof(g_loadstate), "%s", path ? path : "");
 }
 static bool core_hook_query(void *opaque, uint32_t eip);
+static void core_code_page(void *opaque, uint32_t va);
 
 /* An XBE header's certificate: the title ID and version. */
 static bool xbe_title(const uint8_t *h, size_t len, uint32_t *tid, uint32_t *ver)
@@ -111,20 +112,35 @@ bool nc_core_boot(NcCore *c, int disc_fd)
      * built without XINIT_LIMIT_DEVKIT_MEMORY (the XBE's init flag 4), as a
      * debug kit gives it; betas and debug builds use the extra memory. A
      * retail title marked for 64 MiB gets 64 there too: given 128, Halo's
-     * D3D wrote push buffer jumps the GPU can't take and drew nothing. */
+     * D3D wrote push buffer jumps the GPU can't take and drew nothing.
+     * An XBE signed with the debug keys runs on a debug kit only, so it gets
+     * a debug kit's memory whatever the option says (unless marked for 64):
+     * StarCraft Ghost's v1.256 build (flags 1) ran out of 64 MiB loading its
+     * first mission ("out of physical memory", then a write to 0). */
     const char *mb = getenv("NC_RAM_MB");
     uint32_t ram = mb && atoi(mb) == 128 ? 128u << 20 : NC_RAM_RETAIL;
-    if (ram > NC_RAM_RETAIL && disc_fd >= 0) {
+    if (disc_fd >= 0 && !g_dashboard) {
         NcDisc d;
         memset(&d, 0, sizeof(d));
         const int fd = dup(disc_fd);
         NcDiscFile f;
-        uint8_t h[0x128];
+        uint8_t h[0x12C];
         if (fd >= 0 && nc_disc_open(&d, fd)) {
             if (nc_disc_find(&d, "default.xbe", &f) && nc_disc_read(&d, &f, 0, h, sizeof(h)) &&
-                !memcmp(h, "XBEH", 4) && (nc_rd32(h + 0x124) & 4)) {
-                ram = NC_RAM_RETAIL;
-                nc_log("xbased-native", "memory: the title is marked for 64 MiB (as a debug kit runs it): 64 MiB");
+                !memcmp(h, "XBEH", 4)) {
+                const uint32_t base = nc_rd32(h + 0x104), size = nc_rd32(h + 0x10C);
+                const uint32_t entry = nc_rd32(h + 0x128) ^ 0x94859D4Bu;     /* the debug keys' */
+                const bool debug = entry >= base && entry - base < size &&
+                                   !((nc_rd32(h + 0x128) ^ 0xA8FC57ABu) - base < size);
+                if (nc_rd32(h + 0x124) & 4) {
+                    if (ram > NC_RAM_RETAIL) {
+                        nc_log("xbased-native", "memory: the title is marked for 64 MiB (as a debug kit runs it): 64 MiB");
+                    }
+                    ram = NC_RAM_RETAIL;
+                } else if (debug && ram == NC_RAM_RETAIL) {
+                    ram = 128u << 20;
+                    nc_log("xbased-native", "memory: a debug kit's XBE (the debug keys), not marked for 64 MiB: 128 MiB");
+                }
             }
             nc_disc_close(&d);
         } else if (fd >= 0) {
@@ -257,8 +273,11 @@ bool nc_core_boot(NcCore *c, int disc_fd)
         .sysop = nc_kernel_sysop,
         .opaque = &c->kernel,
         .hook_query = core_hook_query,
+        .code_page = core_code_page,
         .idt_base = c->kernel.idt_va,
         .idt_limit = 0x7FF,
+        .gdt_base = c->kernel.gdt_va,
+        .gdt_limit = NC_GDT_LIMIT,
     };
     c->cpu = nc_cpu_create(&cfg, c->kernel.kpcr_va);
     if (!c->cpu) {
@@ -329,6 +348,98 @@ void nc_core_run(NcCore *c)
 static bool core_hook_query(void *opaque, uint32_t eip)
 {
     return nc_x86mmio_is_site(eip) || nc_hle_hook_query(opaque, eip);
+}
+
+/* Code a title writes over: translated code has to go when its guest bytes
+ * change, which nothing else here notices (the CPU translates once). Tomb
+ * Raider Legend ships parts of its .text as NOPs and loads its levels' and
+ * objects' code there as it goes, through the 0x80000000 view, over code it
+ * ran before: the old translations ran on, and it died a little further in
+ * each time (a call with a size for a pointer, a jump to nowhere). A page of
+ * the XBE's executable, read-only sections is watched from its first translated block:
+ * write-protected as the dirty tracking protects pages (every view), its
+ * first store (hle/dirty.c) drops its translations. A page written over again
+ * and again (data beside code) stops being watched. */
+#define CODE_GIVEN_UP 2u
+#define CODE_HITS_MAX 64u
+static NcKernel *g_code_k;
+static uint32_t *g_code_va;     /* per physical page: its VA | 1 while watched, CODE_GIVEN_UP */
+static uint8_t *g_code_hits;
+
+static bool code_exec_va(NcKernel *k, uint32_t va)
+{
+    const uint32_t base = k->xbe_base;
+    if (!base || nc_vm_phys(k->vm, base + 0x120) == UINT32_MAX) {
+        return false;
+    }
+    const uint32_t nsec = nc_vm_rd32(k->vm, base + 0x11C), secs = nc_vm_rd32(k->vm, base + 0x120);
+    for (uint32_t i = 0; i < nsec && i < 256; i++) {
+        const uint32_t o = secs + i * 0x38;
+        if (nc_vm_phys(k->vm, o + 0x0C) == UINT32_MAX) {
+            return false;
+        }
+        const uint32_t flags = nc_vm_rd32(k->vm, o), sva = nc_vm_rd32(k->vm, o + 4), size = nc_vm_rd32(k->vm, o + 8);
+        /* (not a writable one: the XDK's libraries keep their data beside
+         * their code there, D3D's and DSOUND's pages written all the time) */
+        if ((flags & HLE_XBE_SEC_EXECUTABLE) && !(flags & HLE_XBE_SEC_WRITABLE) &&
+            (uint64_t)va + NC_PAGE > sva && va < (uint64_t)sva + size) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void core_code_page(void *opaque, uint32_t va)
+{
+    NcKernel *k = opaque;
+    const uint32_t pa = nc_vm_phys(k->vm, va);
+    if (pa == UINT32_MAX || pa >= k->vm->ram_size) {
+        return;
+    }
+    if (!g_code_va) {
+        g_code_va = calloc(k->vm->ram_size / NC_PAGE, sizeof(*g_code_va));
+        g_code_hits = calloc(k->vm->ram_size / NC_PAGE, 1);
+        if (!g_code_va || !g_code_hits) {
+            return;
+        }
+        g_code_k = k;
+    }
+    const uint32_t pg = pa / NC_PAGE;
+    if (g_code_va[pg] == CODE_GIVEN_UP || !code_exec_va(k, va)) {
+        return;
+    }
+    g_code_va[pg] = (va & ~(NC_PAGE - 1)) | 1u;
+    hle_host_mem_test_and_clear(pa & ~(NC_PAGE - 1), NC_PAGE);
+}
+
+void nc_core_code_written(uint32_t pa)
+{
+    if (!g_code_va || !g_code_k || pa >= g_code_k->vm->ram_size) {
+        return;
+    }
+    const uint32_t pg = pa / NC_PAGE, w = g_code_va[pg];
+    if (!(w & 1u)) {
+        return;
+    }
+    if (!nc_cpu_on_own_thread(g_code_k->cpu)) {
+        static unsigned s_other;        /* (guest stores run on the CPU's thread) */
+        if (s_other++ < 4) {
+            nc_log("xbased-native", "cpu: code at %08x written from another thread: left as it is", w & ~(NC_PAGE - 1));
+        }
+        return;
+    }
+    g_code_va[pg] = 0;
+    nc_cpu_invalidate(g_code_k->cpu, w & ~(NC_PAGE - 1), NC_PAGE);
+    static unsigned s_logged;
+    if (s_logged++ < 8) {
+        nc_log("xbased-native", "cpu: code at %08x written over (pa %08x): its translations dropped (first 8 logged)",
+               w & ~(NC_PAGE - 1), pa & ~(NC_PAGE - 1));
+    }
+    if (++g_code_hits[pg] >= CODE_HITS_MAX) {
+        g_code_va[pg] = CODE_GIVEN_UP;
+        nc_log("xbased-native", "cpu: code page %08x written over %u times: not watched any more",
+               w & ~(NC_PAGE - 1), CODE_HITS_MAX);
+    }
 }
 
 /* A fault in translated code the core can't take as the guest's: where the

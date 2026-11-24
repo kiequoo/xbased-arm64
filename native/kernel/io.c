@@ -330,6 +330,23 @@ static bool canon(const char *in, char *out, size_t cap)
         char joined[512];
         snprintf(joined, sizeof(joined), "%s\\%s", g_links[l].target, tmp + 6);
         snprintf(tmp, sizeof(tmp), "%s", joined);
+    } else if (prefix_ci(tmp, "\\??\\")) {
+        /* a longer link's name, any case, as the object manager takes it:
+         * \??\CdRom0: (XAPI's own), which Xbox Music Mixer probes as
+         * \??\CDROM0:\default.xbe, track01.cda and the like to see what disc
+         * is in the drive; unresolved it found none and asked again */
+        const char *comp = tmp + 4, *end = strchr(comp, '\\');
+        const size_t n = end ? (size_t)(end - comp) : strlen(comp);
+        char name[64];
+        if (n && n < sizeof(name) - 4) {
+            snprintf(name, sizeof(name), "\\??\\%.*s", (int)n, comp);
+            const int l = link_find(name);
+            if (l >= 0) {
+                char joined[512];
+                snprintf(joined, sizeof(joined), "%s%s", g_links[l].target, end ? end : "");
+                snprintf(tmp, sizeof(tmp), "%s", joined);
+            }
+        }
     }
     /* Fold components. */
     char *parts[64], *save = NULL;
@@ -1045,6 +1062,7 @@ typedef struct DiscJob {
     uint32_t thread_id;      /* its id then: the slot may hold another thread by the end */
     bool sync;               /* a synchronous handle's: the thread waits for it (nc_ke_block) */
     bool write;              /* a hard disk file's write from the buffer (write_data), not a read */
+    uint64_t seq;            /* an overlapped one's place among them all (io_complete_done), 0: a synchronous one */
     unsigned slot;           /* its file's slot (g_files), counted in g_file_jobs till it completes */
     bool ok;
     int err;
@@ -1069,6 +1087,7 @@ typedef struct Reader {
 static Reader g_readers[2] = {{PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER},
                               {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER}};
 static unsigned g_file_jobs[MAX_FILES];    /* each file's jobs queued and not yet completed (the guest CPU's) */
+static uint64_t g_async_seq, g_async_done; /* overlapped jobs queued, and completed in that order (the guest CPU's) */
 static bool g_io_hurry;      /* a savestate's drain: no drive time left to wait (atomic) */
 
 static uint64_t mono_ns(void)
@@ -1238,6 +1257,7 @@ static bool disc_read_later(NcKernel *k, const NcFile *nf, const uint32_t *a, co
     if (queued) {
         g_file_jobs[j.slot]++;
         pin_buffer(k, &j, 1);
+        j.seq = sync ? 0 : ++g_async_seq;
         r->q[(r->head + r->n++) % DISC_JOBS] = j;
         r->busy++;
         pthread_cond_signal(&r->cv);
@@ -1297,9 +1317,29 @@ static void disc_read_done(NcKernel *k, const DiscJob *j)
 }
 
 /* The jobs the drives finished, completed: their IoStatusBlocks, events,
- * APCs, waiting threads. done: room for DISC_JOBS. */
+ * APCs, waiting threads. done: room for DISC_JOBS.
+ *
+ * Overlapped ones complete in the order they were asked for, the two
+ * drives' together: the console's DVD drive and hard disk share one IDE
+ * channel, which serves one request at a time, in turn. Here each drive
+ * has its own thread, and a request one finishes waits (held) for those
+ * asked before it on the other. Psychonauts' first boot unpacks its data
+ * to the cache drive on a worker that waits (alertably, with no timeout)
+ * for its reads' and writes' completion routines, and steps the copy at
+ * each one: it reads ahead from the disc and writes its last blocks after
+ * the last read, whose completion the console's channel delivers before
+ * theirs. With the hard disk on its own, a disc slower than the PC's
+ * writes (a slow drive under the image, or console timing at 2.5 MB/s
+ * here) had those writes done first; the last read's routine was then the
+ * last one, the step it woke left the last block's write for a later
+ * step, and nothing woke the worker again: the title stood on its logo
+ * with the copy 112640 bytes short (#360; 0 of 3 boots got past it at
+ * 2.5 MB/s, 3 of 3 in order). */
 static void io_complete_done(NcKernel *k, DiscJob *done)
 {
+    static DiscJob held[2 * DISC_JOBS];     /* the guest CPU's thread only */
+    static unsigned nheld;
+    bool more = false;
     for (unsigned d = 0; d < 2; d++) {
         Reader *const r = &g_readers[d];
         pthread_mutex_lock(&r->mu);
@@ -1309,7 +1349,27 @@ static void io_complete_done(NcKernel *k, DiscJob *done)
         r->busy -= n;
         pthread_mutex_unlock(&r->mu);
         for (unsigned i = 0; i < n; i++) {
-            disc_read_done(k, &done[i]);
+            if (!done[i].seq) {
+                disc_read_done(k, &done[i]);
+            } else if (nheld < sizeof(held) / sizeof(held[0])) {
+                held[nheld++] = done[i];
+                more = true;
+            } else {
+                disc_read_done(k, &done[i]);    /* (can't be: a drive holds DISC_JOBS at most) */
+            }
+        }
+    }
+    while (more) {
+        more = false;
+        for (unsigned i = 0; i < nheld; i++) {
+            if (held[i].seq <= g_async_done + 1) {
+                const DiscJob j = held[i];
+                held[i] = held[--nheld];
+                g_async_done = j.seq > g_async_done ? j.seq : g_async_done;
+                disc_read_done(k, &j);
+                more = true;
+                break;
+            }
         }
     }
 }
@@ -2348,8 +2408,8 @@ static uint64_t write_data(NcKernel *k, const uint32_t *a, const uint8_t *src, u
             nf->wrote = true;
             io_moved(k, nf, a[7], off + len);
             if (g_trace_io) {
-                nc_log("xbased-native-io", "write %s +%llx %u from %08x %s", nf->path, (unsigned long long)off, len, va,
-                       nf->async ? "pending" : "waited for");
+                nc_log("xbased-native-io", "write %s +%llx %u from %08x %s%s%s", nf->path, (unsigned long long)off, len,
+                       va, nf->async ? "pending" : "waited for", a[1] ? " event" : "", a[2] ? " apc" : "");
             }
             if (!nf->async) {
                 nc_ke_block(k);         /* the write's status replaces this when it completes */
@@ -2920,27 +2980,55 @@ typedef struct DirEntry {
     uint64_t size;
     bool dir;
 } DirEntry;
-/* a listing's entries at most (a folder with more shows its first ones) */
-#define LISTING_MAX 2048u
+/* a listing's entries at most: a folder's whole listing (a disc folder up to
+ * NC_DISC_DIR_MAX holds fewer); it grows as it's read. At 2048, Super Monkey
+ * Ball Deluxe's media\stage_eu (2538 files) lost its last ones and the game's
+ * FindFirstFile("STAGE398.lz") found nothing: GCDVDEmu.cpp's Fatal Error. */
+#define LISTING_MAX (1u << 20)
+
+/* A listing holds only the entries its enumeration's mask matches: a
+ * FindFirstFile of one name listed the whole folder, a host folder with a
+ * stat per entry, and Armed and Dangerous looks each sound up twice in its
+ * cache partition (~390 files) as a level loads: 16 ms a call on Windows, the
+ * guest's CPU held, the level's first seconds at half its rate (#365). */
+typedef struct DirList {
+    DirEntry *e;
+    unsigned n, cap;
+    const char *mask;
+} DirList;
+
+static DirEntry *dir_add(DirList *l)
+{
+    if (l->n == l->cap) {
+        const unsigned c = l->cap >= LISTING_MAX / 2 ? LISTING_MAX : l->cap ? l->cap * 2 : 64;
+        DirEntry *e = c > l->cap ? realloc(l->e, c * sizeof(DirEntry)) : NULL;
+        if (!e) {
+            return NULL;
+        }
+        l->e = e;
+        l->cap = c;
+    }
+    return &l->e[l->n++];
+}
 
 /* A disc directory's entries (nc_disc_dir_each: its tree in order, then what
  * the tree doesn't reach) */
-typedef struct DiscList {
-    DirEntry *out;
-    unsigned *n, cap;
-} DiscList;
-
 static bool disc_list_entry(void *ctx, const uint8_t *e)
 {
-    DiscList *l = ctx;
-    if (*l->n >= l->cap) {
-        return true;
-    }
+    DirList *l = ctx;
     const uint8_t nlen = e[13];
-    if (nlen < sizeof(l->out->name)) {
-        DirEntry *d = &l->out[(*l->n)++];
-        memcpy(d->name, e + 14, nlen);
-        d->name[nlen] = 0;
+    char name[sizeof(l->e->name)];
+    if (nlen < sizeof(name)) {
+        memcpy(name, e + 14, nlen);
+        name[nlen] = 0;
+        if (!wildcard(l->mask, name)) {
+            return false;
+        }
+        DirEntry *d = dir_add(l);
+        if (!d) {
+            return true;
+        }
+        memcpy(d->name, name, nlen + 1u);
         d->size = nc_rd32(e + 8);
         d->dir = e[12] & 0x10;
     }
@@ -2949,60 +3037,60 @@ static bool disc_list_entry(void *ctx, const uint8_t *e)
 
 /* A mod's file or folder in a disc folder's listing (nc_disc_overlay_list):
  * a replaced file with its new size, an added one at the end. */
-typedef struct OvList {
-    DirEntry *out;
-    unsigned *n, cap;
-} OvList;
-
 static void ov_entry(void *ctx, const char *name, uint32_t size, bool is_dir)
 {
-    OvList *l = ctx;
-    for (unsigned i = 0; i < *l->n; i++) {
-        if (!strcasecmp(l->out[i].name, name)) {
-            l->out[i].size = size;
-            l->out[i].dir = is_dir;
+    DirList *l = ctx;
+    if (!wildcard(l->mask, name)) {
+        return;     /* nor was the disc's file it replaces */
+    }
+    for (unsigned i = 0; i < l->n; i++) {
+        if (!strcasecmp(l->e[i].name, name)) {
+            l->e[i].size = size;
+            l->e[i].dir = is_dir;
             return;
         }
     }
-    if (*l->n < l->cap && strlen(name) < sizeof(l->out->name)) {
-        DirEntry *e = &l->out[(*l->n)++];
+    DirEntry *e = strlen(name) < sizeof(l->e->name) ? dir_add(l) : NULL;
+    if (e) {
         snprintf(e->name, sizeof(e->name), "%s", name);
         e->size = size;
         e->dir = is_dir;
     }
 }
 
-static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned cap)
+/* the folder's entries into l (l->e: the caller's to free) */
+static void list_dir(NcKernel *k, const NcFile *nf, DirList *l)
 {
-    unsigned n = 0;
     if (nf->kind != F_HOST) {
         if (nf->disc.size && nf->disc.size <= NC_DISC_DIR_MAX && nf->disc.sector < NC_DISC_OVERLAY) {
             uint8_t *dir = malloc(nf->disc.size);
             if (dir && nc_disc_read(k->disc, &nf->disc, 0, dir, nf->disc.size)) {
-                DiscList l = {out, &n, cap};
-                nc_disc_dir_each(dir, nf->disc.size, disc_list_entry, &l);
+                nc_disc_dir_each(dir, nf->disc.size, disc_list_entry, l);
             }
             free(dir);
         }
         const char *rel;
         if (k->disc->ov && device_of(nf->path, &rel) == -1) {
-            OvList l = {out, &n, cap};
-            nc_disc_overlay_list(k->disc, rel, ov_entry, &l);
+            nc_disc_overlay_list(k->disc, rel, ov_entry, l);
         }
-        return n;
+        return;
     }
     DIR *d = opendir(nf->host);
     struct dirent *de;
-    while (d && n < cap && (de = readdir(d))) {
+    while (d && (de = readdir(d))) {
         char guest[512];
         name_from_host(de->d_name, guest, sizeof(guest));
-        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..") || strlen(guest) >= sizeof(out->name)) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..") || strlen(guest) >= sizeof(l->e->name) ||
+            !wildcard(l->mask, guest)) {
             continue;
         }
         char p[600];
         struct stat st;
         snprintf(p, sizeof(p), "%s/%s", nf->host, de->d_name);
-        DirEntry *e = &out[n++];
+        DirEntry *e = dir_add(l);
+        if (!e) {
+            break;
+        }
         snprintf(e->name, sizeof(e->name), "%s", guest);
         e->dir = stat(p, &st) == 0 && S_ISDIR(st.st_mode);
         e->size = e->dir ? 0 : (uint64_t)st.st_size;
@@ -3010,7 +3098,6 @@ static unsigned list_dir(NcKernel *k, const NcFile *nf, DirEntry *out, unsigned 
     if (d) {
         closedir(d);
     }
-    return n;
 }
 
 /* NtQueryDirectoryFile(FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock, FileInformation,
@@ -3044,16 +3131,13 @@ static uint64_t NtQueryDirectoryFile(NcKernel *k, NcFrame *f, const uint32_t *a)
     }
     if ((a[9] & 0xff) || strcmp(mask, nf->mask) != 0 || !nf->listing) {
         /* A new enumeration lists the directory once (NcFile.listing). */
-        static DirEntry scratch[LISTING_MAX];
         nf->dir_next = 0;
         snprintf(nf->mask, sizeof(nf->mask), "%s", mask);
-        const unsigned count = list_dir(k, nf, scratch, LISTING_MAX);
+        DirList l = {NULL, 0, 0, nf->mask};
+        list_dir(k, nf, &l);
         free(nf->listing);
-        nf->listing = malloc((count ? count : 1) * sizeof(DirEntry));
-        nf->nlisting = nf->listing ? count : 0;
-        if (nf->listing) {
-            memcpy(nf->listing, scratch, count * sizeof(DirEntry));
-        }
+        nf->listing = l.e ? l.e : malloc(sizeof(DirEntry));
+        nf->nlisting = nf->listing ? l.n : 0;
     }
     const DirEntry *entries = nf->listing;
     const unsigned n = nf->nlisting;

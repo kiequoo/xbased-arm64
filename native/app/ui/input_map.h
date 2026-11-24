@@ -17,9 +17,14 @@ enum {
     IM_A, IM_B, IM_X, IM_Y, IM_BLACK, IM_WHITE, IM_LT, IM_RT, IM_START, IM_BACK, IM_LS, IM_RS,
     IM_DUP, IM_DDOWN, IM_DLEFT, IM_DRIGHT,
     IM_LUP, IM_LDOWN, IM_LLEFT, IM_LRIGHT, IM_RUP, IM_RDOWN, IM_RLEFT, IM_RRIGHT,
+    /* held: the face buttons pressed at press.amount (the Duke's are
+     * pressure sensitive: MGS2 aims on a light press of X and fires on a
+     * full one, #420) */
+    IM_PRESS,
     IM_INPUTS
 };
-enum { IM_HK_MENU, IM_HK_SAVE, IM_HK_LOAD, IM_HK_TURBO, IM_HK_PAUSE, IM_HK_SHOT, IM_HK_FULL, IM_HK_QUIT, IM_HOTKEYS };
+/* (IM_HK_TURBO_TOGGLE: fast forward on until pressed again, #404) */
+enum { IM_HK_MENU, IM_HK_SAVE, IM_HK_LOAD, IM_HK_TURBO, IM_HK_TURBO_TOGGLE, IM_HK_PAUSE, IM_HK_SHOT, IM_HK_FULL, IM_HK_QUIT, IM_HOTKEYS };
 
 /* The Duke's state, as the core's NcPadState (usb.h) holds it. */
 typedef struct ImPad {
@@ -58,6 +63,18 @@ const char *im_hkpad_value(int i);          /* "none", "guide", "guide+a", ... *
 const char *im_hkpad_label(int i);          /* "Guide + A" */
 const char *im_hkpad_default(int h);
 
+/* The mouse's buttons, bound in a key's place ("Mouse Left"): this flag
+ * and SDL's button (SDL_BUTTON_LEFT..X2); no key's code has it. */
+#define IM_KEY_MOUSE 0x10000000u
+
+/* The face buttons' layout (pad.face, global): "nintendo" swaps A and B,
+ * and X and Y (A on the right, B at the bottom, as Nintendo prints them),
+ * everywhere a controller's buttons are read: the menus, the games, the
+ * buttons assigned and the shortcuts (#337). im_face turns a button SDL
+ * reports by position into the one it stands for, and back. */
+void im_set_face(const Config *global);
+int im_face(int button);
+
 /* the game: the mapping resolved (the game's file over the global one) */
 typedef struct ImMap {
     SDL_Keycode key[4][IM_INPUTS];
@@ -73,7 +90,13 @@ typedef struct ImMap {
     uint8_t linvert, rinvert;   /* stick.linvert, stick.rinvert: the axes turned over, 1 X, 2 Y */
     float trigger_dz;           /* trigger.deadzone: travel ignored at the start, 0..1 */
     float trigger_full;         /* trigger.full: the travel that is already a full press */
+    float press_amount;         /* press.amount: the face buttons' pressure while IM_PRESS is held, 0..1 */
     bool rumble;
+    bool dc_pause;          /* a player's controller gone mid-game: the menu (pad.dcpause, #400) */
+    /* the mouse (#255): the stick it moves (mouse.stick: 0 none, 1 left, 2
+     * right) and how fast (mouse.sens, 1 = 100%), the game's over the global */
+    int mouse_stick;
+    float mouse_sens;
 } ImMap;
 void im_resolve(ImMap *m, const Config *global, const Config *game);
 /* A stick's position (x, y: -1..1, up positive) as the title gets it,
@@ -84,5 +107,14 @@ void im_stick(float x, float y, float deadzone, float antidz, float range, bool 
 float im_trigger(float a, float deadzone, float full);
 /* Player p's state from its keyboard keys (keys: SDL_GetKeyboardState) and gamepad. */
 void im_read(const ImMap *m, int p, const bool *keys, SDL_Gamepad *pad, ImPad *out);
+
+/* The mouse held by the game's window (win_main.c): its moves (pixels,
+ * raw), and its buttons (SDL_BUTTON_MASK) as they are now; held false lets
+ * them go (the stick back to the centre, the buttons up). im_read gives
+ * them to the player it's called with mouse true for: the moves since its
+ * last read as a speed, the stick pushed in proportion. */
+void im_mouse_move(float dx, float dy);
+void im_mouse_buttons(uint32_t mask, bool held);
+void im_read_mouse(const ImMap *m, int p, const bool *keys, SDL_Gamepad *pad, bool mouse, ImPad *out);
 
 #endif

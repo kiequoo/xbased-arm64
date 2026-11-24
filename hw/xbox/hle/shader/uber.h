@@ -3,9 +3,10 @@
  * stage that read the draw's vertex program and pixel-stage key from a buffer
  * (HleUberCfg) instead of having them compiled in, for the draws whose own
  * pipeline (the stand-in, vk/draw.c) is still being built: they draw at once,
- * the specific pipeline replaces them when it is there. Plain floats, as the
- * stand-ins; the subset they cover is hle_uber_vs_ok / hle_uber_ps_ok's, the
- * other keys wait for their own pipeline as before. Pure: text and words.
+ * the specific pipeline replaces them when it is there. The arithmetic of their
+ * own shaders (vsh.c, psh.c); the subset they cover is hle_uber_vs_ok /
+ * hle_uber_ps_ok's, the other keys wait for their own pipeline as before. Pure:
+ * text and words.
  */
 #ifndef HW_XBOX_HLE_SHADER_UBER_H
 #define HW_XBOX_HLE_SHADER_UBER_H
@@ -26,21 +27,20 @@
 
 /* word 4's switches */
 #define HLE_UBER_V_FLAT     1u
-#define HLE_UBER_V_SPECOFF  2u      /* spec_off bit 0: oD1 / oB1 read (0, 0, 0, 1) */
-#define HLE_UBER_V_SPECA1   4u      /* spec_off bit 1: their alpha 1 */
+#define HLE_UBER_V_SPECOFF  2u      /* spec_off: oD1 / oB1 read (0, 0, 0, 1) */
 #define HLE_UBER_V_WBUF     8u
 #define HLE_UBER_V_ZFREE    16u
-#define HLE_UBER_V_PTFIXED  32u     /* pt_size & HLE_VSH_PT_FIXED: the size in word 4 bits 16-24 */
 
 /* GLSL of the two stages into buf (NUL-terminated); their length, 0 if it did not fit.
- * set: the config's. The pixel stage's depth: 0 the rasterizer's, 1 cut to the
- * buffer's steps (HLE_PSH_ZTRUNC), 2 a 16-bit float buffer's (HLE_PSH_ZF16):
+ * set: the config's. The pixel stage's depth: 0 the rasterizer's, 1 cut to a D24
+ * buffer's steps (HLE_PSH_ZCUT), 3 W-buffering's (the others the rasterizer's):
  * hle_uber_fs_depth. */
 size_t hle_uber_vs_glsl(char *buf, size_t cap, unsigned set);
 size_t hle_uber_fs_glsl(char *buf, size_t cap, unsigned set, unsigned depth, bool full);
 unsigned hle_uber_fs_depth(const HlePshKey *k);
-/* The pixel stage's full form: shadow buffers, bump-env stages, signed channels
- * (the key has one); without them it builds in half the driver's time, first */
+/* The pixel stage's full form: shadow buffers, bump-env and dot-product stages,
+ * signed channels (the key has one); without them it builds in half the
+ * driver's time, first */
 bool hle_uber_fs_full(const HlePshKey *k);
 
 /* The program's steps as the vertex stage reads them, from word HLE_UBER_STEPS_AT:
@@ -53,7 +53,8 @@ bool hle_uber_ps_ok(const HlePshKey *k);
 
 /* The fixed function's vertex stage (ffhw.h, push-buffer mode's key as a
  * program's tokens): its own text, its key from word HLE_UBER_STEPS_AT
- * (false: tokens are no such key), the keys it draws */
+ * (false: tokens are no such key), the keys it draws (none on this base: its
+ * text is the program interpreter's) */
 size_t hle_uber_ff_vs_glsl(char *buf, size_t cap, unsigned set);
 bool hle_uber_ff(const uint32_t *tokens, unsigned nslots, uint32_t *cfg);
 bool hle_uber_ff_ok(const HleVshKey *k, const uint32_t *tokens, unsigned nslots);

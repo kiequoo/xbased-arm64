@@ -217,6 +217,10 @@ bool hle_back_capture_armed(void);
 bool hle_back_vis_query_open(void);
 uint64_t hle_back_submits(void);
 void hle_draw_psframe_poll(uint64_t swap);
+#ifdef XBASED_DEVCTL
+/* The dev control's frame capture and skips (devcap.h), at each swap */
+void hle_draw_devcap_swap(uint64_t swap);
+#endif
 void hle_draw_cmd_vsh(const HleCmdVsh *c);
 void hle_draw_tex_prep(const HleCmdDraw *c, uint32_t rt_id, VkCommandBuffer cb);
 

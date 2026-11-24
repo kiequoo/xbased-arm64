@@ -82,6 +82,10 @@ void nc_usb_hub_state_set(NcUsbDev *hub, const NcUsbHubState *s);
 NcUsbDev *nc_usb_hub_child(NcUsbDev *hub, unsigned port);
 void nc_usb_hub_port_changed(NcUsbDev *hub, unsigned port);
 
+/* communicator.c: the Xbox Communicator (the voice headset), its microphone
+ * and earpiece the system's (#254). */
+NcUsbDev *nc_comm_new(void);
+
 /* xid.c: an Xbox gamepad (Duke) for player 0-3, and its input. */
 NcUsbDev *nc_xid_gamepad_new(unsigned player);
 /* Every gamepad's next poll reports (a savestate's load: xid.c sends only changes) */

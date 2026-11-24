@@ -8,6 +8,7 @@
 #include "native/app/ui/cheat_text.h"
 #include "native/app/ui/input_map.h"
 #include "native/app/mod_fit.h"
+#include "native/app/mod_jmp.h"
 #include "native/app/win_mods.h"
 #include "native/core/xcheat.h"
 /* (a state's JPEG thumbnail, load_thumb) */
@@ -269,45 +270,6 @@ static void cache_rows(List *l)
     }
 }
 
-/* The GPU precision (precision=, hw/xbox/hle/vk/precision.h): automatic,
- * exact or fast; selected, its help with the last game's verdict (the
- * HLE's last_precision.txt beside the hard disk). */
-static void precision_row(List *l, bool game)
-{
-    static const char *const pv[] = {"auto", "exact", "fast"};
-    const char *pn[] = {T(S_PREC_AUTO), T(S_PREC_EXACT), T(S_PREC_FAST)};
-    opt_choice(l, S_PRECISION, "precision", pv, pn, 3, "auto");
-    if (!list_selected(l)) {
-        return;
-    }
-    (void)game;
-    static char help[1400];
-    const char *hdd = cfg_get(&D.global, "hdd");
-    char path[1200], verdict[16] = "", why[400] = "";
-    if (hdd && hdd[0]) {
-        snprintf(path, sizeof(path), "%s/../hle/last_precision.txt", hdd);
-    } else {
-        snprintf(path, sizeof(path), "%shdd/../hle/last_precision.txt", cfg_data_dir());
-    }
-    FILE *f = fopen(path, "r");
-    if (f) {
-        if (fgets(verdict, sizeof(verdict), f) && fgets(why, sizeof(why), f)) {
-            verdict[strcspn(verdict, "\r\n")] = 0;
-            why[strcspn(why, "\r\n")] = 0;
-        } else {
-            verdict[0] = 0;
-        }
-        fclose(f);
-    }
-    if (verdict[0]) {
-        snprintf(help, sizeof(help), "%s %s %s (%s).", T(S_PREC_HELP), T(S_PREC_LAST),
-                 T(strcmp(verdict, "fast") ? S_PREC_EXACT : S_PREC_FAST), why);
-    } else {
-        snprintf(help, sizeof(help), "%s", T(S_PREC_HELP));
-    }
-    dash_help(help, HELP_NEXT_START);
-}
-
 void scr_settings(void)
 {
     const float W = ui_w(), H = ui_h();
@@ -334,9 +296,10 @@ void scr_settings(void)
             static const char *const fv[] = {"desktop", "60"};
             const char *fn[] = {T(S_FSRATE_DESKTOP), T(S_FSRATE_60)};
             opt_choice(&l, S_FSRATE, "fsrate", fv, fn, 2, "desktop");
-            static const char *const mv[] = {"refresh", "60", "120", "144", "240", "0"};
-            const char *mn[] = {T(S_MAXFPS_REFRESH), "60 fps", "120 fps", "144 fps", "240 fps", T(S_MAXFPS_NONE)};
-            opt_choice(&l, S_MAXFPS, "maxfps", mv, mn, 6, "refresh");
+            static const char *const mv[] = {"refresh", "60", "90", "120", "144", "240", "0"};
+            const char *mn[] = {T(S_MAXFPS_REFRESH), "60 fps", "90 fps", "120 fps", "144 fps", "240 fps",
+                                T(S_MAXFPS_NONE)};
+            opt_choice(&l, S_MAXFPS, "maxfps", mv, mn, 7, "refresh");
         }
         break;
     case 1: {
@@ -346,9 +309,9 @@ void scr_settings(void)
         const char *an[] = {T(S_STEREO), T(S_SURROUND51)};
         opt_choice(&l, S_AUDIO_OUTPUT, "audio", av, an, 2, "stereo");
         opt_int(&l, S_VOLUME, "volume", 0, 100, 5, 100, "%");
+        opt_bool(&l, S_HRTF, "hrtf", true, false);
         opt_bool(&l, S_MUTE_BG, "mutebg", true, false);
-        opt_bool(&l, S_UI_SOUNDS, "ui.sounds", true, false);
-        break;
+        break;      /* the interface's sounds: on Interface (#400: they were on both) */
     }
     case 2: {
         rows_language(&l);
@@ -378,7 +341,6 @@ void scr_settings(void)
             opt_choice(&l, S_SHADERS_MODE, "shaders", sv, sn, 3, "hybrid");
         }
         opt_bool(&l, S_PREBUILD, "prebuild", true, false);
-        precision_row(&l, false);
         cache_rows(&l);
         break;
     }
@@ -513,7 +475,25 @@ void scr_settings(void)
                 dash_help(T(S_H_TRIGGERS), HELP_ON_RESUME);
             }
         }
+        opt_int(&l, S_PRESS_AMOUNT, "press.amount", 10, 90, 5, 50, "%");   /* the pressure modifier's (#420) */
         opt_bool(&l, S_RUMBLE, "rumble", true, false);
+        opt_bool(&l, S_PAUSE_DC, "pad.dcpause", true, false);  /* the game's menu as a player's pad goes (win_main.c) */
+        {
+            /* the face buttons as the controller prints them: a Nintendo
+             * layout's A on the right (#337) */
+            static const char *const fv[] = {"xbox", "nintendo"};
+            const char *fn[] = {T(S_FACE_XBOX), T(S_FACE_NINTENDO)};
+            opt_choice(&l, S_FACE_LAYOUT, "pad.face", fv, fn, 2, "xbox");
+        }
+        {
+            /* player 1's mouse moving a stick (#255) and how fast */
+            static const char *const mv[] = {"off", "right", "left"};
+            const char *mn[] = {T(S_OFF), T(S_IN_RSTICK), T(S_IN_LSTICK)};
+            opt_choice(&l, S_MOUSE_STICK, "mouse.stick", mv, mn, 3, "off");
+            opt_int(&l, S_MOUSE_SENS, "mouse.sens", 10, 400, 10, 100, "%");
+            /* the Communicator in player 1's controller (#254: voice=, the core's) */
+            opt_bool(&l, S_COMMUNICATOR, "voice", false, false);
+        }
         break;
     case 5:
         /* the keyboard's (a key, Ctrl/Alt/Shift with it if held), then the
@@ -533,7 +513,8 @@ void scr_settings(void)
             }
         }
         for (int h = 0; h < IM_HOTKEYS; h++) {
-            static const char *const k_names[IM_HOTKEYS] = {"menu", "save", "load", "turbo", "pause", "shot", "full", "quit"};
+            static const char *const k_names[IM_HOTKEYS] = {"menu", "save", "load", "turbo", "turbotoggle", "pause", "shot",
+                                                            "full", "quit"};
             char key[24], label[96];
             snprintf(key, sizeof(key), "hkpad.%s", k_names[h]);
             snprintf(label, sizeof(label), "%s  (%s)", T(im_hotkey_label(h)), T(S_HK_PAD));
@@ -611,9 +592,10 @@ void scr_game_settings(void)
     opt_bool(&l, S_VSYNC, "vsync", true, false);
     {
         /* the limit when this game's frame rate is unlocked (Mods & patches) */
-        static const char *const mv[] = {"refresh", "60", "120", "144", "240", "0"};
-        const char *mn[] = {T(S_MAXFPS_REFRESH), "60 fps", "120 fps", "144 fps", "240 fps", T(S_MAXFPS_NONE)};
-        opt_choice(&l, S_MAXFPS, "maxfps", mv, mn, 6, "refresh");
+        static const char *const mv[] = {"refresh", "60", "90", "120", "144", "240", "0"};
+        const char *mn[] = {T(S_MAXFPS_REFRESH), "60 fps", "90 fps", "120 fps", "144 fps", "240 fps",
+                            T(S_MAXFPS_NONE)};
+        opt_choice(&l, S_MAXFPS, "maxfps", mv, mn, 7, "refresh");
     }
     /* the sound: a game mixed louder or quieter than the others has its own
      * volume (#336) */
@@ -624,6 +606,7 @@ void scr_game_settings(void)
         opt_choice(&l, S_AUDIO_OUTPUT, "audio", av, an, 2, "stereo");
     }
     opt_int(&l, S_VOLUME, "volume", 0, 100, 5, 100, "%");
+    opt_bool(&l, S_HRTF, "hrtf", true, false);
     opt_bool(&l, S_MUTE_BG, "mutebg", true, false);
     list_heading(&l, T(S_SYSTEM));
     rows_language(&l);
@@ -643,7 +626,6 @@ void scr_game_settings(void)
         const char *sn[] = {T(S_SHADERS_HYBRID), T(S_SHADERS_ASYNC), T(S_SHADERS_SYNC)};
         opt_choice(&l, S_SHADERS_MODE, "shaders", sv, sn, 3, "hybrid");
     }
-    precision_row(&l, true);
     cache_rows(&l);
     if (list_row(&l, T(S_RESET_GAME), NULL, NULL)) {
         dash_ask(T(S_RESET_GAME), reset_game);
@@ -663,7 +645,7 @@ void scr_game_settings(void)
 /* ------------------------------------------------------------ mods and cheats */
 
 typedef struct {
-    char id[64], name[128], desc[512];
+    char id[160], name[160], desc[512];
     bool cheat;
 } ModItem;
 
@@ -671,7 +653,7 @@ static ModItem g_mods[96];
 static int g_nmods;
 static char g_mods_key[24];
 
-/* The Xbox scene's cheat files for the title (cheats/<TITLE ID>/*.etm,
+/* The Xbox scene's cheat files for the title (cheats/<TITLE ID>/<name>.etm,
  * .xbtf: core/xcheat.h), an entry an option, kept in the game's settings
  * as xcheat=cheats/<TITLE ID>/<file>|<its options' states, 1 on>. */
 typedef struct {
@@ -826,6 +808,28 @@ static void xcheat_toggle(const XOpt *e)
     }
 }
 
+/* A .jmp patch (Jay's Magic Patcher's, #391) listed when it is for the
+ * disc's executable (its game, its build's CRC-32, every record's bytes
+ * there: mod_jmp.h); its name the file's, its notes said with it */
+static void jmp_item(int disc_fd, const char *path, const char *id)
+{
+    JmpInfo info;
+    char why[200] = "";
+    if (!nc_win_mods_jmp_fits(disc_fd, path, &info, why, sizeof(why))) {
+        nc_log("xbased-app", "mods: %s: not for this executable (%s)", path, why);
+        return;
+    }
+    ModItem *m = &g_mods[g_nmods++];
+    memset(m, 0, sizeof(*m));
+    snprintf(m->id, sizeof(m->id), "%s", id);
+    snprintf(m->name, sizeof(m->name), "%s", id);
+    if (info.notes[0]) {
+        snprintf(m->desc, sizeof(m->desc), "%s %s", T(S_JMP_PATCH), info.notes);
+    } else {
+        snprintf(m->desc, sizeof(m->desc), "%s", T(S_JMP_PATCH));
+    }
+}
+
 static void mods_load(void)
 {
     if (!strcmp(g_mods_key, D.cur->g.key)) {
@@ -851,8 +855,9 @@ static void mods_load(void)
         char p[1400];
         const size_t nl = strlen(names[i]);
         const bool ips = nl > 4 && !SDL_strcasecmp(names[i] + nl - 4, ".ips");
-        char id[64];
-        snprintf(id, sizeof(id), "%.*s", (int)(ips ? nl - 4 : nl), names[i]);
+        const bool jmp = nc_jmp_name(names[i]);
+        char id[160];
+        snprintf(id, sizeof(id), "%.*s", (int)(ips || jmp ? nl - 4 : nl), names[i]);
         bool dup = false;
         for (int k = 0; k < g_nmods; k++) {
             dup |= !SDL_strcasecmp(g_mods[k].id, id);
@@ -863,6 +868,11 @@ static void mods_load(void)
         char why[160] = "";
         if (ips && !nc_win_mods_ips_fits(cfg_exe_dir(), disc_fd, dirs[di], id, why, sizeof(why))) {
             continue;       /* made for another release's executable */
+        }
+        if (jmp) {
+            snprintf(p, sizeof(p), "%s/%s", dirs[di], names[i]);
+            jmp_item(disc_fd, p, id);
+            continue;
         }
         if (ips) {
             /* an IPS patch: its name the file's, underscores as spaces */
@@ -903,6 +913,30 @@ static void mods_load(void)
         SDL_free(t);
     }
     SDL_free(names);
+    }
+    /* .jmp patches in mods/ itself: the ones that name this title */
+    const char *roots[2] = {cfg_data_dir(), cfg_exe_dir()};
+    for (int r = 0; r < (strcmp(roots[0], roots[1]) ? 2 : 1); r++) {
+        char rd[1200];
+        snprintf(rd, sizeof(rd), "%smods", roots[r]);
+        int n = 0;
+        char **names = SDL_GlobDirectory(rd, "*.jmp", SDL_GLOB_CASEINSENSITIVE, &n);
+        for (int i = 0; names && i < n && g_nmods < 96; i++) {
+            char p[1400], id[160];
+            snprintf(p, sizeof(p), "%s/%s", rd, names[i]);
+            if (strchr(names[i], '/') || nc_jmp_title(p) != D.cur->g.title_id) {
+                continue;
+            }
+            snprintf(id, sizeof(id), "%.*s", (int)(strlen(names[i]) - 4), names[i]);
+            bool dup = false;
+            for (int k = 0; k < g_nmods; k++) {
+                dup |= !SDL_strcasecmp(g_mods[k].id, id);
+            }
+            if (!dup) {
+                jmp_item(disc_fd, p, id);
+            }
+        }
+        SDL_free(names);
     }
     if (disc_fd >= 0) {
         close(disc_fd);
@@ -960,20 +994,33 @@ static bool mod_on(const ModItem *m)
 }
 
 /* the game's frame rate patch in the list (60 or 120 fps), if it has one */
+/* a patch or cheat for a higher frame rate, by its name */
+static bool fps_named(const ModItem *m)
+{
+    char s[sizeof(m->id) + sizeof(m->name) + 2];
+    snprintf(s, sizeof(s), "%s %s", m->id, m->name);
+    for (char *c = s; *c; c++) {
+        *c = (char)tolower((unsigned char)*c);
+    }
+    return strstr(s, "60fps") || strstr(s, "60 fps") || strstr(s, "120fps") || strstr(s, "120 fps");
+}
+
 static const ModItem *fps_patch(void)
 {
     for (int i = 0; i < g_nmods; i++) {
-        const ModItem *m = &g_mods[i];
-        char s[200];
-        snprintf(s, sizeof(s), "%s %s", m->id, m->name);
-        for (char *c = s; *c; c++) {
-            *c = (char)tolower((unsigned char)*c);
-        }
-        if (!m->cheat && (strstr(s, "60fps") || strstr(s, "60 fps") || strstr(s, "120fps") || strstr(s, "120 fps"))) {
-            return m;
+        if (!g_mods[i].cheat && fps_named(&g_mods[i])) {
+            return &g_mods[i];
         }
     }
     return NULL;
+}
+
+/* s, then a space and the warning that frame rate patches and an unlocked
+ * frame rate get players banned on Insignia (#400), in a buffer of n */
+static const char *with_ban_warning(char *out, size_t n, const char *s)
+{
+    snprintf(out, n, "%s%s%s", s && s[0] ? s : "", s && s[0] ? " " : "", T(S_INSIGNIA_FPS_WARN));
+    return out;
 }
 
 void scr_mods(void)
@@ -986,9 +1033,12 @@ void scr_mods(void)
     (void)H;
     const ModItem *shown = NULL;
     /* the frame rate, this game's choice: the console's pace (Original), or
-     * lifted ("uncap") up to 60 or 120 frames a second ("fpscap") or
-     * without a limit; a game that breaks lifted (native/dev/nv2a.c's list)
-     * shows it locked at Original, and why */
+     * lifted ("uncap") up to 30, 60 or 120 frames a second ("fpscap") or
+     * without a limit (the global one); a game that breaks lifted
+     * (native/dev/nv2a.c's list) shows it locked at Original, and why. Up
+     * to 30 (#351): a game that swaps without waiting for a vblank (D3D's
+     * IMMEDIATE presents) was made for a console that drew it at 30 or so,
+     * and some run too fast at 60 */
     const char *help = NULL;
     /* online mode (#278): the game as the console runs it, the frame rate,
      * patches, mods and cheats left as they are but not used */
@@ -1017,11 +1067,11 @@ void scr_mods(void)
             help = T(S_FR_LOCKED_HELP);
         }
     } else {
-        static const enum UiStr k_names[4] = { S_FR_CAPPED, S_FR_60, S_FR_120, S_FR_UNCAPPED };
-        static const char *const k_caps[4] = { NULL, "60", "120", NULL };
+        static const enum UiStr k_names[5] = { S_FR_CAPPED, S_FR_30, S_FR_60, S_FR_120, S_FR_UNCAPPED };
+        static const char *const k_caps[5] = { NULL, "30", "60", "120", NULL };
         const char *cap = cfg_get(&D.game, "fpscap");
         const int cur = !cfg_bool(&D.game, "uncap", false) ? 0
-                        : cap && atoi(cap) == 60 ? 1 : cap && atoi(cap) == 120 ? 2 : 3;
+                        : cap && atoi(cap) == 30 ? 1 : cap && atoi(cap) == 60 ? 2 : cap && atoi(cap) == 120 ? 3 : 4;
         int delta = 0;
         if (list_row(&l, T(S_FRAMERATE), T(k_names[cur]), &delta)) {
             delta = 1;
@@ -1029,7 +1079,7 @@ void scr_mods(void)
             delta = 0;                      /* a step a press */
         }
         if (delta) {
-            const int to = (cur + (delta > 0 ? 1 : 3)) % 4;
+            const int to = (cur + (delta > 0 ? 1 : 4)) % 5;
             if (to == 0) {
                 cfg_unset(&D.game, "uncap");
             } else {
@@ -1040,22 +1090,31 @@ void scr_mods(void)
             } else {
                 cfg_unset(&D.game, "fpscap");
             }
-            /* unlocked where the game has a patch of its own for it: the
-             * patch, made for the game, is the better way */
-            const ModItem *fp = fps_patch();
-            if (cur == 0 && to != 0 && fp && !mod_on(fp)) {
-                static char tip[600];
-                snprintf(tip, sizeof(tip), T(S_FPS_PATCH_TIP), fp->name);
-                dash_toast(tip);
+            /* unlocked: Insignia's ban for it (#400), and where the game
+             * has a patch of its own for it, that the patch, made for the
+             * game, is the better way; while the row is on */
+            dash_toast_row_done("uncap");
+            if (cur == 0 && to != 0) {
+                const ModItem *fp = fps_patch();
+                static char tip[600], toast[1024];
+                tip[0] = 0;
+                bool fps_on = false;    /* (one of its frame rate patches on already: no tip) */
+                for (int i = 0; i < g_nmods; i++) {
+                    fps_on |= !g_mods[i].cheat && fps_named(&g_mods[i]) && mod_on(&g_mods[i]);
+                }
+                if (fp && !fps_on) {
+                    snprintf(tip, sizeof(tip), T(S_FPS_PATCH_TIP), fp->name);
+                }
+                dash_toast_row(with_ban_warning(toast, sizeof(toast), tip), "uncap");
             }
         }
         if (list_selected(&l)) {
             const ModItem *fp = fps_patch();
-            static char tip[600];
+            static char tip[600], text[1024];
             if (fp) {
                 snprintf(tip, sizeof(tip), T(S_FPS_PATCH_TIP), fp->name);
             }
-            help = fp ? tip : T(S_UNCAP_HELP);
+            help = with_ban_warning(text, sizeof(text), fp ? tip : T(S_UNCAP_HELP));
         }
     }
     /* the mods and patches, then the cheats in a section of their own,
@@ -1077,10 +1136,14 @@ void scr_mods(void)
             }
             int delta = 0;
             if (list_row(&l, label, mod_on(m) ? T(S_ON) : T(S_OFF), &delta) || delta) {
+                dash_toast_row_done("mod");
                 if (mod_on(m)) {
                     cfg_remove_value(&D.game, m->cheat ? "cheat" : "mod", m->id);
                 } else {
                     cfg_add(&D.game, m->cheat ? "cheat" : "mod", m->id);
+                    if (fps_named(m)) {
+                        dash_toast_row(T(S_INSIGNIA_FPS_WARN), "mod");  /* Insignia bans for it (#400) */
+                    }
                 }
             }
             if (list_selected(&l)) {
@@ -1119,7 +1182,12 @@ void scr_mods(void)
         }
     }
     list_end(&l);
-    /* the selected row's help (a notice, the frame rate patch's, in its place) */
+    /* the selected row's help (a notice, the frame rate patch's, in its
+     * place); a frame rate patch's with Insignia's ban for it */
+    static char fps_help[1024];
+    if (!help && shown && fps_named(shown)) {
+        help = with_ban_warning(fps_help, sizeof(fps_help), shown->desc);
+    }
     dash_help(help ? help : shown && shown->desc[0] ? shown->desc : NULL, HELP_NEXT_START);
     dash_help_draw();
     if (D.in.back) {
@@ -1257,7 +1325,8 @@ void scr_controls(void)
 {
     const float W = ui_w(), H = ui_h();
     char title[96];
-    snprintf(title, sizeof(title), "%s — %s %d", T(S_CONTROLS), T(S_PLAYER), D.player + 1);
+    snprintf(title, sizeof(title), "%s — %s %d", T(D.editing_game ? S_GAME_CONTROLS : S_CONTROLS), T(S_PLAYER),
+             D.player + 1);     /* a game's own, named apart from the global ones (#404) */
     draw_header(title, D.editing_game && D.cur ? D.cur->g.title : NULL);
     Config *c = D.editing_game ? &D.game : &D.global;
     List l;
@@ -1280,6 +1349,16 @@ void scr_controls(void)
             dash_push(SCR_STICKS);
         }
         invert_rows(&l);
+        {
+            /* player 1's mouse moving a stick (#255) and how fast */
+            static const char *const mv[] = {"off", "right", "left"};
+            const char *mn[] = {T(S_OFF), T(S_IN_RSTICK), T(S_IN_LSTICK)};
+            opt_choice(&l, S_MOUSE_STICK, "mouse.stick", mv, mn, 3, "off");
+            opt_int(&l, S_MOUSE_SENS, "mouse.sens", 10, 400, 10, 100, "%");
+            /* the Communicator in player 1's controller (#254: voice=, the core's) */
+            opt_bool(&l, S_COMMUNICATOR, "voice", false, false);
+        }
+
         const Config *tc = cfg_get(&D.game, "trigger.deadzone") ? &D.game : &D.global;
         const Config *fc = cfg_get(&D.game, "trigger.full") ? &D.game : &D.global;
         const bool town = cfg_get(&D.game, "trigger.deadzone") || cfg_get(&D.game, "trigger.full");
@@ -1293,6 +1372,7 @@ void scr_controls(void)
         if (list_row(&l, T(S_TRIGGERS), val, NULL)) {
             dash_push(SCR_TRIGGERS);
         }
+        opt_int(&l, S_PRESS_AMOUNT, "press.amount", 10, 90, 5, 50, "%");   /* the pressure modifier's (#420) */
         const bool custom = cfg_bool(&D.game, "map.custom", false);
         if (list_row(&l, T(S_CUSTOM_CONTROLS), custom ? T(S_ON) : T(S_OFF), NULL)) {
             if (custom) {
@@ -1687,6 +1767,10 @@ void scr_remap(void)
         done = true;
     } else if (!hotkey && D.in.pad_button >= 0) {
         im_bind_button(c, D.player, D.remap_target, D.in.pad_button);
+        done = true;
+    } else if (!hotkey && D.in.mouse_button >= SDL_BUTTON_LEFT && D.in.mouse_button <= SDL_BUTTON_X2) {
+        /* a mouse button, in the key's place (#255) */
+        im_bind_key(c, D.player, D.remap_target, (SDL_Keycode)(IM_KEY_MOUSE | (unsigned)D.in.mouse_button));
         done = true;
     } else if (!hotkey && D.in.pad_axis) {
         im_bind_axis(c, D.player, D.remap_target, D.in.pad_axis);

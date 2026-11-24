@@ -36,6 +36,9 @@ struct DSPState {
     uint32_t interrupts;
 
     bool is_gp;
+
+    /* xbased: the compiled program (dsp_rec.cpp), NULL until it runs */
+    void *rec;
 };
 
 #endif /* DSP_STATE_H */

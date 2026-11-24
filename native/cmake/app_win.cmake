@@ -5,7 +5,9 @@ set(NC_APP_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/app/win_main.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/win_mods.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/mod_fit.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/app/mod_jmp.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/win_auto.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/app/win_devctl.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/win_aslr.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/win_frame.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/app/present.c"
@@ -43,7 +45,7 @@ endif()
 set_target_properties(xbased PROPERTIES OUTPUT_NAME xbased)
 # xbased's version, set here alone: the app's (xbased_version.h, from
 # app/version.h.in) and the executable's version information (xbased.rc)
-set(XBASED_VERSION 1.1.15)
+set(XBASED_VERSION 1.2.11)
 string(REPLACE "." "," XBASED_VERSION_RC "${XBASED_VERSION}")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/app/version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/gen/xbased_version.h" @ONLY)
 if(WIN32)
@@ -54,6 +56,9 @@ if(WIN32)
 endif()
 target_include_directories(xbased PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/gen")
 target_link_libraries(xbased PRIVATE xbased_native xbased_hle SDL3::SDL3)
+if(XBASED_DEVCTL AND WIN32)
+  target_link_libraries(xbased PRIVATE ws2_32)
+endif()
 target_include_directories(xbased PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../third_party/stb")  # public domain, vendored
 target_compile_options(xbased PRIVATE -Wall -Wno-unused-parameter -Wno-unused-function)
 # Cross-compile: win_frame.c needs X11 headers (type defs only; calls via dlopen).

@@ -89,12 +89,11 @@ uint32_t hle_pbd_target_rows(uint32_t pa, uint32_t pitch);
  * queued at on the timeline (vk/timeline.c hle_tl_land_copy: behind the
  * landings of the targets over the source whose images are newer, and the
  * copies queued over either range before it; dbase: a blit's destination
- * surface, 0 for M2MF; reads_dst: the copy reads its destination too, a
- * blend: made now, after every image over either range landed); then
- * hle_pbd_copy_done: a queued one's destination closed to the guest till it
- * lands, the targets over it with their memory newer than their images. */
+ * surface, 0 for M2MF); then hle_pbd_copy_done: a queued one's destination
+ * closed to the guest till it lands, the targets over it with their memory
+ * newer than their images. */
 uint64_t hle_pbd_copy_begin(uint32_t slo, uint32_t sp, uint32_t dlo, uint32_t dp, uint32_t row,
-                            uint32_t rows, uint32_t dbase, bool reads_dst);
+                            uint32_t rows, uint32_t dbase);
 void hle_pbd_copy_done(uint32_t dlo, uint32_t dp, uint32_t row, uint32_t rows, uint64_t dep);
 /* Counters: targets' images landed, copies queued, decoder waits for them */
 void hle_pbd_coh_counts(uint64_t *lands, uint64_t *copies, uint64_t *waits);
@@ -116,13 +115,6 @@ void hle_pbd_idle(void);
  * keeps for the next one written back now, as hle_pbd_idle would once idle
  * (the title rebooting waits on it; stalled, the decoder is not getting there) */
 void hle_pbd_keep_stalled(void);
-/* Any thread: the guest saw the GPU idle (NV_PGRAPH_STATUS read, the FIFO
- * consumed to PUT): the next program vertex takes the first
- * of the places its fog is left in (pbdraw.c g_fogc). */
-void hle_pbd_idle_seen(void);
-/* PGRAPH RDI's vertex constants (select 0x17 / 0xCC): word (4 a constant,
- * w first) of the constants as the decoder last left them (any thread) */
-uint32_t hle_pbd_rdi_constant(uint32_t word);
 /* Decode thread, each pass: the frame on screen into its memory when the
  * guest's first write there asked (front_stale). */
 void hle_pbd_front_serve(void);
@@ -135,8 +127,8 @@ bool hle_pbd_scan_due(void);
  * buffer shows); first, a swap its flip came before, if no flip followed. */
 void hle_pbd_scanout(void);
 /* Decode thread: the frame buffer AvSetDisplayMode gave, when the title has
- * no GPU device (it draws its frames with the CPU, as Insignia's
- * Setup Assistant does), shown as the memory holds it; the scanout
+ * no GPU device (it draws its frames with the CPU: nxdk homebrew such as
+ * Insignia's Setup Assistant), shown as the memory holds it; the scanout
  * shows it again as the CPU writes it. A title with a device keeps its own
  * flips. */
 void hle_pbd_cpu_display(uint32_t pa);

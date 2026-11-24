@@ -192,13 +192,27 @@ bool cfg_shaders_migrate(Config *c)
         cfg_unset(c, "asyncpipe");
         cfg_unset(c, "prebuild");
         cfg_unset(c, "shaders");
-        cfg_set(c, "shaders.reset", "3");
+        cfg_set(c, "shaders.reset", "4");
     } else if (atoi(reset) < 3) {
         /* 3 (1.1.2): the cached shaders built before the game, on by default
          * now: an earlier choice of it goes once */
         had = cfg_get(c, "prebuild") != NULL;
         cfg_unset(c, "prebuild");
         cfg_set(c, "shaders.reset", "3");
+    }
+    reset = cfg_get(c, "shaders.reset");
+    if (atoi(reset) < 4) {
+        /* 4 (1.2): another GPU layer (1.0.94's, with its own interpreters):
+         * the shader mode chosen for 1.1's goes once, every install in the
+         * hybrid mode, the default */
+        had |= cfg_get(c, "shaders") != NULL;
+        cfg_unset(c, "shaders");
+        cfg_set(c, "shaders.reset", "4");
+    }
+    /* the GPU precision (1.1.2's exact or fast): this layer hasn't it */
+    if (cfg_get(c, "precision")) {
+        cfg_unset(c, "precision");
+        had = true;
     }
     /* the asynchronous shaders' switch (asyncpipe) as the mode it was: on, "async";
      * off, the default one */

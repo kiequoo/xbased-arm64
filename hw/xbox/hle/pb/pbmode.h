@@ -31,6 +31,10 @@ void hle_pb_put(void);
 /* pbdraw.c: a frame swapped went to the display (its flip), for the frame
  * latency (pbmode.c fl_hold). Any thread. */
 void hle_pb_frame_flipped(void);
+/* pbdraw.c, at a flip of the guest's (its vblank ISR's, the vCPU thread):
+ * frame (the frames swapped counting it) shown, swapped (its
+ * FLIP_INCREMENT_WRITE decoded) at swap_ns: what a hold cost (pbmode.c) */
+void hle_pb_frame_shown(uint32_t frame, int64_t swap_ns);
 /* The guest is writing DMA_PUT = put (its vCPU thread), before the register
  * holds it: the report scout reads what it pushed (mem/barrier.h
  * hle_barrier_report_pushed) before the decoder can. */
@@ -65,6 +69,9 @@ void hle_pb_subroutine_written(uint32_t v);
  * / B planes): the display's gamma ramp (any thread; the decode thread
  * applies it). */
 void hle_pb_gamma(const uint8_t rgb[3][256]);
+/* The guest counted a flip read (PGRAPH's INCREMENT: a vblank's or a trap
+ * handler's flip, any thread). */
+void hle_pb_flip_read(void);
 /* PGRAPH waits in FLIP_STALL for a flip (any thread). */
 bool hle_pb_flip_waiting(void);
 /* the FLIP_STALLs that waited so far (one a frame, uncapped) */

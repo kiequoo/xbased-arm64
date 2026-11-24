@@ -24,6 +24,7 @@ extern "C" {
 #endif
 
 #define NC_KERNEL_VA     0x80010000u
+#define NC_GDT_LIMIT     0x2Fu  /* the kernel's GDT: null, code 08, data 10, TSS 18, KPCR 20 and 28 */
 #define NC_KERNEL_PA     0x00010000u
 #define NC_KERNEL_SIZE   0x00040000u
 /* The top of RAM kept from boot: the GPU's instance memory (D3D's 20 KiB)
@@ -224,6 +225,7 @@ struct NcKernel {
     uint32_t callout_return_va; /* return address of callout routines */
     uint32_t apc_return_va;    /* return address of APC routines */
     uint32_t idt_va;           /* the IDT SIDT reports: 256 interrupt gates */
+    uint32_t gdt_va, tss_va;   /* the GDT SGDT reports (NC_GDT_LIMIT) and its TSS */
     uint32_t trap_va;          /* every gate's handler until a title replaces it */
     uint32_t seh_return_va;    /* return address of exception handlers */
     uint32_t code_next;        /* kernel-area code allocator (nc_kernel_code_alloc) */
@@ -337,6 +339,8 @@ void nc_kernel_impl(NcKernel *k, const char *name, NcKFn fn);
 void nc_pool_init(NcKernel *k, uint32_t va, uint32_t len);
 uint32_t nc_pool_alloc(NcKernel *k, uint32_t size);
 void nc_pool_free(NcKernel *k, uint32_t va, uint32_t size);
+/* pool.c: the pool's pages with nothing in them back to RAM; bytes given. */
+uint32_t nc_pool_give_back(NcKernel *k);
 /* mm.c: physical memory held by contiguous allocations and by committed
  * virtual memory (bytes), and the number of contiguous blocks. */
 void nc_mm_usage(NcKernel *k, uint32_t *contig_bytes, uint32_t *virtual_bytes, unsigned *contig_blocks);
@@ -378,6 +382,9 @@ bool nc_ob_create_named(NcKernel *k, uint32_t attrs, const char *name, enum NcOb
 void nc_ke_frame_wait_request(NcKernel *k);
 void nc_ke_frame_take(NcKernel *k);
 void nc_ke_frame_flipped(void);
+/* the holds so far that ended at their deadline, the flip they waited for
+ * not come (any thread) */
+uint32_t nc_ke_frame_holds_timed_out(void);
 
 void nc_ps_register(NcKernel *k);
 NcThread *nc_ps_thread_of(NcKernel *k, uint32_t ethread);
@@ -388,7 +395,7 @@ void nc_ps_schedule(NcKernel *k, NcFrame *f);
 void nc_ps_slice_end(NcKernel *k, uint64_t now);
 /* The running thread gives way (Sleep(0), polling) to a ready thread of its
  * priority or above: rescheduled at the back of its priority's queue. */
-void nc_ps_yield(NcKernel *k);
+bool nc_ps_yield(NcKernel *k);   /* false: no other thread ready, no yield */
 /* debug (debug.xbased.ncresume=<id>): NtResumeThread on thread t<id> */
 void nc_ps_debug_resume(NcKernel *k, unsigned id);
 void nc_ps_terminate_current(NcKernel *k, uint32_t status);
@@ -571,6 +578,12 @@ unsigned nc_ke_held(uint64_t *out_ns, uint64_t *max_ns);
 uint64_t nc_ke_host_ns(uint64_t guest_ns);
 /* The activity paused or resumed (NativeCoreActivity): see nc_pause_set. */
 void nc_kernel_set_paused(NcKernel *k, bool on);
+#ifdef XBASED_DEVCTL
+/* (dev builds) the running thread's frame while the guest's CPU waits paused
+ * in a kernel entry (NULL: running, or paused idle with every thread switched
+ * out). */
+extern NcFrame *volatile g_nc_paused_frame;
+#endif
 /* The guest's CPU in a kernel entry: blocks while the emulation is paused,
  * its time (kernel and RDTSC) and the hitch monitor stopped meanwhile. */
 void nc_kernel_pause_point(NcKernel *k, NcFrame *f, bool idle);

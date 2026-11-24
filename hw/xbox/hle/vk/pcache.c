@@ -182,11 +182,6 @@ void hle_pcache_save(bool force)
     g_pc.last_save = now;
 }
 
-void hle_pcache_save_soon(void)
-{
-    g_pc.last_save = 0;
-}
-
 void hle_pcache_destroy(void)
 {
     if (g_pc.started) {

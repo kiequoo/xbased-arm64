@@ -593,6 +593,9 @@ void mcpx_apu_reset(MCPXAPUState *d)
            sizeof(d->gp.dsp->core.pram_opcache));
     memset(d->ep.dsp->core.pram_opcache, 0,
            sizeof(d->ep.dsp->core.pram_opcache));
+    d->gp.dsp->core.pram_gen++;
+    d->ep.dsp->core.pram_gen++;
+    mcpx_apu_dsp_reset_output();
     apu_st(&d->set_irq, false);
     d->snapshot_just_loaded = false;
     d->next_frame_time_us = 0;
@@ -604,6 +607,10 @@ void mcpx_apu_reset(MCPXAPUState *d)
  * them). */
 void mcpx_apu_post_load(MCPXAPUState *d)
 {
+    /* P came in with the state: the GP's compiled program is stale */
+    d->gp.dsp->core.pram_gen++;
+    d->ep.dsp->core.pram_gen++;
+
     /* The tables' pointers are not part of the state; set them from the
      * loaded base registers. */
     mcpx_apu_vp_refresh_voice_cache(d, d->regs[NV_PAPU_VPVADDR]);
@@ -708,6 +715,13 @@ static void *mcpx_apu_frame_thread(void *arg)
     }
     pthread_mutex_unlock(&d->lock);
     return NULL;
+}
+
+/* The 3D voices' HRTF filters on or off (the hrtf= option, the audio
+ * settings): the voices read it every frame, so it applies at once (#374). */
+void nc_apu_set_hrtf(bool on)
+{
+    __atomic_store_n(&g_apu_config.hrtf, on, __ATOMIC_RELAXED);
 }
 
 /* The app's audio settings: the defaults above; NC_APU_DSP=1 runs the GP and

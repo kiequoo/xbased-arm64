@@ -28,6 +28,7 @@
 #include "dsp_dma.h"
 #include "dsp_state.h"
 #include "dsp.h"
+#include "dsp_rec.h"
 #include "debug.h"
 
 /* Defines */
@@ -70,6 +71,7 @@ void dsp_reset(DSPState* dsp)
 
 void dsp_destroy(DSPState* dsp)
 {
+    dsp_rec_destroy(dsp);
     free(dsp);
 }
 
@@ -141,7 +143,32 @@ void dsp_step(DSPState* dsp)
     dsp56k_execute_instruction(&dsp->core);
 }
 
+/* xbased: the GP's program compiled (dsp_rec.cpp) unless XBASED_DSP_REC=0 */
+static int dsp_rec_mode = -1;
+
+static bool dsp_rec_on(void)
+{
+    if (dsp_rec_mode < 0) {
+        const char *e = getenv("XBASED_DSP_REC");
+        dsp_rec_mode = !(e && e[0] == '0');
+    }
+    return dsp_rec_mode;
+}
+
+bool dsp_rec_ready(DSPState *dsp)
+{
+    return dsp->is_gp && dsp_rec_on() && dsp_rec_available(dsp);
+}
+
 void dsp_run(DSPState* dsp, int cycles)
+{
+    if (dsp->is_gp && dsp_rec_on() && dsp_rec_run(dsp, cycles)) {
+        return;
+    }
+    dsp_run_interp(dsp, cycles);
+}
+
+void dsp_run_interp(DSPState* dsp, int cycles)
 {
     dsp->save_cycles += cycles;
 
@@ -187,6 +214,7 @@ void dsp_bootstrap(DSPState* dsp)
         }
     }
     memset(dsp->core.pram_opcache, 0, sizeof(dsp->core.pram_opcache));
+    dsp->core.pram_gen++;
 }
 
 void dsp_start_frame(DSPState* dsp)

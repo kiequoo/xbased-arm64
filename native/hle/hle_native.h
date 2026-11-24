@@ -43,8 +43,6 @@ void nc_hle_set_anisotropy(int level);
 /* Before boot: the app's "Asynchronous shader compilation" and "Build cached
  * shaders before starting" settings (hw/xbox/hle/vk/pipeasync.h). */
 void nc_hle_set_pipeline_options(bool async, bool prebuild, bool hybrid);
-/* The GPU's precision setting: 0 auto, 1 exact, 2 fast (precision.h). */
-void nc_hle_set_precision(int mode);
 /* The pipeline prebuild's progress, any thread: built and to build (0 / 0
  * when none runs). */
 void nc_hle_pipeline_progress(uint32_t *done, uint32_t *total);
@@ -69,6 +67,8 @@ void nc_hle_after_sysop(NcKernel *k);
 /* Guest-write tracking (dirty.c), from any thread's SIGSEGV/SIGBUS: a write
  * to a page protected for tracking. Returns false if it isn't one. */
 bool nc_hle_dirty_fault(const siginfo_t *info, void *ucontext);
+/* A watched code page's first store (core.c): its translations go. */
+void nc_core_code_written(uint32_t pa);
 
 /* debug: NC_WATCHPA="pa:len[:seconds]" (hex, then decimal), stores to that
  * guest RAM logged (xbased-native-watch), armed after the seconds: a guest

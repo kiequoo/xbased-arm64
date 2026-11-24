@@ -52,6 +52,8 @@ void mcpx_apu_ep_write(void *opaque, uint32_t addr, uint64_t val, unsigned int s
 
 void mcpx_apu_dsp_init(MCPXAPUState *d);
 void mcpx_apu_update_dsp_preference(MCPXAPUState *d);
+/* xbased: the GP's output choice back to its start (an APU reset) */
+void mcpx_apu_dsp_reset_output(void);
 void mcpx_apu_dsp_frame(MCPXAPUState *d, float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME]);
 
 #endif

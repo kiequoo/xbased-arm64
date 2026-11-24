@@ -7,7 +7,6 @@
 #include "hw/xbox/hle/core/image.h"
 #include "hw/xbox/hle/core/probe.h"
 #include "hw/xbox/hle/core/xbe_guest.h"
-#include "hw/xbox/hle/fixes/fixes.h"
 #include "hw/xbox/hle/pb/pbmode.h"
 
 #define MAX_IMAGE (64u << 20)
@@ -64,7 +63,6 @@ void hle_title_start(void)
     lib_ranges(t);
     hle_log("xbased-hle-mode", "title %08x: push-buffer mode", t->xbe.title_id);
     hle_probe_register();                   /* debug: XBASED_HLE_PROBE */
-    hle_fixes_init(&t->xbe);                /* the title's fixes, before the decoder starts */
     hle_pb_start();
     hle_host_code_changed();
     hle_host_kick();

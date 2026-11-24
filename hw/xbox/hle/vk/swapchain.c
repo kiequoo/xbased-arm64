@@ -45,6 +45,8 @@
 #include "native/third_party/stb/stb_image_write.h"
 
 #include "hw/xbox/hle/vk/native_window.h"
+#include <errno.h>
+#include <string.h>
 #ifdef _WIN32
 #include <windows.h>
 #include "hw/xbox/hle/vk/share.h"
@@ -146,6 +148,7 @@ static struct {
     VkBuffer shot_buf;
     VkDeviceMemory shot_mem;
     VkDeviceSize shot_size;
+    bool shot_flush;            /* its memory isn't coherent: invalidated before it's read */
 } g_ps;
 
 #ifdef _WIN32
@@ -284,7 +287,9 @@ static const char k_fs_crt[] =
     "  o = ramp(col * vig);\n"
     "}\n";
 /* The frame rate in a corner (hle_present_set_osd): four seven-segment
- * digits, green on dark, drawn by the shader alone. extra.x: the number. */
+ * digits, green on dark, drawn by the shader alone. extra.x: the number.
+ * extra.y 1: fast forward's sign instead (hle_present_set_ff), two
+ * triangles pointing right. */
 static const char k_fs_osd[] =
     "float seg(vec2 p, int m) {\n"
     "  const float t = 0.07;\n"
@@ -299,6 +304,12 @@ static const char k_fs_osd[] =
     "  return 0.0;\n"
     "}\n"
     "void main() {\n"
+    "  if (pc.extra.y > 0.5) {\n"
+    "    float lx = fract(v_uv.x * 2.0), y = abs(v_uv.y - 0.5);\n"
+    "    float on = lx > 0.14 && lx < 0.86 && y < 0.36 * (0.86 - lx) / 0.72 ? 1.0 : 0.0;\n"
+    "    o = mix(vec4(0.02, 0.07, 0.01, 1.0), vec4(0.55, 0.95, 0.16, 1.0), on);\n"
+    "    return;\n"
+    "  }\n"
     "  const int SEG[10] = int[10](0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F);\n"
     "  int n = int(pc.extra.x + 0.5);\n"
     "  int cell = int(v_uv.x * 4.0);\n"
@@ -935,6 +946,7 @@ static void lose_window(void)
 
 static int g_crt;   /* the CRT filter's kind, 0 none */
 static float g_osd; /* the frame rate shown, 0 none */
+static bool g_osd_ff; /* fast forward's sign shown */
 
 static float g_clip_x = 1.0f, g_clip_y = 1.0f;
 
@@ -947,6 +959,11 @@ void hle_present_set_clip(float cx, float cy)
 void hle_present_set_osd(float fps)
 {
     g_osd = fps;
+}
+
+void hle_present_set_ff(bool on)
+{
+    g_osd_ff = on;
 }
 
 /* V-Sync: on (FIFO, the default), or off for whoever likes tearing
@@ -974,6 +991,41 @@ void hle_present_shot(const char *path)
     g_ps.shot_want = true;
 }
 
+/* how the last picture ended (hle_present_shot_end): a picture that couldn't
+ * be had was asked for again each refresh, said nowhere (#383) */
+static struct {
+    char path[512], why[160];
+    int end;        /* 1 written, -1 not, 0 none since */
+} g_shot;
+
+static void shot_ended_at(const char *path, bool ok, const char *why)
+{
+    snprintf(g_shot.path, sizeof(g_shot.path), "%s", path);
+    snprintf(g_shot.why, sizeof(g_shot.why), "%s", why ? why : "");
+    __atomic_store_n(&g_shot.end, ok ? 1 : -1, __ATOMIC_RELEASE);
+    if (!ok) {
+        hle_log("xbased-hle-back", "present: no picture in %s: %s", path, why);
+    }
+}
+
+static void shot_ended(bool ok, const char *why)
+{
+    shot_ended_at(g_ps.shot_path, ok, why);
+}
+
+int hle_present_shot_end(const char *path, char *why, size_t n)
+{
+    const int end = __atomic_load_n(&g_shot.end, __ATOMIC_ACQUIRE);
+    if (!end || strcmp(path, g_shot.path)) {
+        return 0;
+    }
+    if (why && n) {
+        snprintf(why, n, "%s", g_shot.why);
+    }
+    __atomic_store_n(&g_shot.end, 0, __ATOMIC_RELAXED);
+    return end;
+}
+
 /* The buffer for a picture of size bytes, host-visible. */
 static bool shot_buf(VkDeviceSize size)
 {
@@ -993,8 +1045,18 @@ static bool shot_buf(VkDeviceSize size)
     }
     VkMemoryRequirements mr;
     T.vkGetBufferMemoryRequirements(g_hvk.dev, g_ps.shot_buf, &mr);
-    const int mt = hle_vk_memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0);
+    /* cached, for the CPU reads it: uncached, the picture's read took 360
+     * ms at 1280x967 for the 8 the encoding needs (#401) */
+    const VkMemoryPropertyFlags vis = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, coh = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                cached = VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    int mt = hle_vk_memtype(mr.memoryTypeBits, vis | coh | cached, 0);
+    g_ps.shot_flush = false;
+    if (mt < 0 && (mt = hle_vk_memtype(mr.memoryTypeBits, vis | cached, 0)) >= 0) {
+        g_ps.shot_flush = true;     /* not coherent: invalidated before it's read */
+    }
+    if (mt < 0) {
+        mt = hle_vk_memtype(mr.memoryTypeBits, vis | coh, 0);
+    }
     VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                  .allocationSize = mr.size, .memoryTypeIndex = (uint32_t)mt };
     if (mt < 0 || T.vkAllocateMemory(g_hvk.dev, &mai, NULL, &g_ps.shot_mem) != VK_SUCCESS) {
@@ -1007,17 +1069,42 @@ static bool shot_buf(VkDeviceSize size)
     return true;
 }
 
+/* The picture being written (#401): the present's copy of its image into
+ * the buffer (shot_buf), then a thread of its own waits for that pass,
+ * reads it, encodes it and writes the file. The presenter did all of it
+ * itself, the picture on the screen standing still meanwhile: 354 ms at
+ * 1280x967 here (the pass behind the game's frames, the JPEG, the file),
+ * more at 4K. One at a time: a picture asked for while the last one is
+ * written is taken at the next refresh after it. */
+static struct {
+    int busy;                   /* (atomic) a thread has the buffer */
+    uint64_t value;             /* the timeline's value of the pass with the copy */
+    uint32_t w, h;
+    bool rgba;
+    char path[512];
+    HleThread th;
+} g_sj;
+
 /* The picture copied out (the pass done) as a 32-bit top-down BMP, or a
- * JPEG (quality 90) for a path ending in .jpg. */
-static void shot_write(uint32_t w, uint32_t h)
+ * JPEG (quality 90) for a path ending in .jpg: g_sj's. */
+static void shot_write(void)
 {
+    const uint32_t w = g_sj.w, h = g_sj.h;
+    const bool rgba = g_sj.rgba;
+    const char *path = g_sj.path;
     void *map = NULL;
     if (T.vkMapMemory(g_hvk.dev, g_ps.shot_mem, 0, VK_WHOLE_SIZE, 0, &map) != VK_SUCCESS) {
+        shot_ended_at(path, false, "its copy couldn't be read (vkMapMemory)");
         return;
     }
-    const size_t pl = strlen(g_ps.shot_path);
-    if (pl > 4 && !strcasecmp(g_ps.shot_path + pl - 4, ".jpg")) {
-        const bool rgba = g_ps.fmt == VK_FORMAT_R8G8B8A8_UNORM || g_ps.fmt == VK_FORMAT_R8G8B8A8_SRGB;
+    if (g_ps.shot_flush) {
+        const VkMappedMemoryRange mr = { .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = g_ps.shot_mem,
+                                         .size = VK_WHOLE_SIZE };
+        T.vkInvalidateMappedMemoryRanges(g_hvk.dev, 1, &mr);
+    }
+    const int64_t t0 = hle_now_ns();
+    const size_t pl = strlen(path);
+    if (pl > 4 && !strcasecmp(path + pl - 4, ".jpg")) {
         const uint8_t *src = map;
         uint8_t *rgb = g_malloc((size_t)w * h * 3);
         for (size_t i = 0; i < (size_t)w * h; i++) {
@@ -1025,14 +1112,19 @@ static void shot_write(uint32_t w, uint32_t h)
             rgb[i * 3 + 1] = src[i * 4 + 1];
             rgb[i * 3 + 2] = src[i * 4 + (rgba ? 2 : 0)];
         }
-        if (stbi_write_jpg(g_ps.shot_path, (int)w, (int)h, 3, rgb, 90)) {
-            hle_log("xbased-hle-back", "present: picture %ux%u in %s", w, h, g_ps.shot_path);
+        errno = 0;
+        if (stbi_write_jpg(path, (int)w, (int)h, 3, rgb, 90)) {
+            hle_log("xbased-hle-back", "present: picture %ux%u in %s (%.0f ms)", w, h, path,
+                    (double)(hle_now_ns() - t0) / 1e6);
+            shot_ended_at(path, true, NULL);
+        } else {
+            shot_ended_at(path, false, errno ? strerror(errno) : "the file couldn't be written");
         }
         g_free(rgb);
         T.vkUnmapMemory(g_hvk.dev, g_ps.shot_mem);
         return;
     }
-    FILE *f = fopen(g_ps.shot_path, "wb");
+    FILE *f = fopen(path, "wb");
     if (f) {
         const uint32_t bytes = w * h * 4;
         uint8_t hd[54] = { 'B', 'M' };
@@ -1045,7 +1137,6 @@ static void shot_write(uint32_t w, uint32_t h)
         hd[26] = 1;
         hd[28] = 32;
         fwrite(hd, 1, sizeof(hd), f);
-        const bool rgba = g_ps.fmt == VK_FORMAT_R8G8B8A8_UNORM || g_ps.fmt == VK_FORMAT_R8G8B8A8_SRGB;
         const uint8_t *src = map;
         uint8_t *row = g_malloc((size_t)w * 4);
         for (uint32_t y = 0; y < h; y++) {
@@ -1059,12 +1150,44 @@ static void shot_write(uint32_t w, uint32_t h)
         }
         g_free(row);
         fclose(f);
-        hle_log("xbased-hle-back", "present: picture %ux%u in %s", w, h, g_ps.shot_path);
+        hle_log("xbased-hle-back", "present: picture %ux%u in %s (%.0f ms)", w, h, path,
+                (double)(hle_now_ns() - t0) / 1e6);
+        shot_ended_at(path, true, NULL);
+    } else {
+        shot_ended_at(path, false, strerror(errno));
     }
     T.vkUnmapMemory(g_hvk.dev, g_ps.shot_mem);
 }
 
+static void *shot_thread(void *arg)
+{
+    (void)arg;
+    const VkResult r = hle_tl_sem_wait(g_ps.tl, g_sj.value, 5000000000ull);
+    if (r == VK_SUCCESS) {
+        shot_write();
+    } else {
+        shot_ended_at(g_sj.path, false, "its pass didn't finish (vkWaitSemaphores)");
+    }
+    __atomic_store_n(&g_sj.busy, 0, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+/* the pass with the copy submitted (value: its timeline's): the thread
+ * takes it from there */
+static void shot_start(uint64_t value, uint32_t w, uint32_t h)
+{
+    g_sj.value = value;
+    g_sj.w = w;
+    g_sj.h = h;
+    g_sj.rgba = g_ps.fmt == VK_FORMAT_R8G8B8A8_UNORM || g_ps.fmt == VK_FORMAT_R8G8B8A8_SRGB;
+    snprintf(g_sj.path, sizeof(g_sj.path), "%s", g_ps.shot_path);
+    __atomic_store_n(&g_sj.busy, 1, __ATOMIC_RELEASE);
+    g_ps.shot_want = false;
+    hle_thread_create(&g_sj.th, "hle.shot", shot_thread, NULL, HLE_THREAD_DETACHED);
+}
+
 static bool ov_on(void);
+static bool ov_new(void);
 /* the overlay was in the last picture: the one after it goes off isn't
  * unchanged (a still frame, a logo, kept the menu's last fading picture on
  * screen: Dead or Alive 3's, #193) */
@@ -1081,7 +1204,7 @@ bool hle_present_unchanged(struct ANativeWindow *win, uint64_t key)
         have_sc = g_rm.sh->src[g_rm.slot].vsync == (g_vsync ? 1u : 0u);
     }
 #endif
-    if (ov_on() || g_ov_shown || g_ps.shot_want || !g_ps.shown || !win || win != g_ps.win || g_ps.stale || !have_sc ||
+    if (ov_new() || g_ps.shot_want || !g_ps.shown || !win || win != g_ps.win || g_ps.stale || !have_sc ||
         key != g_ps.shown_key || ww != g_ps.wsize.width || wh != g_ps.wsize.height ||
         hle_disp_gamma_seq() != g_ps.ramp_gen) {
         return false;
@@ -1139,6 +1262,13 @@ void hle_present_remote_cursor(bool shown)
 {
     if (g_rm.sh) {
         g_rm.sh->cursor = shown ? 1 : 0;
+    }
+}
+
+void hle_present_remote_grab(bool on)
+{
+    if (g_rm.sh) {
+        g_rm.sh->grab = on ? 1 : 0;
     }
 }
 
@@ -1522,6 +1652,11 @@ void hle_present_remote_cursor(bool shown)
     (void)shown;
 }
 
+void hle_present_remote_grab(bool on)
+{
+    (void)on;
+}
+
 uint32_t hle_present_remote_mouse(void *out, uint32_t n, int64_t *at)
 {
     (void)out;
@@ -1882,6 +2017,15 @@ static bool ov_on(void)
     return g_ov.on;
 }
 
+/* The overlay changes the picture: on and new since the last one, or over
+ * the picture itself (its blur), or textures to write; or off now and in
+ * the last one. One unchanged since the last picture, which had it, leaves
+ * it unchanged too (hle_present_unchanged). */
+static bool ov_new(void)
+{
+    return ov_on() ? !g_ov_shown || g_ov.scene || g_ov.blur || g_ov.dirty : g_ov_shown;
+}
+
 uint64_t hle_present_count(void)
 {
     return g_ov.presented;
@@ -1956,6 +2100,14 @@ void hle_ov_tex_free(uint32_t id)
 
 void hle_present_set_overlay(const HleOvVert *v, uint32_t nv, const HleOvCmd *c, uint32_t nc, uint32_t flags)
 {
+    /* the same as the one on: nothing to draw again (#401: a notice held
+     * still, sent each refresh, had every refresh presented, 280 a second
+     * on this display instead of the game's 60, the picture scaled down
+     * from its render size each time, and games slowed while it showed) */
+    if (g_ov.on && v && c && nv == g_ov.nv && nc == g_ov.nc && flags == g_ov.flags &&
+        !memcmp(v, g_ov.v, nv * sizeof(*v)) && !memcmp(c, g_ov.c, nc * sizeof(*c))) {
+        return;
+    }
     g_ps.shown = false;                 /* drawn again, with or without */
     if (!v || !c || !nv || !nc) {
         g_ov.on = false;
@@ -2513,9 +2665,8 @@ static void remote_end(VkCommandBuffer cb, PsFrame *f, VkImage dst, bool shot, u
     f->value = value;
     g_rm.v = v;
     g_rm.val[g_ps.idx] = v;
-    if (shot && wait_value(value)) {
-        shot_write(iw, ih);
-        g_ps.shot_want = false;
+    if (shot) {
+        shot_start(value, iw, ih);
     }
     /* when it is due: a frame's first picture (one drawn again for the
      * overlay over it comes as it is) */
@@ -2693,13 +2844,31 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
                              g_ps.rot[0], g_ps.rot[1], g_ps.rot[2], g_ps.rot[3] };
             quad(cb, f, SET_OSD, g_ps.pipe[P_OSD], src, oc, iw, ih);
         }
+        if (g_osd_ff && g_ps.pipe[P_OSD]) {
+            /* fast forward on (#404): its sign top right, three digits wide */
+            const float dh = 0.045f, dw = dh * 0.62f * (float)wh / (float)ww;
+            float oc[12] = { 0.98f - 3 * dw * 2, -0.97f, 0.98f, -0.97f + dh * 2, 0, 1, 0, 0,
+                             g_ps.rot[0], g_ps.rot[1], g_ps.rot[2], g_ps.rot[3] };
+            quad(cb, f, SET_OSD, g_ps.pipe[P_OSD], src, oc, iw, ih);
+        }
         log_path(p, fxaa_done, (uint32_t)(vw + 0.5f), (uint32_t)(vh + 0.5f));
     }
     if (ov) {
         ov_draw(cb, f, iw, ih, scene_ok);
     }
     T.vkCmdEndRendering(cb);
-    const bool shot = g_ps.shot_want && g_ps.shot_can && shot_buf((VkDeviceSize)iw * ih * 4);
+    bool shot = false;
+    if (g_ps.shot_want && !__atomic_load_n(&g_sj.busy, __ATOMIC_ACQUIRE)) {
+        if (!g_ps.shot_can) {
+            shot_ended(false, "the window's pictures can't be copied (its swapchain has no transfer source)");
+            g_ps.shot_want = false;
+        } else if (!shot_buf((VkDeviceSize)iw * ih * 4)) {
+            shot_ended(false, "no memory for its copy");
+            g_ps.shot_want = false;
+        } else {
+            shot = true;
+        }
+    }
 #ifdef _WIN32
     if (g_rm.on) {
         remote_end(cb, f, dst, shot, iw, ih, key);
@@ -2759,9 +2928,8 @@ void hle_present_end(float sx, float sy, bool fxaa, int upscale, bool average, u
     if (r == VK_SUCCESS) {
         g_ps.submitted = value;
         f->value = value;
-        if (shot && wait_value(value)) {
-            shot_write(iw, ih);
-            g_ps.shot_want = false;
+        if (shot) {
+            shot_start(value, iw, ih);
         }
     } else {
         hle_vk_check(r, "vkQueueSubmit2 (present)");

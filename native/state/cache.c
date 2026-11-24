@@ -471,10 +471,12 @@ typedef struct Walk {
     bool fail;              /* out of memory: the lists are incomplete */
 } Walk;
 
+#ifndef _WIN32
 static uint64_t ts_ns(const struct timespec *t)
 {
     return (uint64_t)t->tv_sec * 1000000000ull + (uint64_t)t->tv_nsec;
 }
+#endif
 
 /* root's folders and files below rel, in pre-order (a folder before what's in it) */
 static void walk(const char *root, const char *rel, Walk *w)

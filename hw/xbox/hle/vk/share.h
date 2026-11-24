@@ -34,7 +34,7 @@
 #include <stdint.h>
 
 #define HLE_SHARE_MAGIC   0x58424652u  /* "XBFR" */
-#define HLE_SHARE_VERSION 4u
+#define HLE_SHARE_VERSION 5u
 #define HLE_SHARE_IMAGES  3u
 #define HLE_SHARE_MICE    64           /* the mouse's events from the frame, a ring */
 #define HLE_SHARE_FORMAT  87u          /* DXGI_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_UNORM's */
@@ -85,8 +85,8 @@ typedef struct HleShareSrc {
 } HleShareSrc;
 
 typedef struct HleShareMouse {
-    uint32_t type;                     /* 1 move, 2 button down, 3 button up, 4 wheel */
-    int32_t x, y;                      /* client pixels */
+    uint32_t type;                     /* 1 move, 2 button down, 3 button up, 4 wheel, 5 a held mouse's move */
+    int32_t x, y;                      /* client pixels (5: the move, raw) */
     int32_t button, wheel;             /* SDL_BUTTON_*, wheel steps (x120 -> 1) */
 } HleShareMouse;
 
@@ -96,6 +96,8 @@ typedef struct HleShare {
     volatile uint32_t cw, ch;          /* the frame's client area, pixels */
     volatile int64_t orders;           /* sources so far */
     volatile int32_t cursor;           /* the run wants the pointer shown */
+    volatile int32_t grab;             /* the run holds the mouse: hidden, kept in the window, its moves
+                                          raw (type 5), while the frame is in front (#255) */
     volatile int32_t failed;           /* the frame can't present them: the runs' windows their own */
     char why[128];                     /* what failed (the frame's word), for the run's log */
     volatile int64_t mouse_head;       /* written by the frame */

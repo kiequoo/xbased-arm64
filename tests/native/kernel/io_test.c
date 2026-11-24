@@ -80,6 +80,7 @@ void nc_kernel_trace_trigger(const char *what) { (void)what; }
 bool nc_xc_security_sector(NcKernel *k, uint8_t *d, uint32_t n) { (void)k; (void)d; (void)n; return false; }
 void nc_vm_pin(NcVm *vm, uint32_t pa, bool known, int lock) { (void)vm; (void)pa; (void)known; (void)lock; }
 uint32_t nc_vm_alloc_phys_high(NcVm *vm, uint32_t len) { (void)vm; (void)len; return UINT32_MAX; }
+void nc_vm_free_phys(NcVm *vm, uint32_t pa, uint32_t len) { (void)vm; (void)pa; (void)len; }
 /* the disc's other image formats (xdvdfs.c): none here */
 bool nc_chd_attach(int fd) { (void)fd; return false; }
 bool nc_nbd_attach(int fd) { (void)fd; return false; }

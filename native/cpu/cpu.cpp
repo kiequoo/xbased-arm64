@@ -396,6 +396,12 @@ extern "C" void nc_cpu_run(NcCpu* cpu, const NcCpuContext* c) {
   cpu->CTX->ExecuteThread(cpu->Thread);
 }
 
+// No code page is watched here (NcCpuConfig.code_page is never called: FEX
+// finds code written over itself), so nothing invalidates from a fault.
+extern "C" bool nc_cpu_on_own_thread(NcCpu* cpu) {
+  return false;
+}
+
 extern "C" void nc_cpu_invalidate(NcCpu* cpu, uint32_t va, uint32_t len) {
   // Each drops the translations on the range's pages (a long function's
   // multiblocks: milliseconds each to translate again): logged, 10 a second.

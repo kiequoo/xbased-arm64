@@ -35,16 +35,7 @@ enum {
     RS_FOGCOLOR = 138, RS_ZENABLE = 143, RS_STENCILENABLE = 144, RS_STENCILFAIL = 145,
     RS_FRONTFACE = 146, RS_CULLMODE = 147, RS_SHADOWFUNC = 156,
     /* not D3D's: the NV2A's polygon modes and line width as pushed (vk/draw.c) */
-    RS_NV_FRONTMODE = 160, RS_NV_BACKMODE = 161, RS_NV_LINEWIDTH = 162, RS_NV_TWOSIDE = 163,
-    RS_NV_LIGHTCTL = 164, RS_NV_SMOOTHCTL = 165,
-    RS_NV_FOGK0 = 166, RS_NV_FOGK1 = 167,   /* SET_FOG_PARAMS' first two, as pushed */
-    RS_NV_FOGMODE = 168,                    /* SET_FOG_MODE, as pushed */
-    RS_NV_CLIPMIN = 169, RS_NV_CLIPMAX = 170,   /* SET_CLIP_MIN / MAX (float bits) */
-    RS_NV_ZMMCTL = 171,                     /* SET_ZMIN_MAX_CONTROL */
-    RS_NV_SMOOTHEN = 172,                   /* SET_LINE / POLY_SMOOTH_ENABLE (bits 0, 1) */
-    RS_NV_SURFCF = 173,                     /* SET_SURFACE_FORMAT's colour format (bits 3:0) */
-    RS_NV_LOGICOP = 150,                    /* SET_LOGIC_OP (bits 15:0) with bit 16 SET_LOGIC_OP_ENABLE */
-    RS_NV_EYEVEC = 82,                  /* .. 84: SET_EYE_VECTOR (DOT_RFLCT_SPEC_CONST) */
+    RS_NV_FRONTMODE = 160, RS_NV_BACKMODE = 161, RS_NV_LINEWIDTH = 162,
 };
 enum {
     TSS_ADDRESSU = 0, TSS_ADDRESSV, TSS_ADDRESSW, TSS_MAGFILTER, TSS_MINFILTER,
@@ -52,7 +43,6 @@ enum {
     TSS_COLORKEYOP, TSS_COLORSIGN, TSS_ALPHAKILL,
     TSS_BUMPENVMAT00 = 22,              /* .. 11, then LSCALE, LOFFSET */
     TSS_BORDERCOLOR = 29, TSS_COLORKEYCOLOR = 30,
-    TSS_NV_CYLWRAP = 31,                /* SET_TEXTURE_ADDRESS's cylinder wrap: bit 0 u, 1 v, 2 p, 3 q */
 };
 
 static struct {
@@ -141,27 +131,12 @@ void hle_kelvin_method(uint32_t m, uint32_t v)
     if (__builtin_expect(!g_state_read_ready, 0)) {
         state_read_init();
     }
-    /* SET_LINE_WIDTH has 9 bits (1/8 pixel): a wider word is not taken
-     * (nxdk_pgraph_tests' Line_width 64.0 and FFFFFFFF draw the width before) */
-    if (m == 0x0380 && v > 0x1FF) {
-        return;
-    }
-    /* (SET_POINT_SIZE likewise: envytools' hwtest, class 0x97, an error and the
-     * size before kept) */
-    if (m == 0x043C && v > 0x1FF) {
-        return;
-    }
     uint32_t i = m >> 2;
     if ((g_kv.r[i] != v || !W(m)) && (g_state_read[i >> 5] >> (i & 31) & 1)) {
         g_kv.sgen++;                    /* a first write counts: hle_kelvin_state reads W() */
     }
     g_kv.r[i] = v;
     g_kv.w[i >> 5] |= 1u << (i & 31);
-}
-
-uint32_t hle_kelvin_reg(uint32_t m)
-{
-    return m < 4 * KV_REGS ? g_kv.r[m >> 2] : 0;
 }
 
 uint32_t hle_kelvin_state_gen(void)
@@ -178,8 +153,6 @@ static void tss(uint32_t *t, unsigned s)
     t[TSS_ADDRESSU] = addr & 0xF;
     t[TSS_ADDRESSV] = (addr >> 8) & 0xF;
     t[TSS_ADDRESSW] = (addr >> 16) & 0xF;
-    t[TSS_NV_CYLWRAP] = ((addr >> 4) & 0xF ? 1u : 0u) | ((addr >> 12) & 0xF ? 2u : 0u) |
-                        ((addr >> 20) & 0xF ? 4u : 0u) | ((addr >> 24) & 0xF ? 8u : 0u);
     /* MIN: 1 nearest, 2 linear, 3-6 {nearest, linear} x mip {nearest, linear},
      * 7 convolution; MAG: 1 nearest, 2 linear, 4 convolution */
     static const uint8_t k_min[8][2] = { { 1, 0 }, { 1, 0 }, { 2, 0 }, { 1, 1 },
@@ -230,10 +203,6 @@ static const struct { uint16_t m, rs; } k_rs_map[] = {
     { 0x0334, RS_WIREFRAMEOFFSETENABLE }, { 0x0338, RS_SOLIDOFFSETENABLE },
     { 0x0384, RS_ZSLOPESCALE }, { 0x0388, RS_ZOFFSET }, { 0x02A4, RS_FOGENABLE },
     { 0x038C, RS_NV_FRONTMODE }, { 0x0390, RS_NV_BACKMODE }, { 0x0380, RS_NV_LINEWIDTH },
-    { 0x17C4, RS_NV_TWOSIDE }, { 0x0294, RS_NV_LIGHTCTL }, { 0x1D7C, RS_NV_SMOOTHCTL },
-    { 0x09C0, RS_NV_FOGK0 }, { 0x09C4, RS_NV_FOGK1 }, { 0x029C, RS_NV_FOGMODE },
-    { 0x0394, RS_NV_CLIPMIN }, { 0x0398, RS_NV_CLIPMAX },
-    { 0x181C, RS_NV_EYEVEC }, { 0x1820, RS_NV_EYEVEC + 1 }, { 0x1824, RS_NV_EYEVEC + 2 },
     { 0x03B8, RS_SPECULARENABLE },
     /* SET_SHADOW_COMPARE_FUNC (D3DCMP_*: NEVER put Fable's whole world in
      * shadow), SET_POINT_SMOOTH_ENABLE (point sprites) */
@@ -253,20 +222,17 @@ void hle_kelvin_state(HleCmdState *st)
         rs[RS_ZENABLE] = R(0x030C) ? ((R(0x0290) & 0x10000u) ? 2 : 1) : 0;
     }
     if (W(0x0308) || W(0x039C) || W(0x03A0)) {
-        /* CULLMODE is the winding culled: the front one for GL_FRONT. The
-         * front face is clockwise until one is set (a value that is neither
-         * winding never reaches the register: kvfmt.h) */
+        /* CULLMODE is the winding culled: the front one for GL_FRONT */
         uint32_t ff = W(0x03A0) && R(0x03A0) ? R(0x03A0) : 0x900;
         rs[RS_FRONTFACE] = ff;
-        rs[RS_CULLMODE] = !R(0x0308) ? 0 : R(0x039C) == 0x404 ? ff :
-                          R(0x039C) == 0x408 ? 0x408 : (ff ^ 1);   /* 0x408: both (FRONT_AND_BACK) */
+        rs[RS_CULLMODE] = !R(0x0308) ? 0 : R(0x039C) == 0x404 ? ff : (ff ^ 1);
     }
     if (W(0x029C)) {                    /* 0x100: an _ABS mode (0x802 .. 0x804) */
         uint32_t m = R(0x029C);
         rs[RS_FOGTABLEMODE] = (m == 0x2601 || m == 0x804 ? 3 : m == 0x801 || m == 0x803 ? 2 : 1) |
                               (m >= 0x802 && m <= 0x804 ? 0x100 : 0);
     }
-    if (W(0x09C0) || W(0x09C4) || W(0x029C)) {
+    if (W(0x09C0) || W(0x09C4)) {
         /* SET_FOG_PARAMS as pushed (Conker's meshes: their own fog): the
          * NV2A's linear factor is p0 - 1 + p1 d, exp / exp2 take the density
          * from p1 (D3D's encoding, as LLE decodes it). The back end's fog
@@ -289,10 +255,6 @@ void hle_kelvin_state(HleCmdState *st)
             dens = -p1 * 2.0f *
                    ((rs[RS_FOGTABLEMODE] & 3) == 2 ? sqrtf(logf(256.0f)) : logf(256.0f));
             memcpy(&rs[RS_FOGDENSITY], &dens, 4);
-            /* and p0's part: the factor is p0 - 1.5 + 2^(16 p1 d) (xemu's;
-             * D3D's p0 is 1.5: none), in the start's place (vk/draw.c pc.fog.x) */
-            st = p0 - 1.5f;
-            memcpy(&rs[RS_FOGSTART], &st, 4);
         }
     }
     if (W(0x02A8)) {                    /* ABGR -> D3DCOLOR */
@@ -333,18 +295,6 @@ void hle_kelvin_state(HleCmdState *st)
     }
     if (W(0x1D78)) {                    /* SET_ZMIN_MAX_CONTROL: ZCLAMP_EN (bits 4..7) CLAMP */
         st->zclamp = ((R(0x1D78) >> 4) & 0xF) == 1;
-    }
-    if (W(0x1D78) || W(0x0290)) {       /* (and CONTROL0's Z_PERSPECTIVE: the range is w's then) */
-        rs[RS_NV_ZMMCTL] = (R(0x1D78) & 0xFFFu) | ((R(0x0290) & 0x10000u) ? 0x1000u : 0u);
-    }
-    if (W(0x0320) || W(0x0324)) {       /* SET_LINE_SMOOTH_ENABLE, SET_POLY_SMOOTH_ENABLE */
-        rs[RS_NV_SMOOTHEN] = (R(0x0320) ? 1u : 0u) | (R(0x0324) ? 2u : 0u);
-    }
-    {   /* (D3DRS_LOGICOP: vk/draw.c) */
-        rs[RS_NV_LOGICOP] = R(0x17BC) ? 0x10000u | (R(0x17C0) & 0xFFFFu) : 0;
-    }
-    if (W(0x0208)) {
-        rs[RS_NV_SURFCF] = R(0x0208) & 0xFu;
     }
 }
 
