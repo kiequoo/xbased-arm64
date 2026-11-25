@@ -148,11 +148,15 @@ static int dsp_rec_mode = -1;
 
 static bool dsp_rec_on(void)
 {
+#if !defined(__x86_64__) && !defined(_M_X64)
+    return false;   /* the recompiler emits x86-64 host code; arm64 uses the interpreter */
+#else
     if (dsp_rec_mode < 0) {
         const char *e = getenv("XBASED_DSP_REC");
         dsp_rec_mode = !(e && e[0] == '0');
     }
     return dsp_rec_mode;
+#endif
 }
 
 bool dsp_rec_ready(DSPState *dsp)

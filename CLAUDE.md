@@ -63,6 +63,22 @@ Any new upstream use of `__builtin_ia32_pause` must be guarded:
 #endif
 ```
 
+**`native/dev/apu/dsp/dsp.c` — DSP recompiler (`dsp_rec.cpp`)**
+Upstream's DSP recompiler (added in 1.2.4) emits **x86-64 host machine code**
+via Zydis and executes it natively. On arm64 this is SIGILL. The interpreter
+(`dsp_run_interp`) is the correct path. `dsp_rec_on()` in `dsp.c` is the single
+gate — keep the compile-time guard:
+```c
+#if !defined(__x86_64__) && !defined(_M_X64)
+    return false;   /* the recompiler emits x86-64 host code; arm64 uses the interpreter */
+#else
+    /* ... env XBASED_DSP_REC check ... */
+#endif
+```
+The same guard applies to `dsp_rec_selftest` in `gp_ep.c` (dev-only, but wraps
+the same x86-64 JIT). If upstream ever adds a non-x86-64 backend for the DSP
+this guard can be removed.
+
 ## PR workflow
 
 **Own changes only** use PRs:

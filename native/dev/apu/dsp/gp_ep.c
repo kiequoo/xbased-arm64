@@ -909,9 +909,11 @@ void mcpx_apu_dsp_init(MCPXAPUState *d)
     mcpx_apu_update_dsp_preference(d);
 
     /* dev: the recompiler against the interpreter on random programs */
+#if defined(__x86_64__) || defined(_M_X64)
     const char *st = getenv("XBASED_DSP_SELFTEST");
     if (st && atoi(st) > 0) {
         const char *seed = getenv("XBASED_DSP_SELFTEST_SEED");
         dsp_rec_selftest(atoi(st), seed ? (uint32_t)strtoul(seed, NULL, 0) : 1);
     }
+#endif
 }
